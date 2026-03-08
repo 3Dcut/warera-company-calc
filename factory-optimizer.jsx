@@ -12,8 +12,6 @@ fl.rel = "stylesheet";
 fl.href = "https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Source+Code+Pro:wght@400;500;600;700&family=Quicksand:wght@400;500;600;700&display=swap";
 document.head.appendChild(fl);
 
-let F = { h: "'Rajdhani', sans-serif", m: "'Source Code Pro', monospace" };
-
 const THEMES = {
   grau: {
     F: { h: "'Rajdhani', sans-serif", m: "'Source Code Pro', monospace" },
@@ -49,8 +47,6 @@ const THEMES = {
   },
 };
 
-let C = THEMES.grau.C;
-
 // Tooltip CSS injection
 const styleEl = document.createElement("style");
 styleEl.textContent = `
@@ -82,7 +78,23 @@ const glass = (opacity = 0.06, blur = 16) => ({
   boxShadow: "0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)",
 });
 
-function getStrats() {
+const RECIPES = {
+  grain: { pp: 20, inputs: {} },
+  bread: { pp: 20, inputs: { grain: 1 } },
+  steak: { pp: 40, inputs: { livestock: 1 } },
+  cookedFish: { pp: 80, inputs: { fish: 1 } },
+  concrete: { pp: 20, inputs: { limestone: 1 } },
+  steel: { pp: 20, inputs: { iron: 1 } },
+  iron: { pp: 20, inputs: {} },
+  limestone: { pp: 20, inputs: {} },
+  fish: { pp: 20, inputs: {} },
+  livestock: { pp: 20, inputs: {} },
+  ammo: { pp: 50, inputs: { lead: 1 } },
+  heavyAmmo: { pp: 100, inputs: { lead: 2 } },
+  lead: { pp: 20, inputs: {} },
+};
+
+function getStrats(C) {
   return [
     { key: "dijkstra", label: "Optimal (Dijkstra)", color: C.accent, glow: C.accentGlow, tip: "Durchsucht alle moeglichen Pfade und findet den nachweislich schnellsten" },
     { key: "cheapest", label: "Billigstes zuerst", color: C.green, glow: C.greenGlow, tip: "Nimmt immer die billigste naechste Aktion" },
@@ -125,6 +137,24 @@ const facBeton = (n, base) => n * base;
 function calcPPH(level, bonus) { return level * (1 + bonus / 100); }
 function totalPPH(fs) { return fs.reduce((s, f) => s + calcPPH(f.level, f.bonus), 0); }
 
+function getProfit(f, prices, recipes) {
+  const item = f.item || "concrete";
+  const recipe = recipes[item];
+  if (!recipe) return 0;
+  const sellPrice = prices[item] || 0;
+  let materialCost = 0;
+  for (const [ing, qty] of Object.entries(recipe.inputs)) {
+    materialCost += (prices[ing] || 0) * qty;
+  }
+  const profitPerUnit = sellPrice - materialCost;
+  const pph = calcPPH(f.level, f.bonus);
+  return profitPerUnit * (pph / recipe.pp);
+}
+
+function totalProfit(fs, prices, recipes) {
+  return fs.reduce((s, f) => s + getProfit(f, prices, recipes), 0);
+}
+
 function effPP(amount, resType, p) {
   if (resType === "stahl") {
     const d = amount * p.ppPerStahl;
@@ -143,13 +173,13 @@ class Heap {
   get size() { return this.d.length; }
 }
 
-function facKey(fs) { return fs.map(f => f.bonus + ":" + f.level).sort().join("|"); }
+function facKey(fs) { return fs.map(f => f.item + ":" + f.bonus + ":" + f.level).sort().join("|"); }
 
-function runDijkstra(startFacs, params, sStahl, sBeton) {
+function runDijkstra(startFacs, params, sStahl, sBeton, recipes, prices, mode) {
   const { maxFactories, maxLevel, upgradeBase, factoryBase, defaultBonus } = params;
   const heap = new Heap(), visited = new Set();
-  const gp = []; for (const f of startFacs) gp.push(f.bonus + ":" + maxLevel);
-  for (let i = startFacs.length; i < maxFactories; i++) gp.push(defaultBonus + ":" + maxLevel);
+  const gp = []; for (const f of startFacs) gp.push(f.item + ":" + f.bonus + ":" + maxLevel);
+  for (let i = startFacs.length; i < maxFactories; i++) gp.push("concrete:" + defaultBonus + ":" + maxLevel);
   const gk = gp.sort().join("|");
   if (facKey(startFacs) === gk) return { path: [], complete: true, iter: 0 };
 
@@ -157,31 +187,42 @@ function runDijkstra(startFacs, params, sStahl, sBeton) {
   heap.push(0, { facs: startFacs.map(f => ({ ...f })), path: [], rs: sStahl, rb: sBeton });
   let iter = 0;
 
-  while (heap.size > 0 && iter < 500000) {
+  while (heap.size > 0 && iter < 50000) {
     iter++;
     const { p: time, v: { facs, path, rs, rb } } = heap.pop();
     const key = sk(facs, rs, rb);
     if (visited.has(key)) continue; visited.add(key);
     if (facKey(facs) === gk) return { path, complete: true, iter };
-    const pph = totalPPH(facs); if (pph <= 0) continue;
-    const seen = new Set();
+    
+    // Total "Buying Power" in PP/h
+    // Current ProductionRate (PP/h) + Profit scaled to PP
+    const pph = totalPPH(facs);
+    if (pph <= 0) continue;
+    
+    // Optimization: Add "Market Power" to PPH to reach goals faster
+    const profitH = totalProfit(facs, prices, recipes);
+    // Conversion: 1 $ = (ppS / sP) PP (approx)
+    const factor = params.stahlPrice > 0 ? params.ppPerStahl / params.stahlPrice : 10;
+    const effectivePPH = pph + (mode === "profit" ? profitH * factor : 0);
 
+    const seen = new Set();
     for (let i = 0; i < facs.length; i++) {
       if (facs[i].level >= maxLevel) continue;
-      const sig = facs[i].bonus + ":" + facs[i].level;
+      const sig = facs[i].item + ":" + facs[i].bonus + ":" + facs[i].level;
       if (seen.has(sig)) continue; seen.add(sig);
       const lvl = facs[i].level, stahl = upgStahl(lvl, upgradeBase);
       const free = Math.min(rs, stahl), need = stahl - free;
       const { pp, method } = need > 0 ? effPP(need, "stahl", params) : { pp: 0, method: "Lager" };
-      const dt = pp / pph;
+      const dt = pp / effectivePPH;
       const nf = facs.map((f, j) => j === i ? { ...f, level: f.level + 1 } : { ...f });
       const nrs = rs - free, nk = sk(nf, nrs, rb);
       if (!visited.has(nk)) {
+        const gain = mode === "profit" ? getProfit(nf[i], prices, recipes) - getProfit(facs[i], prices, recipes) : calcPPH(1, facs[i].bonus);
         heap.push(time + dt, { facs: nf, rs: nrs, rb, path: [...path, {
-          action: "Upgrade L" + lvl + " -> L" + (lvl+1) + " (" + facs[i].bonus + "%)",
+          action: "Upgrade L" + lvl + " -> L" + (lvl+1) + " (" + facs[i].item + " " + facs[i].bonus + "%)",
           type: "upgrade", resType: "stahl", resCost: stahl, freeRes: free,
           method: free === stahl ? "Lager" : method, ppCost: pp,
-          ppGain: calcPPH(1, facs[i].bonus), dt, time: time + dt, pph: totalPPH(nf),
+          ppGain: gain, dt, time: time + dt, pph: mode === "profit" ? totalProfit(nf, prices, recipes) : totalPPH(nf),
         }]});
       }
     }
@@ -190,13 +231,14 @@ function runDijkstra(startFacs, params, sStahl, sBeton) {
       const free = Math.min(rb, beton), need = beton - free;
       const { pp, method } = need > 0 ? effPP(need, "beton", params) : { pp: 0, method: "Lager" };
       const dt = pph > 0 ? pp / pph : Infinity;
-      const nf = [...facs.map(f => ({ ...f })), { level: 1, bonus: defaultBonus }];
+      const nf = [...facs.map(f => ({ ...f })), { level: 1, bonus: defaultBonus, item: "concrete" }];
       const nrb = rb - free, nk = sk(nf, rs, nrb);
       if (!visited.has(nk)) {
+        const gain = mode === "profit" ? getProfit(nf[nf.length-1], prices, recipes) : calcPPH(1, defaultBonus);
         heap.push(time + dt, { facs: nf, rs, rb: nrb, path: [...path, {
           action: "Neue Fabrik #" + n, type: "buy", resType: "beton", resCost: beton,
           freeRes: free, method: free === beton ? "Lager" : method, ppCost: pp,
-          ppGain: calcPPH(1, defaultBonus), dt, time: time + dt, pph: totalPPH(nf),
+          ppGain: gain, dt, time: time + dt, pph: mode === "profit" ? totalProfit(nf, prices, recipes) : totalPPH(nf),
         }]});
       }
     }
@@ -204,7 +246,7 @@ function runDijkstra(startFacs, params, sStahl, sBeton) {
   return { path: [], complete: false, iter };
 }
 
-function simulate(facs, params, strategy, sStahl, sBeton) {
+function simulate(facs, params, strategy, sStahl, sBeton, recipes, prices, mode) {
   const { maxFactories, maxLevel, upgradeBase, factoryBase, defaultBonus } = params;
   let st = facs.map(f => ({ ...f })), t = 0, rs = sStahl, rb = sBeton;
   const path = []; let safe = 0;
@@ -215,31 +257,44 @@ function simulate(facs, params, strategy, sStahl, sBeton) {
     const acts = [], seen = new Set();
     st.forEach((f, i) => {
       if (f.level >= maxLevel) return;
-      const sig = f.bonus + ":" + f.level; if (seen.has(sig)) return; seen.add(sig);
-      const stahl = upgStahl(f.level, upgradeBase), free = Math.min(rs, stahl), need = stahl - free;
+      const sig = f.item + ":" + f.bonus + ":" + f.level; if (seen.has(sig)) return; seen.add(sig);
+      const lvl = f.level, stahl = upgStahl(lvl, upgradeBase), free = Math.min(rs, stahl), need = stahl - free;
       const { pp, method } = need > 0 ? effPP(need, "stahl", params) : { pp: 0, method: "Lager" };
+      const gain = mode === "profit" ? getProfit({ ...f, level: f.level+1 }, prices, recipes) - getProfit(f, prices, recipes) : calcPPH(1, f.bonus);
+      
+      const profitH = totalProfit(st, prices, recipes);
+      const factor = params.stahlPrice > 0 ? params.ppPerStahl / params.stahlPrice : 10;
+      const effectivePPH = pph + (mode === "profit" ? profitH * factor : 0);
+
       acts.push({ type: "upgrade", idx: i, resCost: stahl, resType: "stahl", freeRes: free,
-        method: free === stahl ? "Lager" : method, ppCost: pp, ppGain: calcPPH(1, f.bonus),
-        dt: pp / pph, label: "Upgrade L" + f.level + " -> L" + (f.level+1) + " (" + f.bonus + "%)" });
+        method: free === stahl ? "Lager" : method, ppCost: pp, ppGain: gain,
+        dt: pp / effectivePPH, label: "Upgrade L" + f.level + " -> L" + (f.level+1) + " (" + f.item + " " + f.bonus + "%)" });
     });
     if (st.length < maxFactories) {
       const n = st.length + 1, beton = facBeton(n, factoryBase), free = Math.min(rb, beton), need = beton - free;
       const { pp, method } = need > 0 ? effPP(need, "beton", params) : { pp: 0, method: "Lager" };
+      const gain = mode === "profit" ? getProfit({ level: 1, bonus: defaultBonus, item: "concrete" }, prices, recipes) : calcPPH(1, defaultBonus);
+      
+      const profitH = totalProfit(st, prices, recipes);
+      const factor = params.stahlPrice > 0 ? params.ppPerStahl / params.stahlPrice : 10;
+      const effectivePPH = pph + (mode === "profit" ? profitH * factor : 0);
+
       acts.push({ type: "buy", resCost: beton, resType: "beton", freeRes: free,
-        method: free === beton ? "Lager" : method, ppCost: pp, ppGain: calcPPH(1, defaultBonus),
-        dt: pp / pph, label: "Neue Fabrik #" + n });
+        method: free === beton ? "Lager" : method, ppCost: pp, ppGain: gain,
+        dt: pp / effectivePPH, label: "Neue Fabrik #" + n });
     }
     if (!acts.length) break;
     let pick;
+    const score = (a) => a.ppGain / Math.max(a.ppCost, 1);
     if (strategy === "cheapest") pick = acts.sort((a, b) => a.ppCost - b.ppCost)[0];
-    else if (strategy === "upgrade_first") { const u = acts.filter(a => a.type === "upgrade").sort((a,b) => a.ppCost - b.ppCost); pick = u.length ? u[0] : acts.find(a => a.type === "buy"); }
-    else { const b = acts.filter(a => a.type === "buy"); pick = b.length ? b[0] : acts.sort((a,b) => a.ppCost - b.ppCost)[0]; }
+    else if (strategy === "upgrade_first") { const u = acts.filter(a => a.type === "upgrade").sort((a,b) => score(b) - score(a)); pick = u.length ? u[0] : acts.find(a => a.type === "buy"); }
+    else { const b = acts.filter(a => a.type === "buy"); pick = b.length ? b[0] : acts.sort((a,b) => score(b) - score(a))[0]; }
     t += pick.dt;
     if (pick.type === "upgrade") { rs -= pick.freeRes; st = st.map((f, j) => j === pick.idx ? { ...f, level: f.level + 1 } : f); }
-    else { rb -= pick.freeRes; st = [...st, { level: 1, bonus: defaultBonus }]; }
+    else { rb -= pick.freeRes; st = [...st, { level: 1, bonus: defaultBonus, item: "concrete" }]; }
     path.push({ action: pick.label, type: pick.type, resType: pick.resType, resCost: pick.resCost,
       freeRes: pick.freeRes, method: pick.method, ppCost: pick.ppCost, ppGain: pick.ppGain,
-      dt: pick.dt, time: t, pph: totalPPH(st) });
+      dt: pick.dt, time: t, pph: mode === "profit" ? totalProfit(st, prices, recipes) : totalPPH(st) });
   }
   return path;
 }
@@ -254,7 +309,7 @@ function buildChart(paths, startPPH, keys) {
   for (let t = 0; t <= mx; t += step) ts.add(Math.round(t * 10) / 10);
   return [...ts].sort((a,b) => a - b).map(t => {
     const pt = { time: Math.round(t * 100) / 100 };
-    for (const [k, e] of Object.entries(ev)) { let v = startPPH; for (const x of e) { if (x.time <= t) v = x.pph; else break; } pt[k] = Math.round(v * 100) / 100; }
+    for (const [k, e] of Object.entries(ev)) { let v = startPPH; for (const x of e) { if (x.time <= t) v = x.pph; else break; } pt[k] = (v === Infinity || isNaN(v)) ? null : Math.round(v * 100) / 100; }
     return pt;
   });
 }
@@ -263,52 +318,68 @@ function fmtT(h) { if (h <= 0) return "sofort"; if (h < 1) return (h*60).toFixed
 function fmtN(n) { if (Math.abs(n) >= 1e6) return (n/1e6).toFixed(1) + "M"; if (Math.abs(n) >= 1e3) return (n/1e3).toFixed(1) + "k"; return Number.isInteger(n) ? String(n) : n.toFixed(1); }
 
 // ── Styled primitives ──
-function GlassCard({ children, style, glow }) {
-  return <div style={{ ...glass(0.05, 20), borderRadius: 12, padding: "16px 20px", marginBottom: 14, ...(glow ? { boxShadow: "0 8px 32px rgba(0,0,0,0.5), 0 0 24px " + glow } : {}), ...style }}>{children}</div>;
-}
-function Sec({ children, icon }) {
-  return <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-    {icon && <span style={{ fontSize: 15 }}>{icon}</span>}
-    <span style={{ fontFamily: F.h, fontSize: 13, fontWeight: 700, color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase" }}>{children}</span>
-  </div>;
-}
-function Inp({ label, value, onChange, step = 1, suffix, tip }) {
-  const inner = <div style={{ marginBottom: 8 }}>
-    <label style={{ fontFamily: F.m, fontSize: 10, color: C.textDim, marginBottom: 3, display: "block", letterSpacing: "0.03em" }}>{label} {tip && <span style={{ color: C.textMuted, cursor: "help" }}>&#9432;</span>}</label>
-    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-      <input type="number" step={step} value={value} onChange={e => onChange(Number(e.target.value))}
-        style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 6, color: C.text,
-          padding: "7px 10px", fontSize: 13, width: "100%", boxSizing: "border-box", outline: "none",
-          fontFamily: F.m, transition: "border-color 0.2s, box-shadow 0.2s" }}
-        onFocus={e => { e.target.style.borderColor = C.accent + "88"; e.target.style.boxShadow = "0 0 12px " + C.accentGlow; }}
-        onBlur={e => { e.target.style.borderColor = C.inputBorder; e.target.style.boxShadow = "none"; }} />
-      {suffix && <span style={{ fontFamily: F.m, fontSize: 10, color: C.textMuted, whiteSpace: "nowrap" }}>{suffix}</span>}
-    </div>
-  </div>;
-  return tip ? <Tip text={tip}>{inner}</Tip> : inner;
-}
-function Bdg({ color, children }) {
-  return <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 4, fontSize: 9, fontWeight: 700, fontFamily: F.h, background: color + "25", color, border: "1px solid " + color + "44", letterSpacing: "0.06em", textTransform: "uppercase", textShadow: "0 0 8px " + color + "44" }}>{children}</span>;
-}
-function Tip({ text, children, pos = "top" }) {
-  if (!text) return children;
-  return <span className="tip-wrap">{children}<span className="tip-box" style={pos === "bottom" ? { bottom: "auto", top: "calc(100% + 8px)" } : {}}>{text}</span></span>;
-}
-function Btn({ on, color = C.accent, children, onClick, big, disabled }) {
-  return <button onClick={onClick} disabled={disabled} style={{
-    padding: big ? "11px 28px" : "6px 14px", borderRadius: 8, border: "1px solid " + (on ? color + "88" : "rgba(255,255,255,0.08)"),
-    background: on ? color + "18" : "rgba(255,255,255,0.03)", color: disabled ? C.textMuted : on ? color : C.textDim,
-    cursor: disabled ? "not-allowed" : "pointer", fontSize: big ? 14 : 11, fontFamily: F.h, fontWeight: 700,
-    letterSpacing: "0.08em", textTransform: "uppercase", transition: "all 0.2s", opacity: disabled ? 0.4 : 1,
-    boxShadow: on ? "0 0 16px " + color + "22, inset 0 1px 0 rgba(255,255,255,0.06)" : "0 2px 8px rgba(0,0,0,0.2)",
-    textShadow: on ? "0 0 10px " + color + "44" : "none",
-  }}>{children}</button>;
-}
-const TH = { textAlign: "left", padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.08)", color: C.textDim, fontSize: 9, fontFamily: F.h, letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 700 };
-const TD = (hl) => ({ padding: "6px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", color: hl ? C.accent : C.text, fontSize: 12, fontFamily: F.m });
-
 // ── Main ──
 export default function App() {
+  // Theme
+  const [theme, setTheme] = useState("grau");
+  const T = THEMES[theme];
+  const { C, F } = T;
+
+  const glassStyle = (opacity = 0.05, blur = 20) => ({
+    background: `rgba(255,255,255,${opacity})`,
+    backdropFilter: `blur(${blur}px)`,
+    WebkitBackdropFilter: `blur(${blur}px)`,
+    border: "1px solid rgba(255,255,255,0.1)",
+    boxShadow: "0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)",
+  });
+
+  // Styled primitives
+  const GlassCard = ({ children, style, glow }) => (
+    <div style={{ ...glassStyle(), borderRadius: 12, padding: "16px 20px", marginBottom: 14, ...(glow ? { boxShadow: "0 8px 32px rgba(0,0,0,0.5), 0 0 24px " + glow } : {}), ...style }}>{children}</div>
+  );
+  const Sec = ({ children, icon }) => (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+      {icon && <span style={{ fontSize: 15 }}>{icon}</span>}
+      <span style={{ fontFamily: F.h, fontSize: 13, fontWeight: 700, color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase" }}>{children}</span>
+    </div>
+  );
+  const TH = { textAlign: "left", padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.08)", color: C.textDim, fontSize: 9, fontFamily: F.h, letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 700 };
+  const TD = (hl) => ({ padding: "6px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", color: hl ? C.accent : C.text, fontSize: 12, fontFamily: F.m });
+
+  function Inp({ label, value, onChange, step = 1, suffix, tip }) {
+    const inner = <div style={{ marginBottom: 8 }}>
+      <label style={{ fontFamily: F.m, fontSize: 10, color: C.textDim, marginBottom: 3, display: "block", letterSpacing: "0.03em" }}>{label} {tip && <span style={{ color: C.textMuted, cursor: "help" }}>&#9432;</span>}</label>
+      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+        <input type="number" step={step} value={value} onChange={e => onChange(Number(e.target.value))}
+          style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 6, color: C.text,
+            padding: "7px 10px", fontSize: 13, width: "100%", boxSizing: "border-box", outline: "none",
+            fontFamily: F.m, transition: "border-color 0.2s, box-shadow 0.2s" }}
+          onFocus={e => { e.target.style.borderColor = C.accent + "88"; e.target.style.boxShadow = "0 0 12px " + C.accentGlow; }}
+          onBlur={e => { e.target.style.borderColor = C.inputBorder; e.target.style.boxShadow = "none"; }} />
+        {suffix && <span style={{ fontFamily: F.m, fontSize: 10, color: C.textMuted, whiteSpace: "nowrap" }}>{suffix}</span>}
+      </div>
+    </div>;
+    return tip ? <Tip text={tip}>{inner}</Tip> : inner;
+  }
+  function Bdg({ color, children }) {
+    return <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 4, fontSize: 9, fontWeight: 700, fontFamily: F.h, background: color + "25", color, border: "1px solid " + color + "44", letterSpacing: "0.06em", textTransform: "uppercase", textShadow: "0 0 8px " + color + "44" }}>{children}</span>;
+  }
+  function Tip({ text, children, pos = "top" }) {
+    if (!text) return children;
+    return <span className="tip-wrap">{children}<span className="tip-box" style={{ ...(pos === "bottom" ? { bottom: "auto", top: "calc(100% + 8px)" } : {}), fontFamily: F.m }}>{text}</span></span>;
+  }
+  function Btn({ on, color, children, onClick, big, disabled }) {
+    const clr = color || C.accent;
+    return <button onClick={onClick} disabled={disabled} style={{
+      padding: big ? "11px 28px" : "6px 14px", borderRadius: 8, border: "1px solid " + (on ? clr + "88" : "rgba(255,255,255,0.08)"),
+      background: on ? clr + "18" : "rgba(255,255,255,0.03)", color: disabled ? C.textMuted : on ? clr : C.textDim,
+      cursor: disabled ? "not-allowed" : "pointer", fontSize: big ? 14 : 11, fontFamily: F.h, fontWeight: 700,
+      letterSpacing: "0.08em", textTransform: "uppercase", transition: "all 0.2s", opacity: disabled ? 0.4 : 1,
+      boxShadow: on ? "0 0 16px " + clr + "22, inset 0 1px 0 rgba(255,255,255,0.06)" : "0 2px 8px rgba(0,0,0,0.2)",
+      textShadow: on ? "0 0 10px " + clr + "44" : "none",
+    }}>{children}</button>;
+  }
+
   const [ppS, setPpS] = useState(20);
   const [ppB, setPpB] = useState(20);
   const [sP, setSP] = useState(2.0);
@@ -320,8 +391,10 @@ export default function App() {
   const [dB, setDB] = useState(50);
   const [sS, setSS] = useState(0);
   const [sB, setSB] = useState(0);
-  const [facs, setFacs] = useState([{ level: 1, bonus: 50 }]);
+  const [facs, setFacs] = useState([{ level: 1, bonus: 50, item: "concrete" }]);
+  const [allPrices, setAllPrices] = useState({ stahl: 2.0, concrete: 2.0, iron: 1.0, limestone: 0.8, fish: 5.0, cookedFish: 12.0, lead: 1.5, ammo: 4.0, heavyAmmo: 9.0, grain: 0.5, bread: 1.5, livestock: 1.0, steak: 4.0 });
   const [actv, setActv] = useState(["dijkstra", "cheapest"]);
+  const [optMode, setOptMode] = useState("profit"); // "profit" or "pp"
   const [tab, setTab] = useState("chart");
   const [cM, setCM] = useState("rate");
   const [tS, setTS] = useState("dijkstra");
@@ -330,17 +403,12 @@ export default function App() {
   const [impStr, setImpStr] = useState("");
   const [showImp, setShowImp] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [theme, setTheme] = useState("grau");
   const [apiUser, setApiUser] = useState("");
   const [apiLoading, setApiLoading] = useState(false);
   const [apiError, setApiError] = useState("");
   const [apiInfo, setApiInfo] = useState("");
 
-  // Apply theme
-  const T = THEMES[theme];
-  C = T.C;
-  F = T.F;
-  const STRATS = getStrats();
+  const STRATS = getStrats(C);
 
   // ── WarEra API Integration ──
   const API = "https://api2.warera.io/trpc/";
@@ -380,25 +448,40 @@ export default function App() {
       const companyIds = companies.items || [];
       if (!companyIds.length) throw new Error("Keine Fabriken gefunden fuer " + username);
 
-      // 4. Get each company's details
+      // 5. Get market prices
+      try {
+        const prices = await apiCall("itemTrading.getPrices", {});
+        setAllPrices(prices);
+        if (prices.steel != null) setSP(Math.round(prices.steel * 10000) / 10000);
+        if (prices.concrete != null) setBP(Math.round(prices.concrete * 10000) / 10000);
+      } catch {}
+
+      // 4. Get each company's details (moved down to use prices/recipes if needed)
       const newFacs = [];
       for (const cid of companyIds) {
         const comp = await apiCall("company.getById", { companyId: cid });
         const aeLevel = comp.activeUpgradeLevels?.automatedEngine || 1;
+        const item = comp.itemCode || "concrete";
+        const recipe = RECIPES[item] || { pp: 20 };
+        
+        // Derive bonus: production = level * base_at_lvl_1 * (1 + bonus/100)
+        // From analysis: Cooked Fish base is ~1.5 items/h at Level 1
+        const baseItemsH = 1.5;
+        const prodRate = comp.production || 0;
+        let derivedBonus = aeLevel > 0 ? Math.round(((prodRate / aeLevel / baseItemsH) - 1) * 100) : dB;
+        
+        // Safety cap to avoid solver freeze with glitchy API data
+        if (derivedBonus > 500) derivedBonus = dB;
+        if (derivedBonus < -90) derivedBonus = -90;
+
         newFacs.push({
           level: aeLevel,
-          bonus: dB,
+          bonus: derivedBonus,
           name: comp.name || ("Fabrik " + (newFacs.length + 1)),
-          item: comp.itemCode || "?",
+          item: item,
+          production: prodRate
         });
       }
-
-      // 5. Get market prices
-      try {
-        const prices = await apiCall("itemTrading.getPrices", {});
-        if (prices.steel != null) setSP(Math.round(prices.steel * 10000) / 10000);
-        if (prices.concrete != null) setBP(Math.round(prices.concrete * 10000) / 10000);
-      } catch {}
 
       setFacs(newFacs);
       setApiInfo(username + ": " + newFacs.length + " Fabriken geladen, Marktpreise aktualisiert");
@@ -415,6 +498,7 @@ export default function App() {
 
   const params = { ppPerStahl: ppS, ppPerBeton: ppB, stahlPrice: sP, betonPrice: bP, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB, defaultBonus: dB, startStahl: sS, startBeton: sB };
   const pph = totalPPH(facs);
+  const profitH = totalProfit(facs, allPrices, RECIPES);
 
   const code = encodeState(params, facs, theme);
 
@@ -446,39 +530,58 @@ export default function App() {
     return { sE: Math.min(ppS, sv), sM: sv < ppS ? "via Beton" : "direkt", bE: Math.min(ppB, bv), bM: bv < ppB ? "via Stahl" : "direkt" };
   })();
 
-  const nextActs = (() => {
+  const nextActs = useMemo(() => {
     if (pph <= 0 || !facs.length) return [];
     const a = [], seen = new Set();
     facs.forEach((f, i) => {
       if (f.level >= mxL) return;
-      const sig = f.bonus + ":" + f.level; if (seen.has(sig)) return; seen.add(sig);
+      const sig = f.item + ":" + f.bonus + ":" + f.level; if (seen.has(sig)) return; seen.add(sig);
       const stahl = upgStahl(f.level, uB), free = Math.min(sS, stahl), need = stahl - free;
       const { pp, method } = need > 0 ? effPP(need, "stahl", params) : { pp: 0, method: "Lager" };
-      const ppG = calcPPH(1, f.bonus);
-      a.push({ label: "F" + (i+1) + " L" + f.level + " -> " + (f.level+1), type: "upgrade", resType: "Stahl", resCost: stahl, free, ppCost: pp, method: free === stahl ? "Lager" : method, ppGain: ppG, hours: pp / pph, amortH: pp / (pph + ppG) });
+      
+      const gain = optMode === "profit" ? getProfit({ ...f, level: f.level+1 }, allPrices, RECIPES) - getProfit(f, allPrices, RECIPES) : calcPPH(1, f.bonus);
+      const fullPP = effPP(stahl, "stahl", params).pp;
+      
+      a.push({ label: "F" + (i+1) + " L" + f.level + " -> " + (f.level+1) + " (" + f.item + ")", type: "upgrade", resType: "Stahl", resCost: stahl, free, ppCost: fullPP, method: free === stahl ? "Lager" : method, ppGain: gain * 24, hours: pp / pph, amortH: gain > 0 ? pp / gain : Infinity });
     });
     if (facs.length < mxF) {
       const n = facs.length + 1, beton = facBeton(n, fB), free = Math.min(sB, beton), need = beton - free;
       const { pp, method } = need > 0 ? effPP(need, "beton", params) : { pp: 0, method: "Lager" };
-      const ppG = calcPPH(1, dB);
-      a.push({ label: "Neue Fabrik #" + n, type: "buy", resType: "Beton", resCost: beton, free, ppCost: pp, method: free === beton ? "Lager" : method, ppGain: ppG, hours: pp / pph, amortH: pp / (pph + ppG) });
+      const gain = optMode === "profit" ? getProfit({ level: 1, bonus: dB, item: "concrete" }, allPrices, RECIPES) : calcPPH(1, dB);
+      const fullPP = effPP(beton, "beton", params).pp;
+      a.push({ label: "Neue Fabrik #" + n, type: "buy", resType: "Beton", resCost: beton, free, ppCost: fullPP, method: free === beton ? "Lager" : method, ppGain: gain * 24, hours: pp / pph, amortH: gain > 0 ? pp / gain : Infinity });
     }
-    a.sort((x, y) => (x.ppGain / Math.max(x.ppCost, 0.001)) > (y.ppGain / Math.max(y.ppCost, 0.001)) ? -1 : 1);
+    const score = (x) => x.ppGain / Math.max(x.ppCost, 1);
+    a.sort((x, y) => score(y) - score(x));
+    
+    // Dijkstra Sync
+    if (res?.paths?.[tS]?.length) {
+      const opt = res.paths[tS][0];
+      a.forEach(x => {
+        // Match optimization step with heuristic act
+        const isUpgrade = x.type === "upgrade" && opt.type === "upgrade";
+        const isBuy = x.type === "buy" && opt.type === "buy";
+        if (isUpgrade && x.label.includes(opt.action.split(" (")[0])) x.isOpt = true;
+        if (isBuy && x.label === opt.action) x.isOpt = true;
+      });
+      // Move optimal to front
+      a.sort((x, y) => (x.isOpt ? -1 : y.isOpt ? 1 : 0));
+    }
     return a;
-  })();
+  }, [facs, params, pph, mxF, mxL, uB, fB, dB, sS, sB, res, tS, optMode, allPrices, C, F, effPP, GlassCard, Inp, Tip, Btn, Bdg, Sec, TH, TD]);
 
-  function compute() {
+  const compute = useCallback(() => {
     setBusy(true);
     setTimeout(() => {
-      const paths = {}, d = runDijkstra(facs, params, sS, sB);
+      const paths = {}, d = runDijkstra(facs, params, sS, sB, RECIPES, allPrices, optMode);
       paths.dijkstra = d.path;
-      for (const s of STRATS) { if (s.key !== "dijkstra") try { paths[s.key] = simulate(facs, params, s.key, sS, sB); } catch { paths[s.key] = []; } }
+      for (const s of STRATS) { if (s.key !== "dijkstra") try { paths[s.key] = simulate(facs, params, s.key, sS, sB, RECIPES, allPrices, optMode); } catch { paths[s.key] = []; } }
       const finals = {};
       for (const s of STRATS) { const p = paths[s.key]; finals[s.key] = p?.length ? p[p.length-1].time : null; }
       setRes({ paths, finals, ok: d.complete, iter: d.iter });
       setBusy(false);
     }, 50);
-  }
+  }, [facs, params, sS, sB, optMode, allPrices, STRATS]);
 
   const chart = res ? (() => {
     const rd = buildChart(res.paths, pph, actv);
@@ -525,10 +628,20 @@ export default function App() {
             </button>
           </Tip>
           <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 26, fontWeight: 700, color: C.accent, fontFamily: F.h, textShadow: "0 0 20px " + C.accentGlow }}>{pph.toFixed(1)} <span style={{ fontSize: 14, color: C.textDim }}>PP/h</span></div>
-            <div style={{ fontSize: 12, color: C.textDim }}>{(pph * 24).toFixed(0)} PP/Tag</div>
+            <div style={{ fontSize: 26, fontWeight: 700, color: C.accent, fontFamily: F.h, textShadow: "0 0 20px " + C.accentGlow }}>
+              {optMode === "profit" ? (profitH * 24).toFixed(1) : (pph * 24).toFixed(0)} 
+              <span style={{ fontSize: 14, color: C.textDim }}> {optMode === "profit" ? "$/Tag" : "PP/Tag"}</span>
+            </div>
+            <div style={{ fontSize: 12, color: C.textMuted }}>
+              {optMode === "profit" ? profitH.toFixed(2) + " $/h" : pph.toFixed(1) + " PP/h"}
+            </div>
           </div>
         </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+        <Btn on={optMode === "profit"} onClick={() => setOptMode("profit")}>Profit-Optimierung ($)</Btn>
+        <Btn on={optMode === "pp"} onClick={() => setOptMode("pp")}>Produktions-Optimierung (PP)</Btn>
       </div>
 
       {/* Import/Export Bar */}
@@ -613,18 +726,24 @@ export default function App() {
             {apiInfo && <span style={{ fontSize: 10, color: C.green, fontFamily: F.m }}>{apiInfo}</span>}
           </div>
           {!facs.length && <div style={{ padding: 24, textAlign: "center", color: C.textMuted }}>Keine Fabriken</div>}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(152px, 1fr))", gap: 8 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8 }}>
             {facs.map((f, i) => {
               const p = calcPPH(f.level, f.bonus);
+              const prof = getProfit(f, allPrices, RECIPES);
               return <div key={i} style={{ ...glass(0.04, 12), borderRadius: 10, padding: "10px 12px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                   <span style={{ fontFamily: F.h, fontSize: 13, fontWeight: 700, color: C.accent, textShadow: "0 0 8px " + C.accentGlow }}>{i+1}</span>
-                  {f.item && <span style={{ fontSize: 9, color: C.textMuted, fontFamily: F.h, letterSpacing: "0.04em" }}>{f.item}</span>}
-                  <span style={{ fontSize: 11, color: C.green, fontWeight: 600, textShadow: "0 0 8px " + C.greenGlow }}>{p.toFixed(1)}</span>
+                  <select value={f.item} onChange={e => updF(i, "item", e.target.value)}
+                    style={{ background: "none", border: "none", color: C.textDim, fontSize: 9, fontFamily: F.h, outline: "none", cursor: "pointer" }}>
+                    {Object.keys(RECIPES).map(k => <option key={k} value={k}>{k}</option>)}
+                  </select>
+                  <span style={{ fontSize: 11, color: C.green, fontWeight: 600, textShadow: "0 0 8px " + C.greenGlow }}>
+                    {optMode === "profit" ? prof.toFixed(1) + " $" : p.toFixed(1) + " PP"}
+                  </span>
                   <button onClick={() => rmF(i)} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 18, fontWeight: 700, padding: 0, opacity: 0.7, lineHeight: 1 }}>&times;</button>
                 </div>
                 {f.name && <div style={{ fontSize: 9, color: C.textMuted, marginBottom: 4, fontFamily: F.m, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</div>}
-                <div style={{ display: "flex", gap: 6 }}>
+                <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
                   <div style={{ flex: 1 }}>
                     <label style={{ fontSize: 9, color: C.textMuted, display: "block", marginBottom: 2, fontFamily: F.h, letterSpacing: "0.06em" }}>LVL</label>
                     <select value={f.level} onChange={e => updF(i, "level", +e.target.value)}
@@ -638,6 +757,11 @@ export default function App() {
                       style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 5, color: C.text, padding: "4px 6px", fontSize: 12, width: "100%", boxSizing: "border-box", fontFamily: F.m, outline: "none" }} />
                   </div>
                 </div>
+                {RECIPES[f.item]?.inputs && Object.keys(RECIPES[f.item].inputs).length > 0 && (
+                  <div style={{ fontSize: 8, color: C.textMuted, fontFamily: F.m }}>
+                    Input: {Object.entries(RECIPES[f.item].inputs).map(([k, v]) => `${v}x ${k}`).join(", ")}
+                  </div>
+                )}
               </div>;
             })}
           </div>
@@ -645,7 +769,7 @@ export default function App() {
       </div>
 
       {/* Next Actions */}
-      {nextActs.length > 0 && <GlassCard style={{ marginTop: 2 }}>
+      {res && nextActs.length > 0 && <GlassCard style={{ marginTop: 2 }}>
         <Sec icon="&#9654;">Naechste Aktionen</Sec>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -654,22 +778,22 @@ export default function App() {
               <th style={TH}>Res.</th>
               <th style={TH}><Tip text="Benoetigte Ressourcenmenge">Menge</Tip></th>
               <th style={TH}><Tip text="Vom Lager abgezogen (kostenlos)">Lager</Tip></th>
-              <th style={TH}><Tip text="Effektive PP-Kosten nach Lagerabzug und Markthandel">Eff. PP</Tip></th>
+              <th style={TH}><Tip text="Vollstaendige Ressourcenkosten in PP (Marktwert)">Kosten (PP)</Tip></th>
               <th style={TH}><Tip text="Beschaffungsweg: direkt, via Handel oder Lager">Weg</Tip></th>
               <th style={TH}><Tip text="Produktionszeit bei aktueller PP-Rate">Dauer</Tip></th>
-              <th style={TH}><Tip text="Produktionsgewinn pro Stunde">+PP/h</Tip></th>
+              <th style={TH}><Tip text={optMode === "profit" ? "Zusaetzlicher Profit pro Tag" : "Produktionsgewinn pro Tag"}>{optMode === "profit" ? "+$/Tag" : "+PP/Tag"}</Tip></th>
               <th style={TH}><Tip text="Zeit bis die Investition sich durch Mehrproduktion amortisiert">Amort.</Tip></th>
             </tr></thead>
             <tbody>{nextActs.map((a, i) => (
-              <tr key={i} style={{ background: i === 0 ? "rgba(240,180,41,0.06)" : i % 2 ? C.rowAlt : "transparent" }}>
-                <td style={TD(i === 0)}><Bdg color={a.type === "buy" ? C.blue : C.green}>{a.type === "buy" ? "NEU" : "UP"}</Bdg><span style={{ marginLeft: 8 }}>{a.label}</span></td>
+              <tr key={i} style={{ background: a.isOpt ? "rgba(240,180,41,0.12)" : i === 0 && !res ? "rgba(240,180,41,0.06)" : i % 2 ? C.rowAlt : "transparent", boxShadow: a.isOpt ? "inset 4px 0 0 " + C.accent : "none" }}>
+                <td style={TD(a.isOpt)}>{a.isOpt && <Bdg color={C.accent}>OPTIMAL</Bdg>}<Bdg color={a.type === "buy" ? C.blue : C.green} style={{ marginLeft: a.isOpt ? 6 : 0 }}>{a.type === "buy" ? "NEU" : "UP"}</Bdg><span style={{ marginLeft: 8 }}>{a.label}</span></td>
                 <td style={{ ...TD(false), color: a.resType === "Stahl" ? C.stahl : C.betonC }}>{a.resType}</td>
                 <td style={TD(false)}>{fmtN(a.resCost)}</td>
                 <td style={{ ...TD(false), color: a.free > 0 ? C.green : C.textMuted }}>{a.free > 0 ? "-" + fmtN(a.free) : "-"}</td>
                 <td style={TD(false)}>{fmtN(a.ppCost)}</td>
                 <td style={{ ...TD(false), fontSize: 10, color: a.method === "Lager" ? C.green : a.method === "direkt" ? C.textMuted : C.accent }}>{a.method}</td>
                 <td style={TD(false)}>{fmtT(a.hours)}</td>
-                <td style={{ ...TD(false), color: C.green }}>+{a.ppGain.toFixed(1)}</td>
+                <td style={{ ...TD(false), color: C.green }}>{optMode === "profit" ? a.ppGain.toFixed(2) + " $" : "+" + a.ppGain.toFixed(1)}</td>
                 <td style={TD(false)}>{fmtT(a.amortH)}</td>
               </tr>
             ))}</tbody>
