@@ -469,7 +469,7 @@ export default function App() {
   return (
     <div style={{
       background: T.bg,
-      color: C.text, minHeight: "100vh", fontFamily: F.m, padding: "28px 24px", maxWidth: 1260, margin: "0 auto",
+      color: C.text, minHeight: "100vh", fontFamily: F.m, padding: "28px 24px", margin: "0 auto",
       transition: "background 0.5s",
     }}>
       {/* BG glow orbs */}
@@ -502,8 +502,8 @@ export default function App() {
             </button>
           </Tip>
           <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 26, fontWeight: 700, color: C.accent, fontFamily: F.h, textShadow: "0 0 20px " + C.accentGlow }}>{pph.toFixed(1)} <span style={{ fontSize: 14, color: C.textDim }}>PP/h</span></div>
-            <div style={{ fontSize: 12, color: C.textDim }}>{(pph * 24).toFixed(0)} PP/Tag</div>
+            <div style={{ fontSize: 26, fontWeight: 700, color: C.accent, fontFamily: F.h, textShadow: "0 0 20px " + C.accentGlow }}>{(pph * 24).toFixed(1)} <span style={{ fontSize: 14, color: C.textDim }}>PP/d</span></div>
+            <div style={{ fontSize: 12, color: C.textDim }}>{pph.toFixed(1)} PP/h</div>
           </div>
         </div>
       </div>
@@ -538,7 +538,7 @@ export default function App() {
       </GlassCard>
 
       {/* Config Grid */}
-      <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 14 }}>
         <div>
           <GlassCard>
             <Sec icon="&#9881;">Spielregeln</Sec>
@@ -592,19 +592,19 @@ export default function App() {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(152px, 1fr))", gap: 8 }}>
             {facs.map((f, i) => {
               const p = calcPPH(f.level);
-              return <div key={i} style={{ ...glass(0.04, 12), borderRadius: 10, padding: "10px 12px" }}>
+              return <div key={i} style={{ ...glass(0.06, 12), borderRadius: 10, padding: "12px 14px", border: "1px solid rgba(255,255,255,0.12)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                  <span style={{ fontFamily: F.h, fontSize: 13, fontWeight: 700, color: C.accent, textShadow: "0 0 8px " + C.accentGlow }}>{i+1}</span>
-                  {f.item && <span style={{ fontSize: 9, color: C.textMuted, fontFamily: F.h, letterSpacing: "0.04em" }}>{f.item}</span>}
-                  <span style={{ fontSize: 11, color: C.green, fontWeight: 600, textShadow: "0 0 8px " + C.greenGlow }}>{p.toFixed(1)}</span>
-                  <button onClick={() => rmF(i)} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 18, fontWeight: 700, padding: 0, opacity: 0.7, lineHeight: 1 }}>&times;</button>
+                  <span style={{ fontFamily: F.h, fontSize: 14, fontWeight: 700, color: C.accent, textShadow: "0 0 8px " + C.accentGlow }}>{i+1}</span>
+                  {f.item && <span style={{ fontSize: 10, color: C.text, fontWeight: 600, fontFamily: F.h, letterSpacing: "0.04em" }}>{f.item}</span>}
+                  <span style={{ fontSize: 13, color: C.green, fontWeight: 700, textShadow: "0 0 8px " + C.greenGlow }}>{(p * 24).toFixed(1)}</span>
+                  <button onClick={() => rmF(i)} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 20, fontWeight: 700, padding: 0, opacity: 0.9, lineHeight: 1 }}>&times;</button>
                 </div>
-                {f.name && <div style={{ fontSize: 9, color: C.textMuted, marginBottom: 4, fontFamily: F.m, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</div>}
+                {f.name && <div style={{ fontSize: 11, color: C.textDim, marginBottom: 6, fontFamily: F.m, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 500 }}>{f.name}</div>}
                 <div style={{ display: "flex", gap: 6 }}>
                   <div style={{ flex: 1 }}>
-                    <label style={{ fontSize: 9, color: C.textMuted, display: "block", marginBottom: 2, fontFamily: F.h, letterSpacing: "0.06em" }}>LVL</label>
+                    <label style={{ fontSize: 10, color: C.textDim, display: "block", marginBottom: 2, fontFamily: F.h, letterSpacing: "0.06em", fontWeight: 600 }}>LVL</label>
                     <select value={f.level} onChange={e => updF(i, "level", +e.target.value)}
-                      style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 5, color: C.text, padding: "4px 6px", fontSize: 12, width: "100%", fontFamily: F.m, outline: "none" }}>
+                      style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 5, color: C.text, padding: "5px 8px", fontSize: 13, width: "100%", fontFamily: F.m, outline: "none" }}>
                       {Array.from({ length: mxL }, (_, l) => l+1).map(l => <option key={l} value={l}>{l}</option>)}
                     </select>
                   </div>
@@ -628,7 +628,7 @@ export default function App() {
               <th style={TH}><Tip text="Effektive PP-Kosten nach Lagerabzug und Markthandel">Eff. PP</Tip></th>
               <th style={TH}><Tip text="Beschaffungsweg: direkt, via Handel oder Lager">Weg</Tip></th>
               <th style={TH}><Tip text="Produktionszeit bei aktueller PP-Rate">Dauer</Tip></th>
-              <th style={TH}><Tip text="Produktionsgewinn pro Stunde">+PP/h</Tip></th>
+              <th style={TH}><Tip text="Produktionsgewinn pro Tag">+PP/d</Tip></th>
               <th style={TH}><Tip text="Zeitpunkt des Erreichens">Zeitpunkt</Tip></th>
             </tr></thead>
             <tbody>{displayActs.map((a, i) => (
@@ -640,7 +640,7 @@ export default function App() {
                 <td style={TD(false)}>{fmtN(a.ppCost)}</td>
                 <td style={{ ...TD(false), fontSize: 10, color: a.method === "Lager" ? C.green : a.method === "direkt" ? C.textMuted : C.accent }}>{a.method}</td>
                 <td style={TD(false)}>{fmtT(a.dt)}</td>
-                <td style={{ ...TD(false), color: C.green }}>+{a.ppGain.toFixed(1)}</td>
+                <td style={{ ...TD(false), color: C.green }}>+{(a.ppGain * 24).toFixed(1)}</td>
                 <td style={TD(false)}>{fmtT(a.time)}</td>
               </tr>
             ))}</tbody>
@@ -684,7 +684,7 @@ export default function App() {
           <Tip text="Produktionsrate ueber Zeit (Treppenkurve)"><Btn on={tab === "chart"} onClick={() => setTab("chart")}>Kurve</Btn></Tip>
           <Tip text="Schritt-fuer-Schritt Bau-Reihenfolge"><Btn on={tab === "table"} onClick={() => setTab("table")}>Reihenfolge</Btn></Tip>
           {tab === "chart" && <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-            <Tip text="Produktionsrate pro Stunde"><Btn on={cM === "rate"} color={C.textDim} onClick={() => setCM("rate")}>PP/h</Btn></Tip>
+            <Tip text="Produktionsrate pro Tag"><Btn on={cM === "rate"} color={C.textDim} onClick={() => setCM("rate")}>PP/d</Btn></Tip>
             <Tip text="Kumulierte Gesamtproduktion"><Btn on={cM === "cum"} color={C.textDim} onClick={() => setCM("cum")}>Kumulativ</Btn></Tip>
           </div>}
         </div>
@@ -701,11 +701,11 @@ export default function App() {
                 label={{ value: "Zeit", position: "insideBottom", offset: -16, fill: C.textMuted, fontSize: 11, fontFamily: F.h }}
                 tickFormatter={v => v >= 48 ? (v/24).toFixed(0) + "d" : Math.round(v) + "h"} />
               <YAxis stroke={C.textMuted} tick={{ fontSize: 10, fill: C.textMuted, fontFamily: F.m }}
-                label={{ value: cM === "rate" ? "PP/h" : "Gesamt PP", angle: -90, position: "insideLeft", offset: 8, fill: C.textMuted, fontSize: 11, fontFamily: F.h }}
+                label={{ value: cM === "rate" ? "PP/d" : "Gesamt PP", angle: -90, position: "insideLeft", offset: 8, fill: C.textMuted, fontSize: 11, fontFamily: F.h }}
                 tickFormatter={v => fmtN(v)} />
               <Tooltip contentStyle={{ ...glass(0.12, 20), borderRadius: 10, fontSize: 12, color: C.text, fontFamily: F.m }}
                 labelFormatter={v => Math.round(v) + "h (Tag " + (v/24).toFixed(1) + ")"}
-                formatter={(v, n) => [cM === "rate" ? v + " PP/h" : fmtN(v) + " PP", n]} />
+                formatter={(v, n) => [cM === "rate" ? (v * 24).toFixed(1) + " PP/d" : fmtN(v) + " PP", n]} />
               {STRATS.filter(s => actv.includes(s.key)).map(s =>
                 <Area key={s.key} type="stepAfter" dataKey={s.key} name={s.label} stroke={s.color} strokeWidth={2.5} fill={"url(#g_" + s.key + ")"} dot={false} connectNulls />
               )}
@@ -720,7 +720,7 @@ export default function App() {
           </div>
           <div style={{ maxHeight: 520, overflowY: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead><tr>{["#", "Aktion", "Res.", "Menge", "Lager", "Weg", "PP", "Dauer", "Gesamt", "PP/h", "+PP/h"].map(h => <th key={h} style={TH}>{h}</th>)}</tr></thead>
+              <thead><tr>{["#", "Aktion", "Res.", "Menge", "Lager", "Weg", "PP", "Dauer", "Gesamt", "PP/d", "+PP/d"].map(h => <th key={h} style={TH}>{h}</th>)}</tr></thead>
               <tbody>
                 {curPath.map((s, i) => <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
                   <td style={TD(false)}>{i+1}</td>
@@ -732,8 +732,8 @@ export default function App() {
                   <td style={TD(false)}>{fmtN(s.ppCost)}</td>
                   <td style={TD(false)}>{fmtT(s.dt)}</td>
                   <td style={TD(true)}>{fmtT(s.time)}</td>
-                  <td style={{ ...TD(false), color: C.green }}>{s.pph.toFixed(1)}</td>
-                  <td style={{ ...TD(false), color: C.green }}>+{s.ppGain.toFixed(1)}</td>
+                  <td style={{ ...TD(false), color: C.green }}>{(s.pph * 24).toFixed(1)}</td>
+                  <td style={{ ...TD(false), color: C.green }}>+{(s.ppGain * 24).toFixed(1)}</td>
                 </tr>)}
                 {!curPath.length && <tr><td colSpan={11} style={{ padding: 24, textAlign: "center", color: C.textMuted }}>Kein Pfad / Max erreicht</td></tr>}
               </tbody>
