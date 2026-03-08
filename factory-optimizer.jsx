@@ -95,8 +95,8 @@ function getStrats() {
 function encodeState(params, facs, theme) {
   const p = [params.ppPerStahl, params.ppPerBeton, params.stahlPrice, params.betonPrice,
     params.maxFactories, params.maxLevel, params.upgradeBase, params.factoryBase,
-    params.defaultBonus, params.startStahl, params.startBeton].join(",");
-  const f = facs.map(x => x.level + "." + x.bonus).join(",");
+    params.startStahl, params.startBeton].join(",");
+  const f = facs.map(x => x.level).join(",");
   try { return btoa(p + "|" + f + "|" + theme); } catch { return ""; }
 }
 
@@ -107,13 +107,13 @@ function decodeState(str) {
     const pStr = parts[0], fStr = parts[1], thm = parts[2] || "grau";
     const p = pStr.split(",").map(Number);
     const facs = fStr.split(",").map(s => {
-      const [l, b] = s.split(".").map(Number);
-      return { level: l, bonus: b };
+      const l = Number(s);
+      return { level: l };
     });
     return {
       params: { ppPerStahl: p[0], ppPerBeton: p[1], stahlPrice: p[2], betonPrice: p[3],
         maxFactories: p[4], maxLevel: p[5], upgradeBase: p[6], factoryBase: p[7],
-        defaultBonus: p[8], startStahl: p[9], startBeton: p[10] },
+        startStahl: p[8], startBeton: p[9] },
       facs, theme: thm === "pink" ? "pink" : "grau"
     };
   } catch { return null; }
@@ -122,8 +122,8 @@ function decodeState(str) {
 // ── Game Logic ──
 const upgStahl = (lvl, base) => base * Math.pow(2, lvl - 1);
 const facBeton = (n, base) => n * base;
-function calcPPH(level, bonus) { return level * (1 + bonus / 100); }
-function totalPPH(fs) { return fs.reduce((s, f) => s + calcPPH(f.level, f.bonus), 0); }
+function calcPPH(level) { return level; }
+function totalPPH(fs) { return fs.reduce((s, f) => s + calcPPH(f.level), 0); }
 
 function effPP(amount, resType, p) {
   if (resType === "stahl") {
@@ -143,13 +143,13 @@ class Heap {
   get size() { return this.d.length; }
 }
 
-function facKey(fs) { return fs.map(f => f.bonus + ":" + f.level).sort().join("|"); }
+function facKey(fs) { return fs.map(f => f.level).sort().join("|"); }
 
 function runDijkstra(startFacs, params, sStahl, sBeton) {
-  const { maxFactories, maxLevel, upgradeBase, factoryBase, defaultBonus } = params;
+  const { maxFactories, maxLevel, upgradeBase, factoryBase } = params;
   const heap = new Heap(), visited = new Set();
-  const gp = []; for (const f of startFacs) gp.push(f.bonus + ":" + maxLevel);
-  for (let i = startFacs.length; i < maxFactories; i++) gp.push(defaultBonus + ":" + maxLevel);
+  const gp = []; for (const f of startFacs) gp.push(maxLevel);
+  for (let i = startFacs.length; i < maxFactories; i++) gp.push(maxLevel);
   const gk = gp.sort().join("|");
   if (facKey(startFacs) === gk) return { path: [], complete: true, iter: 0 };
 
@@ -168,8 +168,6 @@ function runDijkstra(startFacs, params, sStahl, sBeton) {
 
     for (let i = 0; i < facs.length; i++) {
       if (facs[i].level >= maxLevel) continue;
-      const sig = facs[i].bonus + ":" + facs[i].level;
-      if (seen.has(sig)) continue; seen.add(sig);
       const lvl = facs[i].level, stahl = upgStahl(lvl, upgradeBase);
       const free = Math.min(rs, stahl), need = stahl - free;
       const { pp, method } = need > 0 ? effPP(need, "stahl", params) : { pp: 0, method: "Lager" };
@@ -178,10 +176,10 @@ function runDijkstra(startFacs, params, sStahl, sBeton) {
       const nrs = rs - free, nk = sk(nf, nrs, rb);
       if (!visited.has(nk)) {
         heap.push(time + dt, { facs: nf, rs: nrs, rb, path: [...path, {
-          action: "Upgrade L" + lvl + " -> L" + (lvl+1) + " (" + facs[i].bonus + "%)",
+          action: "Upgrade L" + lvl + " -> L" + (lvl+1),
           type: "upgrade", resType: "stahl", resCost: stahl, freeRes: free,
           method: free === stahl ? "Lager" : method, ppCost: pp,
-          ppGain: calcPPH(1, facs[i].bonus), dt, time: time + dt, pph: totalPPH(nf),
+          ppGain: calcPPH(1), dt, time: time + dt, pph: totalPPH(nf),
         }]});
       }
     }
@@ -190,13 +188,13 @@ function runDijkstra(startFacs, params, sStahl, sBeton) {
       const free = Math.min(rb, beton), need = beton - free;
       const { pp, method } = need > 0 ? effPP(need, "beton", params) : { pp: 0, method: "Lager" };
       const dt = pph > 0 ? pp / pph : Infinity;
-      const nf = [...facs.map(f => ({ ...f })), { level: 1, bonus: defaultBonus }];
+      const nf = [...facs.map(f => ({ ...f })), { level: 1 }];
       const nrb = rb - free, nk = sk(nf, rs, nrb);
       if (!visited.has(nk)) {
         heap.push(time + dt, { facs: nf, rs, rb: nrb, path: [...path, {
           action: "Neue Fabrik #" + n, type: "buy", resType: "beton", resCost: beton,
           freeRes: free, method: free === beton ? "Lager" : method, ppCost: pp,
-          ppGain: calcPPH(1, defaultBonus), dt, time: time + dt, pph: totalPPH(nf),
+          ppGain: calcPPH(1), dt, time: time + dt, pph: totalPPH(nf),
         }]});
       }
     }
@@ -205,7 +203,7 @@ function runDijkstra(startFacs, params, sStahl, sBeton) {
 }
 
 function simulate(facs, params, strategy, sStahl, sBeton) {
-  const { maxFactories, maxLevel, upgradeBase, factoryBase, defaultBonus } = params;
+  const { maxFactories, maxLevel, upgradeBase, factoryBase } = params;
   let st = facs.map(f => ({ ...f })), t = 0, rs = sStahl, rb = sBeton;
   const path = []; let safe = 0;
   while (safe < 300) {
@@ -215,18 +213,18 @@ function simulate(facs, params, strategy, sStahl, sBeton) {
     const acts = [], seen = new Set();
     st.forEach((f, i) => {
       if (f.level >= maxLevel) return;
-      const sig = f.bonus + ":" + f.level; if (seen.has(sig)) return; seen.add(sig);
       const stahl = upgStahl(f.level, upgradeBase), free = Math.min(rs, stahl), need = stahl - free;
       const { pp, method } = need > 0 ? effPP(need, "stahl", params) : { pp: 0, method: "Lager" };
+      const ppG = calcPPH(1);
       acts.push({ type: "upgrade", idx: i, resCost: stahl, resType: "stahl", freeRes: free,
-        method: free === stahl ? "Lager" : method, ppCost: pp, ppGain: calcPPH(1, f.bonus),
-        dt: pp / pph, label: "Upgrade L" + f.level + " -> L" + (f.level+1) + " (" + f.bonus + "%)" });
+        method: free === stahl ? "Lager" : method, ppCost: pp, ppGain: ppG,
+        dt: pp / pph, label: "Upgrade L" + f.level + " -> L" + (f.level+1) });
     });
     if (st.length < maxFactories) {
       const n = st.length + 1, beton = facBeton(n, factoryBase), free = Math.min(rb, beton), need = beton - free;
       const { pp, method } = need > 0 ? effPP(need, "beton", params) : { pp: 0, method: "Lager" };
       acts.push({ type: "buy", resCost: beton, resType: "beton", freeRes: free,
-        method: free === beton ? "Lager" : method, ppCost: pp, ppGain: calcPPH(1, defaultBonus),
+        method: free === beton ? "Lager" : method, ppCost: pp, ppGain: calcPPH(1),
         dt: pp / pph, label: "Neue Fabrik #" + n });
     }
     if (!acts.length) break;
@@ -236,7 +234,7 @@ function simulate(facs, params, strategy, sStahl, sBeton) {
     else { const b = acts.filter(a => a.type === "buy"); pick = b.length ? b[0] : acts.sort((a,b) => a.ppCost - b.ppCost)[0]; }
     t += pick.dt;
     if (pick.type === "upgrade") { rs -= pick.freeRes; st = st.map((f, j) => j === pick.idx ? { ...f, level: f.level + 1 } : f); }
-    else { rb -= pick.freeRes; st = [...st, { level: 1, bonus: defaultBonus }]; }
+    else { rb -= pick.freeRes; st = [...st, { level: 1 }]; }
     path.push({ action: pick.label, type: pick.type, resType: pick.resType, resCost: pick.resCost,
       freeRes: pick.freeRes, method: pick.method, ppCost: pick.ppCost, ppGain: pick.ppGain,
       dt: pick.dt, time: t, pph: totalPPH(st) });
@@ -317,10 +315,9 @@ export default function App() {
   const [mxL, setMxL] = useState(7);
   const [uB, setUB] = useState(20);
   const [fB, setFB] = useState(50);
-  const [dB, setDB] = useState(50);
   const [sS, setSS] = useState(0);
   const [sB, setSB] = useState(0);
-  const [facs, setFacs] = useState([{ level: 1, bonus: 50 }]);
+  const [facs, setFacs] = useState([{ level: 1 }]);
   const [actv, setActv] = useState(["dijkstra", "cheapest"]);
   const [tab, setTab] = useState("chart");
   const [cM, setCM] = useState("rate");
@@ -387,7 +384,6 @@ export default function App() {
         const aeLevel = comp.activeUpgradeLevels?.automatedEngine || 1;
         newFacs.push({
           level: aeLevel,
-          bonus: dB,
           name: comp.name || ("Fabrik " + (newFacs.length + 1)),
           item: comp.itemCode || "?",
         });
@@ -410,10 +406,10 @@ export default function App() {
   }
 
   const updF = useCallback((i, k, v) => setFacs(p => p.map((f, j) => j === i ? { ...f, [k]: v } : f)), []);
-  const addF = useCallback(() => setFacs(p => [...p, { level: 1, bonus: dB }]), [dB]);
+  const addF = useCallback(() => setFacs(p => [...p, { level: 1 }]), []);
   const rmF = useCallback(i => setFacs(p => p.filter((_, j) => j !== i)), []);
 
-  const params = { ppPerStahl: ppS, ppPerBeton: ppB, stahlPrice: sP, betonPrice: bP, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB, defaultBonus: dB, startStahl: sS, startBeton: sB };
+  const params = { ppPerStahl: ppS, ppPerBeton: ppB, stahlPrice: sP, betonPrice: bP, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB, startStahl: sS, startBeton: sB };
   const pph = totalPPH(facs);
 
   const code = encodeState(params, facs, theme);
@@ -424,7 +420,7 @@ export default function App() {
     const p = d.params;
     setPpS(p.ppPerStahl); setPpB(p.ppPerBeton); setSP(p.stahlPrice); setBP(p.betonPrice);
     setMxF(p.maxFactories); setMxL(p.maxLevel); setUB(p.upgradeBase); setFB(p.factoryBase);
-    setDB(p.defaultBonus); setSS(p.startStahl); setSB(p.startBeton);
+    setSS(p.startStahl); setSB(p.startBeton);
     setFacs(d.facs);
     if (d.theme) setTheme(d.theme);
     setShowImp(false); setImpStr(""); setRes(null);
@@ -553,7 +549,6 @@ export default function App() {
               <Inp label="Fabrik-Basis" value={fB} onChange={setFB} suffix="Beton" tip="Fabrik #N kostet N x Basis Beton" />
               <Inp label="PP / Stahl" value={ppS} onChange={setPpS} tip="Produktionspunkte um 1 Stahl herzustellen" />
               <Inp label="PP / Beton" value={ppB} onChange={setPpB} tip="Produktionspunkte um 1 Beton herzustellen" />
-              <Inp label="Std-Bonus" value={dB} onChange={setDB} suffix="%" tip="Produktionsbonus neuer Fabriken" />
             </div>
           </GlassCard>
           <GlassCard>
@@ -596,7 +591,7 @@ export default function App() {
           {!facs.length && <div style={{ padding: 24, textAlign: "center", color: C.textMuted }}>Keine Fabriken</div>}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(152px, 1fr))", gap: 8 }}>
             {facs.map((f, i) => {
-              const p = calcPPH(f.level, f.bonus);
+              const p = calcPPH(f.level);
               return <div key={i} style={{ ...glass(0.04, 12), borderRadius: 10, padding: "10px 12px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                   <span style={{ fontFamily: F.h, fontSize: 13, fontWeight: 700, color: C.accent, textShadow: "0 0 8px " + C.accentGlow }}>{i+1}</span>
@@ -612,11 +607,6 @@ export default function App() {
                       style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 5, color: C.text, padding: "4px 6px", fontSize: 12, width: "100%", fontFamily: F.m, outline: "none" }}>
                       {Array.from({ length: mxL }, (_, l) => l+1).map(l => <option key={l} value={l}>{l}</option>)}
                     </select>
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <label style={{ fontSize: 9, color: C.textMuted, display: "block", marginBottom: 2, fontFamily: F.h, letterSpacing: "0.06em" }}>BONUS</label>
-                    <input type="number" step={1} value={f.bonus} onChange={e => updF(i, "bonus", +e.target.value)}
-                      style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 5, color: C.text, padding: "4px 6px", fontSize: 12, width: "100%", boxSizing: "border-box", fontFamily: F.m, outline: "none" }} />
                   </div>
                 </div>
               </div>;
