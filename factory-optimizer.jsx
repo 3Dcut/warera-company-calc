@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useMemo, createContext, useContext } from "react";
+import { useState, useCallback, useRef } from "react";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
 /* ═══════════════════════════════════════════════════════
@@ -11,6 +11,8 @@ const fl = document.createElement("link");
 fl.rel = "stylesheet";
 fl.href = "https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Source+Code+Pro:wght@400;500;600;700&family=Quicksand:wght@400;500;600;700&display=swap";
 document.head.appendChild(fl);
+
+let F = { h: "'Rajdhani', sans-serif", m: "'Source Code Pro', monospace" };
 
 const THEMES = {
   grau: {
@@ -47,6 +49,8 @@ const THEMES = {
   },
 };
 
+let C = THEMES.grau.C;
+
 // Tooltip CSS injection
 const styleEl = document.createElement("style");
 styleEl.textContent = `
@@ -78,8 +82,7 @@ const glass = (opacity = 0.06, blur = 16) => ({
   boxShadow: "0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)",
 });
 
-
-function getStrats(C) {
+function getStrats() {
   return [
     { key: "dijkstra", label: "Optimal (Dijkstra)", color: C.accent, glow: C.accentGlow, tip: "Durchsucht alle moeglichen Pfade und findet den nachweislich schnellsten" },
     { key: "cheapest", label: "Billigstes zuerst", color: C.green, glow: C.greenGlow, tip: "Nimmt immer die billigste naechste Aktion" },
@@ -90,9 +93,9 @@ function getStrats(C) {
 
 // ── Encode / Decode ──
 function encodeState(params, facs, theme) {
-  const p = [params.ppPerStahl, params.ppPerBeton,
+  const p = [params.ppPerStahl, params.ppPerBeton, params.stahlPrice, params.betonPrice,
     params.maxFactories, params.maxLevel, params.upgradeBase, params.factoryBase,
-    params.defaultBonus].join(",");
+    params.defaultBonus, params.startStahl, params.startBeton].join(",");
   const f = facs.map(x => x.level + "." + x.bonus).join(",");
   try { return btoa(p + "|" + f + "|" + theme); } catch { return ""; }
 }
@@ -108,9 +111,9 @@ function decodeState(str) {
       return { level: l, bonus: b };
     });
     return {
-      params: { ppPerStahl: p[0], ppPerBeton: p[1],
-        maxFactories: p[2], maxLevel: p[3], upgradeBase: p[4], factoryBase: p[5],
-        defaultBonus: p[6] },
+      params: { ppPerStahl: p[0], ppPerBeton: p[1], stahlPrice: p[2], betonPrice: p[3],
+        maxFactories: p[4], maxLevel: p[5], upgradeBase: p[6], factoryBase: p[7],
+        defaultBonus: p[8], startStahl: p[9], startBeton: p[10] },
       facs, theme: thm === "pink" ? "pink" : "grau"
     };
   } catch { return null; }
@@ -122,6 +125,16 @@ const facBeton = (n, base) => n * base;
 function calcPPH(level, bonus) { return level * (1 + bonus / 100); }
 function totalPPH(fs) { return fs.reduce((s, f) => s + calcPPH(f.level, f.bonus), 0); }
 
+function effPP(amount, resType, p) {
+  if (resType === "stahl") {
+    const d = amount * p.ppPerStahl;
+    const v = p.betonPrice > 0 ? amount * (p.stahlPrice / p.betonPrice) * p.ppPerBeton : Infinity;
+    return v < d ? { pp: v, method: "via Beton" } : { pp: d, method: "direkt" };
+  }
+  const d = amount * p.ppPerBeton;
+  const v = p.stahlPrice > 0 ? amount * (p.betonPrice / p.stahlPrice) * p.ppPerStahl : Infinity;
+  return v < d ? { pp: v, method: "via Stahl" } : { pp: d, method: "direkt" };
+}
 
 class Heap {
   constructor() { this.d = []; }
@@ -132,118 +145,68 @@ class Heap {
 
 function facKey(fs) { return fs.map(f => f.bonus + ":" + f.level).sort().join("|"); }
 
-function estimateStateSpace(startFacs, params) {
-  const { maxFactories, maxLevel, defaultBonus } = params;
-  const groups = new Map();
-  for (const f of startFacs) {
-    const g = groups.get(f.bonus) || { n: 0, minLevel: maxLevel };
-    g.n++; g.minLevel = Math.min(g.minLevel, f.level);
-    groups.set(f.bonus, g);
-  }
-  const newCount = maxFactories - startFacs.length;
-  if (newCount > 0) {
-    const g = groups.get(defaultBonus) || { n: 0, minLevel: maxLevel };
-    g.n += newCount; g.minLevel = Math.min(g.minLevel, 1);
-    groups.set(defaultBonus, g);
-  }
-  let est = 1;
-  for (const g of groups.values()) {
-    const range = maxLevel - g.minLevel;
-    if (range <= 0) continue;
-    let c = 1;
-    for (let i = 0; i < g.n; i++) c = c * (range + i + 1) / (i + 1);
-    est *= c;
-    if (est > 1e7) return est;
-  }
-  return est;
-}
-
-function runDijkstra(startFacs, params, upperBound = Infinity, maxIter = 500000) {
-  const { maxFactories, maxLevel, upgradeBase, factoryBase, defaultBonus, ppPerStahl, ppPerBeton } = params;
-
-  // Skip if state space is too large to search in reasonable time
-  if (estimateStateSpace(startFacs, params) > 200000) {
-    return { path: [], complete: false, iter: 0, tooComplex: true };
-  }
-
-  // A* heuristic: remaining PP cost / max possible PPH (admissible + consistent)
-  const goalPPH = startFacs.reduce((s, f) => s + calcPPH(maxLevel, f.bonus), 0)
-    + (maxFactories - startFacs.length) * calcPPH(maxLevel, defaultBonus);
-  function heuristic(facs) {
-    if (goalPPH <= 0) return 0;
-    let rem = 0;
-    for (const f of facs) for (let lvl = f.level; lvl < maxLevel; lvl++) rem += upgStahl(lvl, upgradeBase) * ppPerStahl;
-    for (let n = facs.length + 1; n <= maxFactories; n++) {
-      rem += facBeton(n, factoryBase) * ppPerBeton;
-      for (let lvl = 1; lvl < maxLevel; lvl++) rem += upgStahl(lvl, upgradeBase) * ppPerStahl;
-    }
-    return rem / goalPPH;
-  }
-
+function runDijkstra(startFacs, params, sStahl, sBeton) {
+  const { maxFactories, maxLevel, upgradeBase, factoryBase, defaultBonus } = params;
   const heap = new Heap(), visited = new Set();
   const gp = []; for (const f of startFacs) gp.push(f.bonus + ":" + maxLevel);
   for (let i = startFacs.length; i < maxFactories; i++) gp.push(defaultBonus + ":" + maxLevel);
   const gk = gp.sort().join("|");
   if (facKey(startFacs) === gk) return { path: [], complete: true, iter: 0 };
 
-  heap.push(heuristic(startFacs), { facs: startFacs.map(f => ({ ...f })), g: 0, step: null, parent: null });
+  const sk = (fs, rs, rb) => facKey(fs) + ";" + rs + ";" + rb;
+  heap.push(0, { facs: startFacs.map(f => ({ ...f })), path: [], rs: sStahl, rb: sBeton });
   let iter = 0;
 
-  while (heap.size > 0 && iter < maxIter) {
+  while (heap.size > 0 && iter < 500000) {
     iter++;
-    const { v: node } = heap.pop();
-    const { facs, g: time } = node;
-    if (time > upperBound) continue;
-    const key = facKey(facs);
+    const { p: time, v: { facs, path, rs, rb } } = heap.pop();
+    const key = sk(facs, rs, rb);
     if (visited.has(key)) continue; visited.add(key);
-    if (key === gk) {
-      const path = [];
-      let n = node;
-      while (n.step) { path.unshift(n.step); n = n.parent; }
-      return { path, complete: true, iter };
-    }
-
-    const pph = totalPPH(facs);
-    if (pph <= 0) continue;
-
+    if (facKey(facs) === gk) return { path, complete: true, iter };
+    const pph = totalPPH(facs); if (pph <= 0) continue;
     const seen = new Set();
+
     for (let i = 0; i < facs.length; i++) {
       if (facs[i].level >= maxLevel) continue;
       const sig = facs[i].bonus + ":" + facs[i].level;
       if (seen.has(sig)) continue; seen.add(sig);
-      const lvl = facs[i].level;
-      const pp = upgStahl(lvl, upgradeBase) * ppPerStahl;
+      const lvl = facs[i].level, stahl = upgStahl(lvl, upgradeBase);
+      const free = Math.min(rs, stahl), need = stahl - free;
+      const { pp, method } = need > 0 ? effPP(need, "stahl", params) : { pp: 0, method: "Lager" };
       const dt = pp / pph;
-      const ng = time + dt;
       const nf = facs.map((f, j) => j === i ? { ...f, level: f.level + 1 } : { ...f });
-      if (!visited.has(facKey(nf))) {
-        heap.push(ng + heuristic(nf), { facs: nf, g: ng, parent: node, step: {
-          action: "Upgrade L" + lvl + " -> L" + (lvl+1) + " (Bonus " + facs[i].bonus + "%)",
-          type: "upgrade", resCost: upgStahl(lvl, upgradeBase), ppCost: pp,
-          ppGain: calcPPH(1, facs[i].bonus), dt, time: ng, pph: totalPPH(nf),
-        }});
+      const nrs = rs - free, nk = sk(nf, nrs, rb);
+      if (!visited.has(nk)) {
+        heap.push(time + dt, { facs: nf, rs: nrs, rb, path: [...path, {
+          action: "Upgrade L" + lvl + " -> L" + (lvl+1) + " (" + facs[i].bonus + "%)",
+          type: "upgrade", resType: "stahl", resCost: stahl, freeRes: free,
+          method: free === stahl ? "Lager" : method, ppCost: pp,
+          ppGain: calcPPH(1, facs[i].bonus), dt, time: time + dt, pph: totalPPH(nf),
+        }]});
       }
     }
     if (facs.length < maxFactories) {
-      const n = facs.length + 1;
-      const pp = facBeton(n, factoryBase) * ppPerBeton;
-      const dt = pp / pph;
-      const ng = time + dt;
+      const n = facs.length + 1, beton = facBeton(n, factoryBase);
+      const free = Math.min(rb, beton), need = beton - free;
+      const { pp, method } = need > 0 ? effPP(need, "beton", params) : { pp: 0, method: "Lager" };
+      const dt = pph > 0 ? pp / pph : Infinity;
       const nf = [...facs.map(f => ({ ...f })), { level: 1, bonus: defaultBonus }];
-      if (!visited.has(facKey(nf))) {
-        heap.push(ng + heuristic(nf), { facs: nf, g: ng, parent: node, step: {
-          action: "Neue Fabrik #" + n, type: "buy", resCost: facBeton(n, factoryBase), ppCost: pp,
-          ppGain: calcPPH(1, defaultBonus), dt, time: ng, pph: totalPPH(nf),
-        }});
+      const nrb = rb - free, nk = sk(nf, rs, nrb);
+      if (!visited.has(nk)) {
+        heap.push(time + dt, { facs: nf, rs, rb: nrb, path: [...path, {
+          action: "Neue Fabrik #" + n, type: "buy", resType: "beton", resCost: beton,
+          freeRes: free, method: free === beton ? "Lager" : method, ppCost: pp,
+          ppGain: calcPPH(1, defaultBonus), dt, time: time + dt, pph: totalPPH(nf),
+        }]});
       }
     }
   }
   return { path: [], complete: false, iter };
 }
 
-function simulate(facs, params, strategy) {
-  const { maxFactories, maxLevel, upgradeBase, factoryBase, defaultBonus, ppPerStahl, ppPerBeton } = params;
-  let st = facs.map(f => ({ ...f })), t = 0;
+function simulate(facs, params, strategy, sStahl, sBeton) {
+  const { maxFactories, maxLevel, upgradeBase, factoryBase, defaultBonus } = params;
+  let st = facs.map(f => ({ ...f })), t = 0, rs = sStahl, rb = sBeton;
   const path = []; let safe = 0;
   while (safe < 300) {
     safe++;
@@ -253,29 +216,30 @@ function simulate(facs, params, strategy) {
     st.forEach((f, i) => {
       if (f.level >= maxLevel) return;
       const sig = f.bonus + ":" + f.level; if (seen.has(sig)) return; seen.add(sig);
-      const lvl = f.level;
-      const pp = upgStahl(lvl, upgradeBase) * ppPerStahl;
-      acts.push({ type: "upgrade", idx: i, resCost: upgStahl(lvl, upgradeBase), ppCost: pp,
-        ppGain: calcPPH(1, f.bonus), dt: pp / pph,
-        label: "Upgrade L" + lvl + " -> L" + (lvl+1) + " (Bonus " + f.bonus + "%)" });
+      const stahl = upgStahl(f.level, upgradeBase), free = Math.min(rs, stahl), need = stahl - free;
+      const { pp, method } = need > 0 ? effPP(need, "stahl", params) : { pp: 0, method: "Lager" };
+      acts.push({ type: "upgrade", idx: i, resCost: stahl, resType: "stahl", freeRes: free,
+        method: free === stahl ? "Lager" : method, ppCost: pp, ppGain: calcPPH(1, f.bonus),
+        dt: pp / pph, label: "Upgrade L" + f.level + " -> L" + (f.level+1) + " (" + f.bonus + "%)" });
     });
     if (st.length < maxFactories) {
-      const n = st.length + 1;
-      const pp = facBeton(n, factoryBase) * ppPerBeton;
-      acts.push({ type: "buy", resCost: facBeton(n, factoryBase), ppCost: pp,
-        ppGain: calcPPH(1, defaultBonus), dt: pp / pph, label: "Neue Fabrik #" + n });
+      const n = st.length + 1, beton = facBeton(n, factoryBase), free = Math.min(rb, beton), need = beton - free;
+      const { pp, method } = need > 0 ? effPP(need, "beton", params) : { pp: 0, method: "Lager" };
+      acts.push({ type: "buy", resCost: beton, resType: "beton", freeRes: free,
+        method: free === beton ? "Lager" : method, ppCost: pp, ppGain: calcPPH(1, defaultBonus),
+        dt: pp / pph, label: "Neue Fabrik #" + n });
     }
     if (!acts.length) break;
     let pick;
-    const score = (a) => a.ppGain / Math.max(a.ppCost, 1);
     if (strategy === "cheapest") pick = acts.sort((a, b) => a.ppCost - b.ppCost)[0];
-    else if (strategy === "upgrade_first") { const u = acts.filter(a => a.type === "upgrade").sort((a,b) => score(b) - score(a)); pick = u.length ? u[0] : acts.find(a => a.type === "buy"); }
-    else { const b = acts.filter(a => a.type === "buy"); pick = b.length ? b[0] : acts.sort((a,b) => score(b) - score(a))[0]; }
+    else if (strategy === "upgrade_first") { const u = acts.filter(a => a.type === "upgrade").sort((a,b) => a.ppCost - b.ppCost); pick = u.length ? u[0] : acts.find(a => a.type === "buy"); }
+    else { const b = acts.filter(a => a.type === "buy"); pick = b.length ? b[0] : acts.sort((a,b) => a.ppCost - b.ppCost)[0]; }
     t += pick.dt;
-    if (pick.type === "upgrade") st = st.map((f, j) => j === pick.idx ? { ...f, level: f.level + 1 } : f);
-    else st = [...st, { level: 1, bonus: defaultBonus }];
-    path.push({ action: pick.label, type: pick.type, resCost: pick.resCost,
-      ppCost: pick.ppCost, ppGain: pick.ppGain, dt: pick.dt, time: t, pph: totalPPH(st) });
+    if (pick.type === "upgrade") { rs -= pick.freeRes; st = st.map((f, j) => j === pick.idx ? { ...f, level: f.level + 1 } : f); }
+    else { rb -= pick.freeRes; st = [...st, { level: 1, bonus: defaultBonus }]; }
+    path.push({ action: pick.label, type: pick.type, resType: pick.resType, resCost: pick.resCost,
+      freeRes: pick.freeRes, method: pick.method, ppCost: pick.ppCost, ppGain: pick.ppGain,
+      dt: pick.dt, time: t, pph: totalPPH(st) });
   }
   return path;
 }
@@ -290,7 +254,7 @@ function buildChart(paths, startPPH, keys) {
   for (let t = 0; t <= mx; t += step) ts.add(Math.round(t * 10) / 10);
   return [...ts].sort((a,b) => a - b).map(t => {
     const pt = { time: Math.round(t * 100) / 100 };
-    for (const [k, e] of Object.entries(ev)) { let v = startPPH; for (const x of e) { if (x.time <= t) v = x.pph; else break; } pt[k] = (v === Infinity || isNaN(v)) ? null : Math.round(v * 100) / 100; }
+    for (const [k, e] of Object.entries(ev)) { let v = startPPH; for (const x of e) { if (x.time <= t) v = x.pph; else break; } pt[k] = Math.round(v * 100) / 100; }
     return pt;
   });
 }
@@ -299,32 +263,16 @@ function fmtT(h) { if (h <= 0) return "sofort"; if (h < 1) return (h*60).toFixed
 function fmtN(n) { if (Math.abs(n) >= 1e6) return (n/1e6).toFixed(1) + "M"; if (Math.abs(n) >= 1e3) return (n/1e3).toFixed(1) + "k"; return Number.isInteger(n) ? String(n) : n.toFixed(1); }
 
 // ── Styled primitives ──
-const ThemeContext = createContext(THEMES.grau);
-
-const glassStyle = (opacity = 0.05, blur = 20) => ({
-  background: `rgba(255,255,255,${opacity})`,
-  backdropFilter: `blur(${blur}px)`,
-  WebkitBackdropFilter: `blur(${blur}px)`,
-  border: "1px solid rgba(255,255,255,0.1)",
-  boxShadow: "0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)",
-});
-
 function GlassCard({ children, style, glow }) {
-  return <div style={{ ...glassStyle(), borderRadius: 12, padding: "16px 20px", marginBottom: 14, ...(glow ? { boxShadow: "0 8px 32px rgba(0,0,0,0.5), 0 0 24px " + glow } : {}), ...style }}>{children}</div>;
+  return <div style={{ ...glass(0.05, 20), borderRadius: 12, padding: "16px 20px", marginBottom: 14, ...(glow ? { boxShadow: "0 8px 32px rgba(0,0,0,0.5), 0 0 24px " + glow } : {}), ...style }}>{children}</div>;
 }
-
 function Sec({ children, icon }) {
-  const { C, F } = useContext(ThemeContext);
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-      {icon && <span style={{ fontSize: 15 }}>{icon}</span>}
-      <span style={{ fontFamily: F.h, fontSize: 13, fontWeight: 700, color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase" }}>{children}</span>
-    </div>
-  );
+  return <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+    {icon && <span style={{ fontSize: 15 }}>{icon}</span>}
+    <span style={{ fontFamily: F.h, fontSize: 13, fontWeight: 700, color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase" }}>{children}</span>
+  </div>;
 }
-
 function Inp({ label, value, onChange, step = 1, suffix, tip }) {
-  const { C, F } = useContext(ThemeContext);
   const inner = <div style={{ marginBottom: 8 }}>
     <label style={{ fontFamily: F.m, fontSize: 10, color: C.textDim, marginBottom: 3, display: "block", letterSpacing: "0.03em" }}>{label} {tip && <span style={{ color: C.textMuted, cursor: "help" }}>&#9432;</span>}</label>
     <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
@@ -339,48 +287,39 @@ function Inp({ label, value, onChange, step = 1, suffix, tip }) {
   </div>;
   return tip ? <Tip text={tip}>{inner}</Tip> : inner;
 }
-
 function Bdg({ color, children }) {
-  const { F } = useContext(ThemeContext);
   return <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 4, fontSize: 9, fontWeight: 700, fontFamily: F.h, background: color + "25", color, border: "1px solid " + color + "44", letterSpacing: "0.06em", textTransform: "uppercase", textShadow: "0 0 8px " + color + "44" }}>{children}</span>;
 }
-
 function Tip({ text, children, pos = "top" }) {
-  const { F } = useContext(ThemeContext);
   if (!text) return children;
-  return <span className="tip-wrap">{children}<span className="tip-box" style={{ ...(pos === "bottom" ? { bottom: "auto", top: "calc(100% + 8px)" } : {}), fontFamily: F.m }}>{text}</span></span>;
+  return <span className="tip-wrap">{children}<span className="tip-box" style={pos === "bottom" ? { bottom: "auto", top: "calc(100% + 8px)" } : {}}>{text}</span></span>;
 }
-
-function Btn({ on, color, children, onClick, big, disabled }) {
-  const { C, F } = useContext(ThemeContext);
-  const clr = color || C.accent;
+function Btn({ on, color = C.accent, children, onClick, big, disabled }) {
   return <button onClick={onClick} disabled={disabled} style={{
-    padding: big ? "11px 28px" : "6px 14px", borderRadius: 8, border: "1px solid " + (on ? clr + "88" : "rgba(255,255,255,0.08)"),
-    background: on ? clr + "18" : "rgba(255,255,255,0.03)", color: disabled ? C.textMuted : on ? clr : C.textDim,
+    padding: big ? "11px 28px" : "6px 14px", borderRadius: 8, border: "1px solid " + (on ? color + "88" : "rgba(255,255,255,0.08)"),
+    background: on ? color + "18" : "rgba(255,255,255,0.03)", color: disabled ? C.textMuted : on ? color : C.textDim,
     cursor: disabled ? "not-allowed" : "pointer", fontSize: big ? 14 : 11, fontFamily: F.h, fontWeight: 700,
     letterSpacing: "0.08em", textTransform: "uppercase", transition: "all 0.2s", opacity: disabled ? 0.4 : 1,
-    boxShadow: on ? "0 0 16px " + clr + "22, inset 0 1px 0 rgba(255,255,255,0.06)" : "0 2px 8px rgba(0,0,0,0.2)",
-    textShadow: on ? "0 0 10px " + clr + "44" : "none",
+    boxShadow: on ? "0 0 16px " + color + "22, inset 0 1px 0 rgba(255,255,255,0.06)" : "0 2px 8px rgba(0,0,0,0.2)",
+    textShadow: on ? "0 0 10px " + color + "44" : "none",
   }}>{children}</button>;
 }
+const TH = { textAlign: "left", padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.08)", color: C.textDim, fontSize: 9, fontFamily: F.h, letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 700 };
+const TD = (hl) => ({ padding: "6px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", color: hl ? C.accent : C.text, fontSize: 12, fontFamily: F.m });
 
 // ── Main ──
 export default function App() {
-  // Theme
-  const [theme, setTheme] = useState("grau");
-  const T = THEMES[theme];
-  const { C, F } = T;
-
-  const TH = { textAlign: "left", padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.08)", color: C.textDim, fontSize: 9, fontFamily: F.h, letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 700 };
-  const TD = (hl) => ({ padding: "6px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", color: hl ? C.accent : C.text, fontSize: 12, fontFamily: F.m });
-
   const [ppS, setPpS] = useState(20);
   const [ppB, setPpB] = useState(20);
+  const [sP, setSP] = useState(2.0);
+  const [bP, setBP] = useState(2.0);
   const [mxF, setMxF] = useState(12);
   const [mxL, setMxL] = useState(7);
   const [uB, setUB] = useState(20);
   const [fB, setFB] = useState(50);
   const [dB, setDB] = useState(50);
+  const [sS, setSS] = useState(0);
+  const [sB, setSB] = useState(0);
   const [facs, setFacs] = useState([{ level: 1, bonus: 50 }]);
   const [actv, setActv] = useState(["dijkstra", "cheapest"]);
   const [tab, setTab] = useState("chart");
@@ -388,16 +327,20 @@ export default function App() {
   const [tS, setTS] = useState("dijkstra");
   const [res, setRes] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [maxIter, setMaxIter] = useState(500000);
   const [impStr, setImpStr] = useState("");
   const [showImp, setShowImp] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [theme, setTheme] = useState("grau");
   const [apiUser, setApiUser] = useState("");
   const [apiLoading, setApiLoading] = useState(false);
   const [apiError, setApiError] = useState("");
   const [apiInfo, setApiInfo] = useState("");
 
-  const STRATS = getStrats(C);
+  // Apply theme
+  const T = THEMES[theme];
+  C = T.C;
+  F = T.F;
+  const STRATS = getStrats();
 
   // ── WarEra API Integration ──
   const API = "https://api2.warera.io/trpc/";
@@ -442,21 +385,23 @@ export default function App() {
       for (const cid of companyIds) {
         const comp = await apiCall("company.getById", { companyId: cid });
         const aeLevel = comp.activeUpgradeLevels?.automatedEngine || 1;
-        // Derive bonus: production = level * base_at_lvl_1 * (1 + bonus/100)
-        const baseItemsH = 1.5;
-        const prodRate = comp.production || 0;
-        let derivedBonus = aeLevel > 0 ? Math.round(((prodRate / aeLevel / baseItemsH) - 1) * 100) : dB;
-        if (derivedBonus > 500) derivedBonus = dB;
-        if (derivedBonus < -90) derivedBonus = -90;
         newFacs.push({
           level: aeLevel,
-          bonus: derivedBonus,
+          bonus: dB,
           name: comp.name || ("Fabrik " + (newFacs.length + 1)),
+          item: comp.itemCode || "?",
         });
       }
 
+      // 5. Get market prices
+      try {
+        const prices = await apiCall("itemTrading.getPrices", {});
+        if (prices.steel != null) setSP(Math.round(prices.steel * 10000) / 10000);
+        if (prices.concrete != null) setBP(Math.round(prices.concrete * 10000) / 10000);
+      } catch {}
+
       setFacs(newFacs);
-      setApiInfo(username + ": " + newFacs.length + " Fabriken geladen");
+      setApiInfo(username + ": " + newFacs.length + " Fabriken geladen, Marktpreise aktualisiert");
       setRes(null);
     } catch (e) {
       setApiError(e.message || "Fehler beim Laden");
@@ -468,7 +413,7 @@ export default function App() {
   const addF = useCallback(() => setFacs(p => [...p, { level: 1, bonus: dB }]), [dB]);
   const rmF = useCallback(i => setFacs(p => p.filter((_, j) => j !== i)), []);
 
-  const params = { ppPerStahl: ppS, ppPerBeton: ppB, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB, defaultBonus: dB };
+  const params = { ppPerStahl: ppS, ppPerBeton: ppB, stahlPrice: sP, betonPrice: bP, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB, defaultBonus: dB, startStahl: sS, startBeton: sB };
   const pph = totalPPH(facs);
 
   const code = encodeState(params, facs, theme);
@@ -477,9 +422,9 @@ export default function App() {
     const d = decodeState(impStr);
     if (!d) return;
     const p = d.params;
-    setPpS(p.ppPerStahl); setPpB(p.ppPerBeton);
+    setPpS(p.ppPerStahl); setPpB(p.ppPerBeton); setSP(p.stahlPrice); setBP(p.betonPrice);
     setMxF(p.maxFactories); setMxL(p.maxLevel); setUB(p.upgradeBase); setFB(p.factoryBase);
-    setDB(p.defaultBonus);
+    setDB(p.defaultBonus); setSS(p.startStahl); setSB(p.startBeton);
     setFacs(d.facs);
     if (d.theme) setTheme(d.theme);
     setShowImp(false); setImpStr(""); setRes(null);
@@ -495,53 +440,26 @@ export default function App() {
     });
   }
 
-  const nextActs = useMemo(() => {
-    if (pph <= 0 || !facs.length) return [];
-    const a = [], seen = new Set();
-    facs.forEach((f, i) => {
-      if (f.level >= mxL) return;
-      const sig = f.bonus + ":" + f.level; if (seen.has(sig)) return; seen.add(sig);
-      const stahl = upgStahl(f.level, uB);
-      const fullPP = stahl * ppS;
-      const gain = calcPPH(1, f.bonus);
-      a.push({ label: "F" + (i+1) + " L" + f.level + " -> " + (f.level+1), type: "upgrade", resCost: stahl, ppCost: fullPP, ppGain: gain * 24, hours: fullPP / pph, amortH: gain > 0 ? fullPP / gain : Infinity });
-    });
-    if (facs.length < mxF) {
-      const n = facs.length + 1, beton = facBeton(n, fB);
-      const fullPP = beton * ppB;
-      const gain = calcPPH(1, dB);
-      a.push({ label: "Neue Fabrik #" + n, type: "buy", resCost: beton, ppCost: fullPP, ppGain: gain * 24, hours: fullPP / pph, amortH: gain > 0 ? fullPP / gain : Infinity });
-    }
-    const score = (x) => x.ppGain / Math.max(x.ppCost, 1);
-    a.sort((x, y) => score(y) - score(x));
-    if (res?.paths?.[tS]?.length) {
-      const opt = res.paths[tS][0];
-      a.forEach(x => {
-        const isUpgrade = x.type === "upgrade" && opt.type === "upgrade";
-        const isBuy = x.type === "buy" && opt.type === "buy";
-        if (isUpgrade && x.label.includes(opt.action.split(" (")[0])) x.isOpt = true;
-        if (isBuy && x.label === opt.action) x.isOpt = true;
-      });
-      a.sort((x, y) => (x.isOpt ? -1 : y.isOpt ? 1 : 0));
-    }
-    return a;
-  }, [facs, pph, mxF, mxL, uB, fB, dB, ppS, ppB, res, tS]);
+  const trade = (() => {
+    if (sP <= 0 || bP <= 0) return null;
+    const sv = (sP / bP) * ppB, bv = (bP / sP) * ppS;
+    return { sE: Math.min(ppS, sv), sM: sv < ppS ? "via Beton" : "direkt", bE: Math.min(ppB, bv), bM: bv < ppB ? "via Stahl" : "direkt" };
+  })();
 
-  const compute = useCallback(() => {
+  const displayActs = res?.paths?.dijkstra?.slice(0, 3) || [];
+
+  function compute() {
     setBusy(true);
     setTimeout(() => {
-      const paths = {};
-      for (const s of STRATS) { if (s.key !== "dijkstra") try { paths[s.key] = simulate(facs, params, s.key); } catch { paths[s.key] = []; } }
-      const cpPath = paths.cheapest || [];
-      const ub = cpPath.length ? cpPath[cpPath.length - 1].time : Infinity;
-      const d = runDijkstra(facs, params, ub, maxIter);
+      const paths = {}, d = runDijkstra(facs, params, sS, sB);
       paths.dijkstra = d.path;
+      for (const s of STRATS) { if (s.key !== "dijkstra") try { paths[s.key] = simulate(facs, params, s.key, sS, sB); } catch { paths[s.key] = []; } }
       const finals = {};
       for (const s of STRATS) { const p = paths[s.key]; finals[s.key] = p?.length ? p[p.length-1].time : null; }
-      setRes({ paths, finals, ok: d.complete, iter: d.iter, tooComplex: d.tooComplex });
+      setRes({ paths, finals, ok: d.complete, iter: d.iter });
       setBusy(false);
     }, 50);
-  }, [facs, params, maxIter, STRATS]);
+  }
 
   const chart = res ? (() => {
     const rd = buildChart(res.paths, pph, actv);
@@ -553,7 +471,6 @@ export default function App() {
   const curPath = res?.paths?.[tS] || [];
 
   return (
-    <ThemeContext.Provider value={T}>
     <div style={{
       background: T.bg,
       color: C.text, minHeight: "100vh", fontFamily: F.m, padding: "28px 24px", maxWidth: 1260, margin: "0 auto",
@@ -589,13 +506,8 @@ export default function App() {
             </button>
           </Tip>
           <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 26, fontWeight: 700, color: C.accent, fontFamily: F.h, textShadow: "0 0 20px " + C.accentGlow }}>
-              {(pph * 24).toFixed(0)}
-              <span style={{ fontSize: 14, color: C.textDim }}> PP/Tag</span>
-            </div>
-            <div style={{ fontSize: 12, color: C.textMuted }}>
-              {pph.toFixed(1)} PP/h
-            </div>
+            <div style={{ fontSize: 26, fontWeight: 700, color: C.accent, fontFamily: F.h, textShadow: "0 0 20px " + C.accentGlow }}>{pph.toFixed(1)} <span style={{ fontSize: 14, color: C.textDim }}>PP/h</span></div>
+            <div style={{ fontSize: 12, color: C.textDim }}>{(pph * 24).toFixed(0)} PP/Tag</div>
           </div>
         </div>
       </div>
@@ -644,6 +556,19 @@ export default function App() {
               <Inp label="Std-Bonus" value={dB} onChange={setDB} suffix="%" tip="Produktionsbonus neuer Fabriken" />
             </div>
           </GlassCard>
+          <GlassCard>
+            <Sec icon="&#9878;">Markt &amp; Lager</Sec>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px" }}>
+              <Inp label="Stahlpreis" value={sP} onChange={setSP} step={0.0001} tip="Marktpreis pro Stahl (fuer Handel)" />
+              <Inp label="Betonpreis" value={bP} onChange={setBP} step={0.0001} tip="Marktpreis pro Beton (fuer Handel)" />
+              <Inp label="Stahl Lager" value={sS} onChange={setSS} tip="Stahl auf Vorrat - wird zuerst verbraucht" />
+              <Inp label="Beton Lager" value={sB} onChange={setSB} tip="Beton auf Vorrat - wird zuerst verbraucht" />
+            </div>
+            {trade && <div style={{ ...glass(0.04, 12), borderRadius: 8, padding: "8px 10px", marginTop: 10, fontSize: 11, lineHeight: 1.7 }}>
+              <div>Eff. PP/Stahl: <span style={{ color: C.stahl, fontWeight: 600 }}>{trade.sE.toFixed(1)}</span> <span style={{ color: C.textMuted }}>({trade.sM})</span></div>
+              <div>Eff. PP/Beton: <span style={{ color: C.betonC, fontWeight: 600 }}>{trade.bE.toFixed(1)}</span> <span style={{ color: C.textMuted }}>({trade.bM})</span></div>
+            </div>}
+          </GlassCard>
         </div>
 
         <GlassCard>
@@ -660,7 +585,7 @@ export default function App() {
               placeholder="Username eingeben..."
               style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 6, color: C.text, padding: "6px 10px", fontSize: 12, fontFamily: F.m, outline: "none", flex: 1, minWidth: 140 }}
             />
-            <Tip text="Fabriken automatisch von der WarEra API laden">
+            <Tip text="Fabriken und Marktpreise automatisch von der WarEra API laden">
               <Btn on color={C.accent} onClick={loadFromAPI} disabled={apiLoading || !apiUser.trim()}>
                 {apiLoading ? "Lade..." : "Importieren"}
               </Btn>
@@ -669,13 +594,14 @@ export default function App() {
             {apiInfo && <span style={{ fontSize: 10, color: C.green, fontFamily: F.m }}>{apiInfo}</span>}
           </div>
           {!facs.length && <div style={{ padding: 24, textAlign: "center", color: C.textMuted }}>Keine Fabriken</div>}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(152px, 1fr))", gap: 8 }}>
             {facs.map((f, i) => {
               const p = calcPPH(f.level, f.bonus);
               return <div key={i} style={{ ...glass(0.04, 12), borderRadius: 10, padding: "10px 12px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                   <span style={{ fontFamily: F.h, fontSize: 13, fontWeight: 700, color: C.accent, textShadow: "0 0 8px " + C.accentGlow }}>{i+1}</span>
-                  <span style={{ fontSize: 11, color: C.green, fontWeight: 600, textShadow: "0 0 8px " + C.greenGlow }}>{p.toFixed(1)} PP/h</span>
+                  {f.item && <span style={{ fontSize: 9, color: C.textMuted, fontFamily: F.h, letterSpacing: "0.04em" }}>{f.item}</span>}
+                  <span style={{ fontSize: 11, color: C.green, fontWeight: 600, textShadow: "0 0 8px " + C.greenGlow }}>{p.toFixed(1)}</span>
                   <button onClick={() => rmF(i)} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 18, fontWeight: 700, padding: 0, opacity: 0.7, lineHeight: 1 }}>&times;</button>
                 </div>
                 {f.name && <div style={{ fontSize: 9, color: C.textMuted, marginBottom: 4, fontFamily: F.m, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</div>}
@@ -700,26 +626,32 @@ export default function App() {
       </div>
 
       {/* Next Actions */}
-      {res && nextActs.length > 0 && <GlassCard style={{ marginTop: 2 }}>
-        <Sec icon="&#9654;">Naechste Aktionen</Sec>
+      {res && displayActs.length > 0 && <GlassCard style={{ marginTop: 2 }}>
+        <Sec icon="▶">Naechste Aktionen (Dijkstra-Optimum)</Sec>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead><tr>
               <th style={TH}>Aktion</th>
+              <th style={TH}>Res.</th>
               <th style={TH}><Tip text="Benoetigte Ressourcenmenge">Menge</Tip></th>
-              <th style={TH}><Tip text="Kosten in Produktionspunkten">Kosten (PP)</Tip></th>
+              <th style={TH}><Tip text="Vom Lager abgezogen (kostenlos)">Lager</Tip></th>
+              <th style={TH}><Tip text="Effektive PP-Kosten nach Lagerabzug und Markthandel">Eff. PP</Tip></th>
+              <th style={TH}><Tip text="Beschaffungsweg: direkt, via Handel oder Lager">Weg</Tip></th>
               <th style={TH}><Tip text="Produktionszeit bei aktueller PP-Rate">Dauer</Tip></th>
-              <th style={TH}><Tip text="Produktionsgewinn pro Tag">+PP/Tag</Tip></th>
-              <th style={TH}><Tip text="Zeit bis die Investition sich durch Mehrproduktion amortisiert">Amort.</Tip></th>
+              <th style={TH}><Tip text="Produktionsgewinn pro Stunde">+PP/h</Tip></th>
+              <th style={TH}><Tip text="Zeitpunkt des Erreichens">Zeitpunkt</Tip></th>
             </tr></thead>
-            <tbody>{nextActs.map((a, i) => (
-              <tr key={i} style={{ background: a.isOpt ? "rgba(240,180,41,0.12)" : i % 2 ? C.rowAlt : "transparent", boxShadow: a.isOpt ? "inset 4px 0 0 " + C.accent : "none" }}>
-                <td style={TD(a.isOpt)}>{a.isOpt && <Bdg color={C.accent}>OPTIMAL</Bdg>}<Bdg color={a.type === "buy" ? C.blue : C.green} style={{ marginLeft: a.isOpt ? 6 : 0 }}>{a.type === "buy" ? "NEU" : "UP"}</Bdg><span style={{ marginLeft: 8 }}>{a.label}</span></td>
-                <td style={{ ...TD(false), color: a.type === "upgrade" ? C.stahl : C.betonC }}>{fmtN(a.resCost)}</td>
+            <tbody>{displayActs.map((a, i) => (
+              <tr key={i} style={{ background: i === 0 ? "rgba(240,180,41,0.06)" : i % 2 ? C.rowAlt : "transparent" }}>
+                <td style={TD(i === 0)}><Bdg color={a.type === "buy" ? C.blue : C.green}>{a.type === "buy" ? "NEU" : "UP"}</Bdg><span style={{ marginLeft: 8 }}>{a.action}</span></td>
+                <td style={{ ...TD(false), color: a.resType === "stahl" ? C.stahl : C.betonC }}>{a.resType === "stahl" ? "Stahl" : "Beton"}</td>
+                <td style={TD(false)}>{fmtN(a.resCost)}</td>
+                <td style={{ ...TD(false), color: a.freeRes > 0 ? C.green : C.textMuted }}>{a.freeRes > 0 ? "-" + fmtN(a.freeRes) : "-"}</td>
                 <td style={TD(false)}>{fmtN(a.ppCost)}</td>
-                <td style={TD(false)}>{fmtT(a.hours)}</td>
+                <td style={{ ...TD(false), fontSize: 10, color: a.method === "Lager" ? C.green : a.method === "direkt" ? C.textMuted : C.accent }}>{a.method}</td>
+                <td style={TD(false)}>{fmtT(a.dt)}</td>
                 <td style={{ ...TD(false), color: C.green }}>+{a.ppGain.toFixed(1)}</td>
-                <td style={TD(false)}>{fmtT(a.amortH)}</td>
+                <td style={TD(false)}>{fmtT(a.time)}</td>
               </tr>
             ))}</tbody>
           </table>
@@ -731,11 +663,8 @@ export default function App() {
         <Tip text="Dijkstra + Greedy-Vergleich berechnen (kann einige Sekunden dauern)">
           <Btn on big color={C.accent} onClick={compute} disabled={busy || !facs.length}>{busy ? "Berechne..." : "Optimierung starten"}</Btn>
         </Tip>
-        <div style={{ width: 140 }}>
-          <Inp label="Max Iterationen" value={maxIter} onChange={setMaxIter} step={100000} tip="Maximale Dijkstra-Iterationen (Standard: 500.000, mehr = langsamer aber genauer)" />
-        </div>
         {res && <span style={{ fontSize: 11, color: res.ok ? C.green : C.red, textShadow: "0 0 8px " + (res.ok ? C.greenGlow : "rgba(248,113,113,0.3)") }}>
-          {res.ok ? "Optimum gefunden" : res.tooComplex ? "Dijkstra übersprungen – zu viele Bonus-Varianten" : "Limit erreicht"}{!res.tooComplex && " – " + res.iter.toLocaleString() + " Iterationen"}
+          {res.ok ? "Optimum gefunden" : "Limit erreicht"} - {res.iter.toLocaleString()} Iterationen
         </span>}
       </div>
 
@@ -801,19 +730,22 @@ export default function App() {
           </div>
           <div style={{ maxHeight: 520, overflowY: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead><tr>{["#", "Aktion", "Menge", "PP", "Dauer", "Gesamt", "PP/h", "+PP/h"].map(h => <th key={h} style={TH}>{h}</th>)}</tr></thead>
+              <thead><tr>{["#", "Aktion", "Res.", "Menge", "Lager", "Weg", "PP", "Dauer", "Gesamt", "PP/h", "+PP/h"].map(h => <th key={h} style={TH}>{h}</th>)}</tr></thead>
               <tbody>
                 {curPath.map((s, i) => <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
                   <td style={TD(false)}>{i+1}</td>
                   <td style={TD(false)}><Bdg color={s.type === "buy" ? C.blue : C.green}>{s.type === "buy" ? "NEU" : "UP"}</Bdg><span style={{ marginLeft: 8 }}>{s.action}</span></td>
-                  <td style={{ ...TD(false), color: s.type === "upgrade" ? C.stahl : C.betonC }}>{fmtN(s.resCost)}</td>
+                  <td style={{ ...TD(false), color: s.resType === "stahl" ? C.stahl : C.betonC }}>{s.resType === "stahl" ? "Stahl" : "Beton"}</td>
+                  <td style={TD(false)}>{fmtN(s.resCost)}</td>
+                  <td style={{ ...TD(false), color: s.freeRes > 0 ? C.green : C.textMuted }}>{s.freeRes > 0 ? "-" + s.freeRes : "-"}</td>
+                  <td style={{ ...TD(false), fontSize: 10, color: s.method === "Lager" ? C.green : s.method === "direkt" ? C.textMuted : C.accent }}>{s.method}</td>
                   <td style={TD(false)}>{fmtN(s.ppCost)}</td>
                   <td style={TD(false)}>{fmtT(s.dt)}</td>
                   <td style={TD(true)}>{fmtT(s.time)}</td>
                   <td style={{ ...TD(false), color: C.green }}>{s.pph.toFixed(1)}</td>
                   <td style={{ ...TD(false), color: C.green }}>+{s.ppGain.toFixed(1)}</td>
                 </tr>)}
-                {!curPath.length && <tr><td colSpan={8} style={{ padding: 24, textAlign: "center", color: C.textMuted }}>Kein Pfad / Max erreicht</td></tr>}
+                {!curPath.length && <tr><td colSpan={11} style={{ padding: 24, textAlign: "center", color: C.textMuted }}>Kein Pfad / Max erreicht</td></tr>}
               </tbody>
             </table>
           </div>
@@ -827,22 +759,24 @@ export default function App() {
           <div>
             <div style={{ color: C.stahl, fontWeight: 700, fontFamily: F.h, marginBottom: 8, letterSpacing: "0.08em" }}>UPGRADES (STAHL)</div>
             {Array.from({ length: mxL - 1 }, (_, i) => i+1).map(l => {
-              const s = upgStahl(l, uB), pp = s * ppS;
+              const s = upgStahl(l, uB), { pp, method } = effPP(s, "stahl", params);
               return <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: C.textDim }}>
                 <span style={{ width: 70, color: C.text }}>L{l} -&gt; L{l+1}</span>
-                <span style={{ color: C.stahl }}>{s} Stahl</span>
+                <span style={{ color: C.stahl }}>{s}</span>
                 <span>{pp.toFixed(0)} PP</span>
+                <span style={{ fontSize: 10, color: method === "direkt" ? C.textMuted : C.accent }}>{method}</span>
               </div>;
             })}
           </div>
           <div>
             <div style={{ color: C.betonC, fontWeight: 700, fontFamily: F.h, marginBottom: 8, letterSpacing: "0.08em" }}>FABRIKEN (BETON)</div>
             {Array.from({ length: mxF }, (_, i) => i+1).map(n => {
-              const b = facBeton(n, fB), pp = b * ppB;
+              const b = facBeton(n, fB), { pp, method } = effPP(b, "beton", params);
               return <div key={n} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: C.textDim }}>
                 <span style={{ width: 70, color: C.text }}>Fabrik #{n}</span>
-                <span style={{ color: C.betonC }}>{b} Beton</span>
+                <span style={{ color: C.betonC }}>{b}</span>
                 <span>{pp.toFixed(0)} PP</span>
+                <span style={{ fontSize: 10, color: method === "direkt" ? C.textMuted : C.accent }}>{method}</span>
               </div>;
             })}
           </div>
@@ -850,9 +784,8 @@ export default function App() {
       </GlassCard>
 
       <div style={{ textAlign: "center", fontSize: 10, color: C.textMuted, marginTop: 16, paddingBottom: 24, fontFamily: F.h, letterSpacing: "0.15em" }}>
-        HEBELMINISTERIUM DEUTSCHLAND &middot; FABRIK-OPTIMIERER &middot; DIJKSTRA + PP-OPTIMIERUNG
+        HEBELMINISTERIUM DEUTSCHLAND &middot; FABRIK-OPTIMIERER &middot; DIJKSTRA + MARKTHANDEL
       </div>
     </div>
-    </ThemeContext.Provider>
   );
 }
