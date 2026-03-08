@@ -78,21 +78,6 @@ const glass = (opacity = 0.06, blur = 16) => ({
   boxShadow: "0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)",
 });
 
-const RECIPES = {
-  grain: { pp: 20, inputs: {} },
-  bread: { pp: 20, inputs: { grain: 1 } },
-  steak: { pp: 40, inputs: { livestock: 1 } },
-  cookedFish: { pp: 80, inputs: { fish: 1 } },
-  concrete: { pp: 20, inputs: { limestone: 1 } },
-  steel: { pp: 20, inputs: { iron: 1 } },
-  iron: { pp: 20, inputs: {} },
-  limestone: { pp: 20, inputs: {} },
-  fish: { pp: 20, inputs: {} },
-  livestock: { pp: 20, inputs: {} },
-  ammo: { pp: 50, inputs: { lead: 1 } },
-  heavyAmmo: { pp: 100, inputs: { lead: 2 } },
-  lead: { pp: 20, inputs: {} },
-};
 
 function getStrats(C) {
   return [
@@ -105,9 +90,9 @@ function getStrats(C) {
 
 // ── Encode / Decode ──
 function encodeState(params, facs, theme) {
-  const p = [params.ppPerStahl, params.ppPerBeton, params.stahlPrice, params.betonPrice,
+  const p = [params.ppPerStahl, params.ppPerBeton,
     params.maxFactories, params.maxLevel, params.upgradeBase, params.factoryBase,
-    params.defaultBonus, params.startStahl, params.startBeton].join(",");
+    params.defaultBonus].join(",");
   const f = facs.map(x => x.level + "." + x.bonus).join(",");
   try { return btoa(p + "|" + f + "|" + theme); } catch { return ""; }
 }
@@ -123,9 +108,9 @@ function decodeState(str) {
       return { level: l, bonus: b };
     });
     return {
-      params: { ppPerStahl: p[0], ppPerBeton: p[1], stahlPrice: p[2], betonPrice: p[3],
-        maxFactories: p[4], maxLevel: p[5], upgradeBase: p[6], factoryBase: p[7],
-        defaultBonus: p[8], startStahl: p[9], startBeton: p[10] },
+      params: { ppPerStahl: p[0], ppPerBeton: p[1],
+        maxFactories: p[2], maxLevel: p[3], upgradeBase: p[4], factoryBase: p[5],
+        defaultBonus: p[6] },
       facs, theme: thm === "pink" ? "pink" : "grau"
     };
   } catch { return null; }
@@ -137,34 +122,6 @@ const facBeton = (n, base) => n * base;
 function calcPPH(level, bonus) { return level * (1 + bonus / 100); }
 function totalPPH(fs) { return fs.reduce((s, f) => s + calcPPH(f.level, f.bonus), 0); }
 
-function getProfit(f, prices, recipes) {
-  const item = f.item || "concrete";
-  const recipe = recipes[item];
-  if (!recipe) return 0;
-  const sellPrice = prices[item] || 0;
-  let materialCost = 0;
-  for (const [ing, qty] of Object.entries(recipe.inputs)) {
-    materialCost += (prices[ing] || 0) * qty;
-  }
-  const profitPerUnit = sellPrice - materialCost;
-  const pph = calcPPH(f.level, f.bonus);
-  return profitPerUnit * (pph / recipe.pp);
-}
-
-function totalProfit(fs, prices, recipes) {
-  return fs.reduce((s, f) => s + getProfit(f, prices, recipes), 0);
-}
-
-function effPP(amount, resType, p) {
-  if (resType === "stahl") {
-    const d = amount * p.ppPerStahl;
-    const v = p.betonPrice > 0 ? amount * (p.stahlPrice / p.betonPrice) * p.ppPerBeton : Infinity;
-    return v < d ? { pp: v, method: "via Beton" } : { pp: d, method: "direkt" };
-  }
-  const d = amount * p.ppPerBeton;
-  const v = p.stahlPrice > 0 ? amount * (p.betonPrice / p.stahlPrice) * p.ppPerStahl : Infinity;
-  return v < d ? { pp: v, method: "via Stahl" } : { pp: d, method: "direkt" };
-}
 
 class Heap {
   constructor() { this.d = []; }
@@ -173,79 +130,120 @@ class Heap {
   get size() { return this.d.length; }
 }
 
-function facKey(fs) { return fs.map(f => f.item + ":" + f.bonus + ":" + f.level).sort().join("|"); }
+function facKey(fs) { return fs.map(f => f.bonus + ":" + f.level).sort().join("|"); }
 
-function runDijkstra(startFacs, params, sStahl, sBeton, recipes, prices, mode, upperBound = Infinity, maxIter = 500000) {
-  const { maxFactories, maxLevel, upgradeBase, factoryBase, defaultBonus } = params;
+function estimateStateSpace(startFacs, params) {
+  const { maxFactories, maxLevel, defaultBonus } = params;
+  const groups = new Map();
+  for (const f of startFacs) {
+    const g = groups.get(f.bonus) || { n: 0, minLevel: maxLevel };
+    g.n++; g.minLevel = Math.min(g.minLevel, f.level);
+    groups.set(f.bonus, g);
+  }
+  const newCount = maxFactories - startFacs.length;
+  if (newCount > 0) {
+    const g = groups.get(defaultBonus) || { n: 0, minLevel: maxLevel };
+    g.n += newCount; g.minLevel = Math.min(g.minLevel, 1);
+    groups.set(defaultBonus, g);
+  }
+  let est = 1;
+  for (const g of groups.values()) {
+    const range = maxLevel - g.minLevel;
+    if (range <= 0) continue;
+    let c = 1;
+    for (let i = 0; i < g.n; i++) c = c * (range + i + 1) / (i + 1);
+    est *= c;
+    if (est > 1e7) return est;
+  }
+  return est;
+}
+
+function runDijkstra(startFacs, params, upperBound = Infinity, maxIter = 500000) {
+  const { maxFactories, maxLevel, upgradeBase, factoryBase, defaultBonus, ppPerStahl, ppPerBeton } = params;
+
+  // Skip if state space is too large to search in reasonable time
+  if (estimateStateSpace(startFacs, params) > 200000) {
+    return { path: [], complete: false, iter: 0, tooComplex: true };
+  }
+
+  // A* heuristic: remaining PP cost / max possible PPH (admissible + consistent)
+  const goalPPH = startFacs.reduce((s, f) => s + calcPPH(maxLevel, f.bonus), 0)
+    + (maxFactories - startFacs.length) * calcPPH(maxLevel, defaultBonus);
+  function heuristic(facs) {
+    if (goalPPH <= 0) return 0;
+    let rem = 0;
+    for (const f of facs) for (let lvl = f.level; lvl < maxLevel; lvl++) rem += upgStahl(lvl, upgradeBase) * ppPerStahl;
+    for (let n = facs.length + 1; n <= maxFactories; n++) {
+      rem += facBeton(n, factoryBase) * ppPerBeton;
+      for (let lvl = 1; lvl < maxLevel; lvl++) rem += upgStahl(lvl, upgradeBase) * ppPerStahl;
+    }
+    return rem / goalPPH;
+  }
+
   const heap = new Heap(), visited = new Set();
-  const gp = []; for (const f of startFacs) gp.push(f.item + ":" + f.bonus + ":" + maxLevel);
-  for (let i = startFacs.length; i < maxFactories; i++) gp.push("concrete:" + defaultBonus + ":" + maxLevel);
+  const gp = []; for (const f of startFacs) gp.push(f.bonus + ":" + maxLevel);
+  for (let i = startFacs.length; i < maxFactories; i++) gp.push(defaultBonus + ":" + maxLevel);
   const gk = gp.sort().join("|");
   if (facKey(startFacs) === gk) return { path: [], complete: true, iter: 0 };
 
-  const sk = (fs, rs, rb) => facKey(fs) + ";" + rs + ";" + rb;
-  heap.push(0, { facs: startFacs.map(f => ({ ...f })), path: [], rs: sStahl, rb: sBeton });
+  heap.push(heuristic(startFacs), { facs: startFacs.map(f => ({ ...f })), g: 0, step: null, parent: null });
   let iter = 0;
 
   while (heap.size > 0 && iter < maxIter) {
     iter++;
-    const { p: time, v: { facs, path, rs, rb } } = heap.pop();
+    const { v: node } = heap.pop();
+    const { facs, g: time } = node;
     if (time > upperBound) continue;
-    const key = sk(facs, rs, rb);
+    const key = facKey(facs);
     if (visited.has(key)) continue; visited.add(key);
-    if (facKey(facs) === gk) return { path, complete: true, iter };
-    
+    if (key === gk) {
+      const path = [];
+      let n = node;
+      while (n.step) { path.unshift(n.step); n = n.parent; }
+      return { path, complete: true, iter };
+    }
+
     const pph = totalPPH(facs);
     if (pph <= 0) continue;
-    
-    const profitH = totalProfit(facs, prices, recipes);
-    const factor = params.stahlPrice > 0 ? params.ppPerStahl / params.stahlPrice : 10;
-    const effectivePPH = Math.max(0.001, pph + (mode === "profit" ? profitH * factor : 0));
 
     const seen = new Set();
     for (let i = 0; i < facs.length; i++) {
       if (facs[i].level >= maxLevel) continue;
-      const sig = facs[i].item + ":" + facs[i].bonus + ":" + facs[i].level;
+      const sig = facs[i].bonus + ":" + facs[i].level;
       if (seen.has(sig)) continue; seen.add(sig);
-      const lvl = facs[i].level, stahl = upgStahl(lvl, upgradeBase);
-      const free = Math.min(rs, stahl), need = stahl - free;
-      const { pp, method } = need > 0 ? effPP(need, "stahl", params) : { pp: 0, method: "Lager" };
-      const dt = pp / effectivePPH;
+      const lvl = facs[i].level;
+      const pp = upgStahl(lvl, upgradeBase) * ppPerStahl;
+      const dt = pp / pph;
+      const ng = time + dt;
       const nf = facs.map((f, j) => j === i ? { ...f, level: f.level + 1 } : { ...f });
-      const nrs = rs - free, nk = sk(nf, nrs, rb);
-      if (!visited.has(nk)) {
-        const gain = mode === "profit" ? getProfit(nf[i], prices, recipes) - getProfit(facs[i], prices, recipes) : calcPPH(1, facs[i].bonus);
-        heap.push(time + dt, { facs: nf, rs: nrs, rb, path: [...path, {
-          action: "Upgrade L" + lvl + " -> L" + (lvl+1) + " (" + facs[i].item + " " + facs[i].bonus + "%)",
-          type: "upgrade", resType: "stahl", resCost: stahl, freeRes: free,
-          method: free === stahl ? "Lager" : method, ppCost: pp,
-          ppGain: gain, dt, time: time + dt, pph: mode === "profit" ? totalProfit(nf, prices, recipes) : totalPPH(nf),
-        }]});
+      if (!visited.has(facKey(nf))) {
+        heap.push(ng + heuristic(nf), { facs: nf, g: ng, parent: node, step: {
+          action: "Upgrade L" + lvl + " -> L" + (lvl+1) + " (Bonus " + facs[i].bonus + "%)",
+          type: "upgrade", resCost: upgStahl(lvl, upgradeBase), ppCost: pp,
+          ppGain: calcPPH(1, facs[i].bonus), dt, time: ng, pph: totalPPH(nf),
+        }});
       }
     }
     if (facs.length < maxFactories) {
-      const n = facs.length + 1, beton = facBeton(n, factoryBase);
-      const free = Math.min(rb, beton), need = beton - free;
-      const { pp, method } = need > 0 ? effPP(need, "beton", params) : { pp: 0, method: "Lager" };
-      const dt = pp / effectivePPH;
-      const nf = [...facs.map(f => ({ ...f })), { level: 1, bonus: defaultBonus, item: "concrete" }];
-      const nrb = rb - free, nk = sk(nf, rs, nrb);
-      if (!visited.has(nk)) {
-        const gain = mode === "profit" ? getProfit(nf[nf.length-1], prices, recipes) : calcPPH(1, defaultBonus);
-        heap.push(time + dt, { facs: nf, rs, rb: nrb, path: [...path, {
-          action: "Neue Fabrik #" + n, type: "buy", resType: "beton", resCost: beton,
-          freeRes: free, method: free === beton ? "Lager" : method, ppCost: pp,
-          ppGain: gain, dt, time: time + dt, pph: mode === "profit" ? totalProfit(nf, prices, recipes) : totalPPH(nf),
-        }]});
+      const n = facs.length + 1;
+      const pp = facBeton(n, factoryBase) * ppPerBeton;
+      const dt = pp / pph;
+      const ng = time + dt;
+      const nf = [...facs.map(f => ({ ...f })), { level: 1, bonus: defaultBonus }];
+      if (!visited.has(facKey(nf))) {
+        heap.push(ng + heuristic(nf), { facs: nf, g: ng, parent: node, step: {
+          action: "Neue Fabrik #" + n, type: "buy", resCost: facBeton(n, factoryBase), ppCost: pp,
+          ppGain: calcPPH(1, defaultBonus), dt, time: ng, pph: totalPPH(nf),
+        }});
       }
     }
   }
   return { path: [], complete: false, iter };
 }
 
-function simulate(facs, params, strategy, sStahl, sBeton, recipes, prices, mode) {
-  const { maxFactories, maxLevel, upgradeBase, factoryBase, defaultBonus } = params;
-  let st = facs.map(f => ({ ...f })), t = 0, rs = sStahl, rb = sBeton;
+function simulate(facs, params, strategy) {
+  const { maxFactories, maxLevel, upgradeBase, factoryBase, defaultBonus, ppPerStahl, ppPerBeton } = params;
+  let st = facs.map(f => ({ ...f })), t = 0;
   const path = []; let safe = 0;
   while (safe < 300) {
     safe++;
@@ -254,31 +252,18 @@ function simulate(facs, params, strategy, sStahl, sBeton, recipes, prices, mode)
     const acts = [], seen = new Set();
     st.forEach((f, i) => {
       if (f.level >= maxLevel) return;
-      const sig = f.item + ":" + f.bonus + ":" + f.level; if (seen.has(sig)) return; seen.add(sig);
-      const lvl = f.level, stahl = upgStahl(lvl, upgradeBase), free = Math.min(rs, stahl), need = stahl - free;
-      const { pp, method } = need > 0 ? effPP(need, "stahl", params) : { pp: 0, method: "Lager" };
-      const gain = mode === "profit" ? getProfit({ ...f, level: f.level+1 }, prices, recipes) - getProfit(f, prices, recipes) : calcPPH(1, f.bonus);
-      
-      const profitH = totalProfit(st, prices, recipes);
-      const factor = params.stahlPrice > 0 ? params.ppPerStahl / params.stahlPrice : 10;
-      const effectivePPH = Math.max(0.001, pph + (mode === "profit" ? profitH * factor : 0));
-
-      acts.push({ type: "upgrade", idx: i, resCost: stahl, resType: "stahl", freeRes: free,
-        method: free === stahl ? "Lager" : method, ppCost: pp, ppGain: gain,
-        dt: pp / effectivePPH, label: "Upgrade L" + f.level + " -> L" + (f.level+1) + " (" + f.item + " " + f.bonus + "%)" });
+      const sig = f.bonus + ":" + f.level; if (seen.has(sig)) return; seen.add(sig);
+      const lvl = f.level;
+      const pp = upgStahl(lvl, upgradeBase) * ppPerStahl;
+      acts.push({ type: "upgrade", idx: i, resCost: upgStahl(lvl, upgradeBase), ppCost: pp,
+        ppGain: calcPPH(1, f.bonus), dt: pp / pph,
+        label: "Upgrade L" + lvl + " -> L" + (lvl+1) + " (Bonus " + f.bonus + "%)" });
     });
     if (st.length < maxFactories) {
-      const n = st.length + 1, beton = facBeton(n, factoryBase), free = Math.min(rb, beton), need = beton - free;
-      const { pp, method } = need > 0 ? effPP(need, "beton", params) : { pp: 0, method: "Lager" };
-      const gain = mode === "profit" ? getProfit({ level: 1, bonus: defaultBonus, item: "concrete" }, prices, recipes) : calcPPH(1, defaultBonus);
-      
-      const profitH = totalProfit(st, prices, recipes);
-      const factor = params.stahlPrice > 0 ? params.ppPerStahl / params.stahlPrice : 10;
-      const effectivePPH = Math.max(0.001, pph + (mode === "profit" ? profitH * factor : 0));
-
-      acts.push({ type: "buy", resCost: beton, resType: "beton", freeRes: free,
-        method: free === beton ? "Lager" : method, ppCost: pp, ppGain: gain,
-        dt: pp / effectivePPH, label: "Neue Fabrik #" + n });
+      const n = st.length + 1;
+      const pp = facBeton(n, factoryBase) * ppPerBeton;
+      acts.push({ type: "buy", resCost: facBeton(n, factoryBase), ppCost: pp,
+        ppGain: calcPPH(1, defaultBonus), dt: pp / pph, label: "Neue Fabrik #" + n });
     }
     if (!acts.length) break;
     let pick;
@@ -287,11 +272,10 @@ function simulate(facs, params, strategy, sStahl, sBeton, recipes, prices, mode)
     else if (strategy === "upgrade_first") { const u = acts.filter(a => a.type === "upgrade").sort((a,b) => score(b) - score(a)); pick = u.length ? u[0] : acts.find(a => a.type === "buy"); }
     else { const b = acts.filter(a => a.type === "buy"); pick = b.length ? b[0] : acts.sort((a,b) => score(b) - score(a))[0]; }
     t += pick.dt;
-    if (pick.type === "upgrade") { rs -= pick.freeRes; st = st.map((f, j) => j === pick.idx ? { ...f, level: f.level + 1 } : f); }
-    else { rb -= pick.freeRes; st = [...st, { level: 1, bonus: defaultBonus, item: "concrete" }]; }
-    path.push({ action: pick.label, type: pick.type, resType: pick.resType, resCost: pick.resCost,
-      freeRes: pick.freeRes, method: pick.method, ppCost: pick.ppCost, ppGain: pick.ppGain,
-      dt: pick.dt, time: t, pph: mode === "profit" ? totalProfit(st, prices, recipes) : totalPPH(st) });
+    if (pick.type === "upgrade") st = st.map((f, j) => j === pick.idx ? { ...f, level: f.level + 1 } : f);
+    else st = [...st, { level: 1, bonus: defaultBonus }];
+    path.push({ action: pick.label, type: pick.type, resCost: pick.resCost,
+      ppCost: pick.ppCost, ppGain: pick.ppGain, dt: pick.dt, time: t, pph: totalPPH(st) });
   }
   return path;
 }
@@ -392,19 +376,13 @@ export default function App() {
 
   const [ppS, setPpS] = useState(20);
   const [ppB, setPpB] = useState(20);
-  const [sP, setSP] = useState(2.0);
-  const [bP, setBP] = useState(2.0);
   const [mxF, setMxF] = useState(12);
   const [mxL, setMxL] = useState(7);
   const [uB, setUB] = useState(20);
   const [fB, setFB] = useState(50);
   const [dB, setDB] = useState(50);
-  const [sS, setSS] = useState(0);
-  const [sB, setSB] = useState(0);
-  const [facs, setFacs] = useState([{ level: 1, bonus: 50, item: "concrete" }]);
-  const [allPrices, setAllPrices] = useState({ stahl: 2.0, concrete: 2.0, iron: 1.0, limestone: 0.8, fish: 5.0, cookedFish: 12.0, lead: 1.5, ammo: 4.0, heavyAmmo: 9.0, grain: 0.5, bread: 1.5, livestock: 1.0, steak: 4.0 });
+  const [facs, setFacs] = useState([{ level: 1, bonus: 50 }]);
   const [actv, setActv] = useState(["dijkstra", "cheapest"]);
-  const [optMode, setOptMode] = useState("profit"); // "profit" or "pp"
   const [tab, setTab] = useState("chart");
   const [cM, setCM] = useState("rate");
   const [tS, setTS] = useState("dijkstra");
@@ -459,43 +437,26 @@ export default function App() {
       const companyIds = companies.items || [];
       if (!companyIds.length) throw new Error("Keine Fabriken gefunden fuer " + username);
 
-      // 5. Get market prices
-      try {
-        const prices = await apiCall("itemTrading.getPrices", {});
-        setAllPrices(prices);
-        if (prices.steel != null) setSP(Math.round(prices.steel * 10000) / 10000);
-        if (prices.concrete != null) setBP(Math.round(prices.concrete * 10000) / 10000);
-      } catch {}
-
-      // 4. Get each company's details (moved down to use prices/recipes if needed)
+      // 4. Get each company's details
       const newFacs = [];
       for (const cid of companyIds) {
         const comp = await apiCall("company.getById", { companyId: cid });
         const aeLevel = comp.activeUpgradeLevels?.automatedEngine || 1;
-        const item = comp.itemCode || "concrete";
-        const recipe = RECIPES[item] || { pp: 20 };
-        
         // Derive bonus: production = level * base_at_lvl_1 * (1 + bonus/100)
-        // From analysis: Cooked Fish base is ~1.5 items/h at Level 1
         const baseItemsH = 1.5;
         const prodRate = comp.production || 0;
         let derivedBonus = aeLevel > 0 ? Math.round(((prodRate / aeLevel / baseItemsH) - 1) * 100) : dB;
-        
-        // Safety cap to avoid solver freeze with glitchy API data
         if (derivedBonus > 500) derivedBonus = dB;
         if (derivedBonus < -90) derivedBonus = -90;
-
         newFacs.push({
           level: aeLevel,
           bonus: derivedBonus,
           name: comp.name || ("Fabrik " + (newFacs.length + 1)),
-          item: item,
-          production: prodRate
         });
       }
 
       setFacs(newFacs);
-      setApiInfo(username + ": " + newFacs.length + " Fabriken geladen, Marktpreise aktualisiert");
+      setApiInfo(username + ": " + newFacs.length + " Fabriken geladen");
       setRes(null);
     } catch (e) {
       setApiError(e.message || "Fehler beim Laden");
@@ -504,12 +465,11 @@ export default function App() {
   }
 
   const updF = useCallback((i, k, v) => setFacs(p => p.map((f, j) => j === i ? { ...f, [k]: v } : f)), []);
-  const addF = useCallback(() => setFacs(p => [...p, { level: 1, bonus: dB, item: "concrete" }]), [dB]);
+  const addF = useCallback(() => setFacs(p => [...p, { level: 1, bonus: dB }]), [dB]);
   const rmF = useCallback(i => setFacs(p => p.filter((_, j) => j !== i)), []);
 
-  const params = { ppPerStahl: ppS, ppPerBeton: ppB, stahlPrice: sP, betonPrice: bP, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB, defaultBonus: dB, startStahl: sS, startBeton: sB };
+  const params = { ppPerStahl: ppS, ppPerBeton: ppB, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB, defaultBonus: dB };
   const pph = totalPPH(facs);
-  const profitH = totalProfit(facs, allPrices, RECIPES);
 
   const code = encodeState(params, facs, theme);
 
@@ -517,9 +477,9 @@ export default function App() {
     const d = decodeState(impStr);
     if (!d) return;
     const p = d.params;
-    setPpS(p.ppPerStahl); setPpB(p.ppPerBeton); setSP(p.stahlPrice); setBP(p.betonPrice);
+    setPpS(p.ppPerStahl); setPpB(p.ppPerBeton);
     setMxF(p.maxFactories); setMxL(p.maxLevel); setUB(p.upgradeBase); setFB(p.factoryBase);
-    setDB(p.defaultBonus); setSS(p.startStahl); setSB(p.startBeton);
+    setDB(p.defaultBonus);
     setFacs(d.facs);
     if (d.theme) setTheme(d.theme);
     setShowImp(false); setImpStr(""); setRes(null);
@@ -535,80 +495,56 @@ export default function App() {
     });
   }
 
-  const trade = (() => {
-    if (sP <= 0 || bP <= 0) return null;
-    const sv = (sP / bP) * ppB, bv = (bP / sP) * ppS;
-    return { sE: Math.min(ppS, sv), sM: sv < ppS ? "via Beton" : "direkt", bE: Math.min(ppB, bv), bM: bv < ppB ? "via Stahl" : "direkt" };
-  })();
-
   const nextActs = useMemo(() => {
     if (pph <= 0 || !facs.length) return [];
     const a = [], seen = new Set();
     facs.forEach((f, i) => {
       if (f.level >= mxL) return;
-      const sig = f.item + ":" + f.bonus + ":" + f.level; if (seen.has(sig)) return; seen.add(sig);
-      const stahl = upgStahl(f.level, uB), free = Math.min(sS, stahl), need = stahl - free;
-      const { pp, method } = need > 0 ? effPP(need, "stahl", params) : { pp: 0, method: "Lager" };
-      
-      const gain = optMode === "profit" ? getProfit({ ...f, level: f.level+1 }, allPrices, RECIPES) - getProfit(f, allPrices, RECIPES) : calcPPH(1, f.bonus);
-      const fullPP = effPP(stahl, "stahl", params).pp;
-      
-      const factor = params.stahlPrice > 0 ? params.ppPerStahl / params.stahlPrice : 10;
-      const effectivePPH = Math.max(0.001, pph + (optMode === "profit" ? profitH * factor : 0));
-      const gainPP = optMode === "profit" ? gain * factor : gain;
-
-      a.push({ label: "F" + (i+1) + " L" + f.level + " -> " + (f.level+1) + " (" + f.item + ")", type: "upgrade", resType: "Stahl", resCost: stahl, free, ppCost: fullPP, method: free === stahl ? "Lager" : method, ppGain: gain * 24, hours: pp / effectivePPH, amortH: gainPP > 0 ? fullPP / gainPP : Infinity });
+      const sig = f.bonus + ":" + f.level; if (seen.has(sig)) return; seen.add(sig);
+      const stahl = upgStahl(f.level, uB);
+      const fullPP = stahl * ppS;
+      const gain = calcPPH(1, f.bonus);
+      a.push({ label: "F" + (i+1) + " L" + f.level + " -> " + (f.level+1), type: "upgrade", resCost: stahl, ppCost: fullPP, ppGain: gain * 24, hours: fullPP / pph, amortH: gain > 0 ? fullPP / gain : Infinity });
     });
     if (facs.length < mxF) {
-      const n = facs.length + 1, beton = facBeton(n, fB), free = Math.min(sB, beton), need = beton - free;
-      const { pp, method } = need > 0 ? effPP(need, "beton", params) : { pp: 0, method: "Lager" };
-      const gain = optMode === "profit" ? getProfit({ level: 1, bonus: dB, item: "concrete" }, allPrices, RECIPES) : calcPPH(1, dB);
-      const fullPP = effPP(beton, "beton", params).pp;
-
-      const factor = params.stahlPrice > 0 ? params.ppPerStahl / params.stahlPrice : 10;
-      const effectivePPH = Math.max(0.001, pph + (optMode === "profit" ? profitH * factor : 0));
-      const gainPP = optMode === "profit" ? gain * factor : gain;
-
-      a.push({ label: "Neue Fabrik #" + n, type: "buy", resType: "Beton", resCost: beton, free, ppCost: fullPP, method: free === beton ? "Lager" : method, ppGain: gain * 24, hours: pp / effectivePPH, amortH: gainPP > 0 ? fullPP / gainPP : Infinity });
+      const n = facs.length + 1, beton = facBeton(n, fB);
+      const fullPP = beton * ppB;
+      const gain = calcPPH(1, dB);
+      a.push({ label: "Neue Fabrik #" + n, type: "buy", resCost: beton, ppCost: fullPP, ppGain: gain * 24, hours: fullPP / pph, amortH: gain > 0 ? fullPP / gain : Infinity });
     }
     const score = (x) => x.ppGain / Math.max(x.ppCost, 1);
     a.sort((x, y) => score(y) - score(x));
-    
-    // Dijkstra Sync
     if (res?.paths?.[tS]?.length) {
       const opt = res.paths[tS][0];
       a.forEach(x => {
-        // Match optimization step with heuristic act
         const isUpgrade = x.type === "upgrade" && opt.type === "upgrade";
         const isBuy = x.type === "buy" && opt.type === "buy";
         if (isUpgrade && x.label.includes(opt.action.split(" (")[0])) x.isOpt = true;
         if (isBuy && x.label === opt.action) x.isOpt = true;
       });
-      // Move optimal to front
       a.sort((x, y) => (x.isOpt ? -1 : y.isOpt ? 1 : 0));
     }
     return a;
-  }, [facs, params, pph, mxF, mxL, uB, fB, dB, sS, sB, res, tS, optMode, allPrices, C, F, effPP, GlassCard, Inp, Tip, Btn, Bdg, Sec, TH, TD]);
+  }, [facs, pph, mxF, mxL, uB, fB, dB, ppS, ppB, res, tS]);
 
   const compute = useCallback(() => {
     setBusy(true);
     setTimeout(() => {
       const paths = {};
-      for (const s of STRATS) { if (s.key !== "dijkstra") try { paths[s.key] = simulate(facs, params, s.key, sS, sB, RECIPES, allPrices, optMode); } catch { paths[s.key] = []; } }
+      for (const s of STRATS) { if (s.key !== "dijkstra") try { paths[s.key] = simulate(facs, params, s.key); } catch { paths[s.key] = []; } }
       const cpPath = paths.cheapest || [];
       const ub = cpPath.length ? cpPath[cpPath.length - 1].time : Infinity;
-      const d = runDijkstra(facs, params, sS, sB, RECIPES, allPrices, optMode, ub, maxIter);
+      const d = runDijkstra(facs, params, ub, maxIter);
       paths.dijkstra = d.path;
       const finals = {};
       for (const s of STRATS) { const p = paths[s.key]; finals[s.key] = p?.length ? p[p.length-1].time : null; }
-      setRes({ paths, finals, ok: d.complete, iter: d.iter });
+      setRes({ paths, finals, ok: d.complete, iter: d.iter, tooComplex: d.tooComplex });
       setBusy(false);
     }, 50);
-  }, [facs, params, sS, sB, optMode, allPrices, maxIter, STRATS]);
+  }, [facs, params, maxIter, STRATS]);
 
   const chart = res ? (() => {
-    const startVal = optMode === "profit" ? profitH : pph;
-    const rd = buildChart(res.paths, startVal, actv);
+    const rd = buildChart(res.paths, pph, actv);
     if (cM === "rate") return rd;
     const acc = {}; let prev = 0;
     return rd.map(d => { const dt = d.time - prev; const pt = { time: d.time }; for (const k of actv) { if (!(k in acc)) acc[k] = 0; acc[k] += (d[k]||0) * dt; pt[k] = Math.round(acc[k]); } prev = d.time; return pt; });
@@ -654,19 +590,14 @@ export default function App() {
           </Tip>
           <div style={{ textAlign: "right" }}>
             <div style={{ fontSize: 26, fontWeight: 700, color: C.accent, fontFamily: F.h, textShadow: "0 0 20px " + C.accentGlow }}>
-              {optMode === "profit" ? (profitH * 24).toFixed(1) : (pph * 24).toFixed(0)} 
-              <span style={{ fontSize: 14, color: C.textDim }}> {optMode === "profit" ? "$/Tag" : "PP/Tag"}</span>
+              {(pph * 24).toFixed(0)}
+              <span style={{ fontSize: 14, color: C.textDim }}> PP/Tag</span>
             </div>
             <div style={{ fontSize: 12, color: C.textMuted }}>
-              {optMode === "profit" ? profitH.toFixed(2) + " $/h" : pph.toFixed(1) + " PP/h"}
+              {pph.toFixed(1)} PP/h
             </div>
           </div>
         </div>
-      </div>
-
-      <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
-        <Btn on={optMode === "profit"} onClick={() => setOptMode("profit")}>Profit-Optimierung ($)</Btn>
-        <Btn on={optMode === "pp"} onClick={() => setOptMode("pp")}>Produktions-Optimierung (PP)</Btn>
       </div>
 
       {/* Import/Export Bar */}
@@ -713,19 +644,6 @@ export default function App() {
               <Inp label="Std-Bonus" value={dB} onChange={setDB} suffix="%" tip="Produktionsbonus neuer Fabriken" />
             </div>
           </GlassCard>
-          <GlassCard>
-            <Sec icon="&#9878;">Markt &amp; Lager</Sec>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px" }}>
-              <Inp label="Stahlpreis" value={sP} onChange={setSP} step={0.0001} tip="Marktpreis pro Stahl (fuer Handel)" />
-              <Inp label="Betonpreis" value={bP} onChange={setBP} step={0.0001} tip="Marktpreis pro Beton (fuer Handel)" />
-              <Inp label="Stahl Lager" value={sS} onChange={setSS} tip="Stahl auf Vorrat - wird zuerst verbraucht" />
-              <Inp label="Beton Lager" value={sB} onChange={setSB} tip="Beton auf Vorrat - wird zuerst verbraucht" />
-            </div>
-            {trade && <div style={{ ...glass(0.04, 12), borderRadius: 8, padding: "8px 10px", marginTop: 10, fontSize: 11, lineHeight: 1.7 }}>
-              <div>Eff. PP/Stahl: <span style={{ color: C.stahl, fontWeight: 600 }}>{trade.sE.toFixed(1)}</span> <span style={{ color: C.textMuted }}>({trade.sM})</span></div>
-              <div>Eff. PP/Beton: <span style={{ color: C.betonC, fontWeight: 600 }}>{trade.bE.toFixed(1)}</span> <span style={{ color: C.textMuted }}>({trade.bM})</span></div>
-            </div>}
-          </GlassCard>
         </div>
 
         <GlassCard>
@@ -742,7 +660,7 @@ export default function App() {
               placeholder="Username eingeben..."
               style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 6, color: C.text, padding: "6px 10px", fontSize: 12, fontFamily: F.m, outline: "none", flex: 1, minWidth: 140 }}
             />
-            <Tip text="Fabriken und Marktpreise automatisch von der WarEra API laden">
+            <Tip text="Fabriken automatisch von der WarEra API laden">
               <Btn on color={C.accent} onClick={loadFromAPI} disabled={apiLoading || !apiUser.trim()}>
                 {apiLoading ? "Lade..." : "Importieren"}
               </Btn>
@@ -754,21 +672,14 @@ export default function App() {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8 }}>
             {facs.map((f, i) => {
               const p = calcPPH(f.level, f.bonus);
-              const prof = getProfit(f, allPrices, RECIPES);
               return <div key={i} style={{ ...glass(0.04, 12), borderRadius: 10, padding: "10px 12px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                   <span style={{ fontFamily: F.h, fontSize: 13, fontWeight: 700, color: C.accent, textShadow: "0 0 8px " + C.accentGlow }}>{i+1}</span>
-                  <select value={f.item} onChange={e => updF(i, "item", e.target.value)}
-                    style={{ background: "none", border: "none", color: C.textDim, fontSize: 9, fontFamily: F.h, outline: "none", cursor: "pointer" }}>
-                    {Object.keys(RECIPES).map(k => <option key={k} value={k}>{k}</option>)}
-                  </select>
-                  <span style={{ fontSize: 11, color: C.green, fontWeight: 600, textShadow: "0 0 8px " + C.greenGlow }}>
-                    {optMode === "profit" ? prof.toFixed(1) + " $" : p.toFixed(1) + " PP"}
-                  </span>
+                  <span style={{ fontSize: 11, color: C.green, fontWeight: 600, textShadow: "0 0 8px " + C.greenGlow }}>{p.toFixed(1)} PP/h</span>
                   <button onClick={() => rmF(i)} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 18, fontWeight: 700, padding: 0, opacity: 0.7, lineHeight: 1 }}>&times;</button>
                 </div>
                 {f.name && <div style={{ fontSize: 9, color: C.textMuted, marginBottom: 4, fontFamily: F.m, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</div>}
-                <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                <div style={{ display: "flex", gap: 6 }}>
                   <div style={{ flex: 1 }}>
                     <label style={{ fontSize: 9, color: C.textMuted, display: "block", marginBottom: 2, fontFamily: F.h, letterSpacing: "0.06em" }}>LVL</label>
                     <select value={f.level} onChange={e => updF(i, "level", +e.target.value)}
@@ -782,11 +693,6 @@ export default function App() {
                       style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 5, color: C.text, padding: "4px 6px", fontSize: 12, width: "100%", boxSizing: "border-box", fontFamily: F.m, outline: "none" }} />
                   </div>
                 </div>
-                {RECIPES[f.item]?.inputs && Object.keys(RECIPES[f.item].inputs).length > 0 && (
-                  <div style={{ fontSize: 8, color: C.textMuted, fontFamily: F.m }}>
-                    Input: {Object.entries(RECIPES[f.item].inputs).map(([k, v]) => `${v}x ${k}`).join(", ")}
-                  </div>
-                )}
               </div>;
             })}
           </div>
@@ -800,25 +706,19 @@ export default function App() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead><tr>
               <th style={TH}>Aktion</th>
-              <th style={TH}>Res.</th>
               <th style={TH}><Tip text="Benoetigte Ressourcenmenge">Menge</Tip></th>
-              <th style={TH}><Tip text="Vom Lager abgezogen (kostenlos)">Lager</Tip></th>
-              <th style={TH}><Tip text="Vollstaendige Ressourcenkosten in PP (Marktwert)">Kosten (PP)</Tip></th>
-              <th style={TH}><Tip text="Beschaffungsweg: direkt, via Handel oder Lager">Weg</Tip></th>
+              <th style={TH}><Tip text="Kosten in Produktionspunkten">Kosten (PP)</Tip></th>
               <th style={TH}><Tip text="Produktionszeit bei aktueller PP-Rate">Dauer</Tip></th>
-              <th style={TH}><Tip text={optMode === "profit" ? "Zusaetzlicher Profit pro Tag" : "Produktionsgewinn pro Tag"}>{optMode === "profit" ? "+$/Tag" : "+PP/Tag"}</Tip></th>
+              <th style={TH}><Tip text="Produktionsgewinn pro Tag">+PP/Tag</Tip></th>
               <th style={TH}><Tip text="Zeit bis die Investition sich durch Mehrproduktion amortisiert">Amort.</Tip></th>
             </tr></thead>
             <tbody>{nextActs.map((a, i) => (
-              <tr key={i} style={{ background: a.isOpt ? "rgba(240,180,41,0.12)" : i === 0 && !res ? "rgba(240,180,41,0.06)" : i % 2 ? C.rowAlt : "transparent", boxShadow: a.isOpt ? "inset 4px 0 0 " + C.accent : "none" }}>
+              <tr key={i} style={{ background: a.isOpt ? "rgba(240,180,41,0.12)" : i % 2 ? C.rowAlt : "transparent", boxShadow: a.isOpt ? "inset 4px 0 0 " + C.accent : "none" }}>
                 <td style={TD(a.isOpt)}>{a.isOpt && <Bdg color={C.accent}>OPTIMAL</Bdg>}<Bdg color={a.type === "buy" ? C.blue : C.green} style={{ marginLeft: a.isOpt ? 6 : 0 }}>{a.type === "buy" ? "NEU" : "UP"}</Bdg><span style={{ marginLeft: 8 }}>{a.label}</span></td>
-                <td style={{ ...TD(false), color: a.resType === "Stahl" ? C.stahl : C.betonC }}>{a.resType}</td>
-                <td style={TD(false)}>{fmtN(a.resCost)}</td>
-                <td style={{ ...TD(false), color: a.free > 0 ? C.green : C.textMuted }}>{a.free > 0 ? "-" + fmtN(a.free) : "-"}</td>
+                <td style={{ ...TD(false), color: a.type === "upgrade" ? C.stahl : C.betonC }}>{fmtN(a.resCost)}</td>
                 <td style={TD(false)}>{fmtN(a.ppCost)}</td>
-                <td style={{ ...TD(false), fontSize: 10, color: a.method === "Lager" ? C.green : a.method === "direkt" ? C.textMuted : C.accent }}>{a.method}</td>
                 <td style={TD(false)}>{fmtT(a.hours)}</td>
-                <td style={{ ...TD(false), color: C.green }}>{optMode === "profit" ? a.ppGain.toFixed(2) + " $" : "+" + a.ppGain.toFixed(1)}</td>
+                <td style={{ ...TD(false), color: C.green }}>+{a.ppGain.toFixed(1)}</td>
                 <td style={TD(false)}>{fmtT(a.amortH)}</td>
               </tr>
             ))}</tbody>
@@ -835,7 +735,7 @@ export default function App() {
           <Inp label="Max Iterationen" value={maxIter} onChange={setMaxIter} step={100000} tip="Maximale Dijkstra-Iterationen (Standard: 500.000, mehr = langsamer aber genauer)" />
         </div>
         {res && <span style={{ fontSize: 11, color: res.ok ? C.green : C.red, textShadow: "0 0 8px " + (res.ok ? C.greenGlow : "rgba(248,113,113,0.3)") }}>
-          {res.ok ? "Optimum gefunden" : "Limit erreicht"} - {res.iter.toLocaleString()} Iterationen
+          {res.ok ? "Optimum gefunden" : res.tooComplex ? "Dijkstra übersprungen – zu viele Bonus-Varianten" : "Limit erreicht"}{!res.tooComplex && " – " + res.iter.toLocaleString() + " Iterationen"}
         </span>}
       </div>
 
@@ -901,22 +801,19 @@ export default function App() {
           </div>
           <div style={{ maxHeight: 520, overflowY: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead><tr>{["#", "Aktion", "Res.", "Menge", "Lager", "Weg", "PP", "Dauer", "Gesamt", "PP/h", "+PP/h"].map(h => <th key={h} style={TH}>{h}</th>)}</tr></thead>
+              <thead><tr>{["#", "Aktion", "Menge", "PP", "Dauer", "Gesamt", "PP/h", "+PP/h"].map(h => <th key={h} style={TH}>{h}</th>)}</tr></thead>
               <tbody>
                 {curPath.map((s, i) => <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
                   <td style={TD(false)}>{i+1}</td>
                   <td style={TD(false)}><Bdg color={s.type === "buy" ? C.blue : C.green}>{s.type === "buy" ? "NEU" : "UP"}</Bdg><span style={{ marginLeft: 8 }}>{s.action}</span></td>
-                  <td style={{ ...TD(false), color: s.resType === "stahl" ? C.stahl : C.betonC }}>{s.resType === "stahl" ? "Stahl" : "Beton"}</td>
-                  <td style={TD(false)}>{fmtN(s.resCost)}</td>
-                  <td style={{ ...TD(false), color: s.freeRes > 0 ? C.green : C.textMuted }}>{s.freeRes > 0 ? "-" + s.freeRes : "-"}</td>
-                  <td style={{ ...TD(false), fontSize: 10, color: s.method === "Lager" ? C.green : s.method === "direkt" ? C.textMuted : C.accent }}>{s.method}</td>
+                  <td style={{ ...TD(false), color: s.type === "upgrade" ? C.stahl : C.betonC }}>{fmtN(s.resCost)}</td>
                   <td style={TD(false)}>{fmtN(s.ppCost)}</td>
                   <td style={TD(false)}>{fmtT(s.dt)}</td>
                   <td style={TD(true)}>{fmtT(s.time)}</td>
                   <td style={{ ...TD(false), color: C.green }}>{s.pph.toFixed(1)}</td>
                   <td style={{ ...TD(false), color: C.green }}>+{s.ppGain.toFixed(1)}</td>
                 </tr>)}
-                {!curPath.length && <tr><td colSpan={11} style={{ padding: 24, textAlign: "center", color: C.textMuted }}>Kein Pfad / Max erreicht</td></tr>}
+                {!curPath.length && <tr><td colSpan={8} style={{ padding: 24, textAlign: "center", color: C.textMuted }}>Kein Pfad / Max erreicht</td></tr>}
               </tbody>
             </table>
           </div>
@@ -930,24 +827,22 @@ export default function App() {
           <div>
             <div style={{ color: C.stahl, fontWeight: 700, fontFamily: F.h, marginBottom: 8, letterSpacing: "0.08em" }}>UPGRADES (STAHL)</div>
             {Array.from({ length: mxL - 1 }, (_, i) => i+1).map(l => {
-              const s = upgStahl(l, uB), { pp, method } = effPP(s, "stahl", params);
+              const s = upgStahl(l, uB), pp = s * ppS;
               return <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: C.textDim }}>
                 <span style={{ width: 70, color: C.text }}>L{l} -&gt; L{l+1}</span>
-                <span style={{ color: C.stahl }}>{s}</span>
+                <span style={{ color: C.stahl }}>{s} Stahl</span>
                 <span>{pp.toFixed(0)} PP</span>
-                <span style={{ fontSize: 10, color: method === "direkt" ? C.textMuted : C.accent }}>{method}</span>
               </div>;
             })}
           </div>
           <div>
             <div style={{ color: C.betonC, fontWeight: 700, fontFamily: F.h, marginBottom: 8, letterSpacing: "0.08em" }}>FABRIKEN (BETON)</div>
             {Array.from({ length: mxF }, (_, i) => i+1).map(n => {
-              const b = facBeton(n, fB), { pp, method } = effPP(b, "beton", params);
+              const b = facBeton(n, fB), pp = b * ppB;
               return <div key={n} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: C.textDim }}>
                 <span style={{ width: 70, color: C.text }}>Fabrik #{n}</span>
-                <span style={{ color: C.betonC }}>{b}</span>
+                <span style={{ color: C.betonC }}>{b} Beton</span>
                 <span>{pp.toFixed(0)} PP</span>
-                <span style={{ fontSize: 10, color: method === "direkt" ? C.textMuted : C.accent }}>{method}</span>
               </div>;
             })}
           </div>
@@ -955,7 +850,7 @@ export default function App() {
       </GlassCard>
 
       <div style={{ textAlign: "center", fontSize: 10, color: C.textMuted, marginTop: 16, paddingBottom: 24, fontFamily: F.h, letterSpacing: "0.15em" }}>
-        HEBELMINISTERIUM DEUTSCHLAND &middot; FABRIK-OPTIMIERER &middot; DIJKSTRA + MARKTHANDEL
+        HEBELMINISTERIUM DEUTSCHLAND &middot; FABRIK-OPTIMIERER &middot; DIJKSTRA + PP-OPTIMIERUNG
       </div>
     </div>
     </ThemeContext.Provider>
