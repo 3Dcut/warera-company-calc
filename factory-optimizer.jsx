@@ -33,18 +33,18 @@ const THEMES = {
   },
   pink: {
     F: { h: "'Quicksand', sans-serif", m: "'Source Code Pro', monospace" },
-    bg: "linear-gradient(135deg, #1a0e18 0%, #201225 40%, #180d1e 100%)",
-    orb1: "rgba(255,107,157,0.06)", orb2: "rgba(200,130,255,0.04)",
+    bg: "linear-gradient(135deg, #1f001f 0%, #300040 40%, #1a001a 100%)",
+    orb1: "rgba(255,0,255,0.1)", orb2: "rgba(0,255,255,0.06)",
     C: {
-      accent: "#ff6b9d", accentGlow: "rgba(255,107,157,0.3)",
-      green: "#5eeaaa", greenGlow: "rgba(94,234,170,0.2)",
-      red: "#ff6b6b",
-      blue: "#82b4ff", blueGlow: "rgba(130,180,255,0.2)",
-      purple: "#d0a0ff",
-      stahl: "#ffb088", betonC: "#a8c8a0",
-      text: "#f8f0f4", textDim: "#c0a8b8", textMuted: "#705868",
-      inputBg: "rgba(30,10,25,0.5)", inputBorder: "rgba(255,130,180,0.12)",
-      rowAlt: "rgba(255,200,220,0.03)",
+      accent: "#ff00ff", accentGlow: "rgba(255,0,255,0.5)",
+      green: "#00ffcc", greenGlow: "rgba(0,255,204,0.4)",
+      red: "#ff3366",
+      blue: "#00ccff", blueGlow: "rgba(0,204,255,0.4)",
+      purple: "#cc66ff",
+      stahl: "#ff9966", betonC: "#66ffcc",
+      text: "#ffffff", textDim: "#ffccff", textMuted: "#996699",
+      inputBg: "rgba(255,0,255,0.05)", inputBorder: "rgba(255,0,255,0.3)",
+      rowAlt: "rgba(255,0,255,0.04)",
     },
   },
 };
@@ -56,6 +56,8 @@ const styleEl = document.createElement("style");
 styleEl.textContent = `
   @keyframes tipIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
   @keyframes copyFlash { 0% { box-shadow: 0 0 0 rgba(52,211,153,0); } 50% { box-shadow: 0 0 24px rgba(52,211,153,0.5); } 100% { box-shadow: 0 0 0 rgba(52,211,153,0); } }
+  * { box-sizing: border-box; }
+  body, html { margin: 0; padding: 0; overflow-x: hidden; }
   .tip-wrap { position: relative; display: inline-flex; }
   .tip-wrap .tip-box {
     display: none; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
@@ -324,6 +326,7 @@ export default function App() {
   const [tS, setTS] = useState("dijkstra");
   const [res, setRes] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [impStr, setImpStr] = useState("");
   const [showImp, setShowImp] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -399,10 +402,27 @@ export default function App() {
       setFacs(newFacs);
       setApiInfo(username + ": " + newFacs.length + " Fabriken geladen, Marktpreise aktualisiert");
       setRes(null);
+      // Auto-compute after loading
+      setTimeout(() => compute(), 100);
     } catch (e) {
       setApiError(e.message || "Fehler beim Laden");
     }
     setApiLoading(false);
+  }
+
+  function compute() {
+    setBusy(true);
+    setTimeout(() => {
+      // Re-read params to ensure we use current state if called via timeout
+      const currentParams = { ppPerStahl: ppS, ppPerBeton: ppB, stahlPrice: sP, betonPrice: bP, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB, startStahl: sS, startBeton: sB };
+      const paths = {}, d = runDijkstra(facs, currentParams, sS, sB);
+      paths.dijkstra = d.path;
+      for (const s of STRATS) { if (s.key !== "dijkstra") try { paths[s.key] = simulate(facs, currentParams, s.key, sS, sB); } catch { paths[s.key] = []; } }
+      const finals = {};
+      for (const s of STRATS) { const p = paths[s.key]; finals[s.key] = p?.length ? p[p.length-1].time : null; }
+      setRes({ paths, finals, ok: d.complete, iter: d.iter });
+      setBusy(false);
+    }, 50);
   }
 
   const updF = useCallback((i, k, v) => setFacs(p => p.map((f, j) => j === i ? { ...f, [k]: v } : f)), []);
@@ -444,17 +464,8 @@ export default function App() {
 
   const displayActs = res?.paths?.dijkstra?.slice(0, 3) || [];
 
-  function compute() {
-    setBusy(true);
-    setTimeout(() => {
-      const paths = {}, d = runDijkstra(facs, params, sS, sB);
-      paths.dijkstra = d.path;
-      for (const s of STRATS) { if (s.key !== "dijkstra") try { paths[s.key] = simulate(facs, params, s.key, sS, sB); } catch { paths[s.key] = []; } }
-      const finals = {};
-      for (const s of STRATS) { const p = paths[s.key]; finals[s.key] = p?.length ? p[p.length-1].time : null; }
-      setRes({ paths, finals, ok: d.complete, iter: d.iter });
-      setBusy(false);
-    }, 50);
+  function computeOld() {
+    // Keep internal compute if needed or remove if redundant
   }
 
   const chart = res ? (() => {
@@ -537,210 +548,150 @@ export default function App() {
         {!showImp && <span style={{ fontSize: 10, color: C.textMuted, fontFamily: F.m, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 300 }}>{code}</span>}
       </GlassCard>
 
-      {/* Config Grid */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 14 }}>
-        <div>
-          <GlassCard>
-            <Sec icon="&#9881;">Spielregeln</Sec>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px" }}>
-              <Inp label="Max Fabriken" value={mxF} onChange={setMxF} tip="Maximale Anzahl an Fabriken" />
-              <Inp label="Max Level" value={mxL} onChange={setMxL} tip="Hoechstes Fabrik-Level" />
-              <Inp label="Upgrade-Basis" value={uB} onChange={setUB} suffix="Stahl" tip="Basiskosten L1->L2. Verdoppelt sich pro Level." />
-              <Inp label="Fabrik-Basis" value={fB} onChange={setFB} suffix="Beton" tip="Fabrik #N kostet N x Basis Beton" />
-              <Inp label="PP / Stahl" value={ppS} onChange={setPpS} tip="Produktionspunkte um 1 Stahl herzustellen" />
-              <Inp label="PP / Beton" value={ppB} onChange={setPpB} tip="Produktionspunkte um 1 Beton herzustellen" />
-            </div>
-          </GlassCard>
-          <GlassCard>
-            <Sec icon="&#9878;">Markt &amp; Lager</Sec>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px" }}>
-              <Inp label="Stahlpreis" value={sP} onChange={setSP} step={0.0001} tip="Marktpreis pro Stahl (fuer Handel)" />
-              <Inp label="Betonpreis" value={bP} onChange={setBP} step={0.0001} tip="Marktpreis pro Beton (fuer Handel)" />
-              <Inp label="Stahl Lager" value={sS} onChange={setSS} tip="Stahl auf Vorrat - wird zuerst verbraucht" />
-              <Inp label="Beton Lager" value={sB} onChange={setSB} tip="Beton auf Vorrat - wird zuerst verbraucht" />
-            </div>
-            {trade && <div style={{ ...glass(0.04, 12), borderRadius: 8, padding: "8px 10px", marginTop: 10, fontSize: 11, lineHeight: 1.7 }}>
-              <div>Eff. PP/Stahl: <span style={{ color: C.stahl, fontWeight: 600 }}>{trade.sE.toFixed(1)}</span> <span style={{ color: C.textMuted }}>({trade.sM})</span></div>
-              <div>Eff. PP/Beton: <span style={{ color: C.betonC, fontWeight: 600 }}>{trade.bE.toFixed(1)}</span> <span style={{ color: C.textMuted }}>({trade.bM})</span></div>
-            </div>}
-          </GlassCard>
-        </div>
-
-        <GlassCard>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
-            <Sec icon="&#9878;">Fabriken ({facs.length}/{mxF})</Sec>
-            <Tip text="Neue Fabrik auf Level 1 hinzufuegen"><Btn on color={C.green} onClick={addF}>+ Hinzufuegen</Btn></Tip>
-          </div>
-          {/* API Import */}
-          <div style={{ ...glass(0.04, 12), borderRadius: 8, padding: "10px 14px", marginBottom: 12, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <span style={{ fontFamily: F.h, fontSize: 10, color: C.textDim, letterSpacing: "0.08em", textTransform: "uppercase", whiteSpace: "nowrap" }}>WarEra API:</span>
-            <input
-              value={apiUser} onChange={e => setApiUser(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && loadFromAPI()}
-              placeholder="Username eingeben..."
-              style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 6, color: C.text, padding: "6px 10px", fontSize: 12, fontFamily: F.m, outline: "none", flex: 1, minWidth: 140 }}
-            />
-            <Tip text="Fabriken und Marktpreise automatisch von der WarEra API laden">
-              <Btn on color={C.accent} onClick={loadFromAPI} disabled={apiLoading || !apiUser.trim()}>
-                {apiLoading ? "Lade..." : "Importieren"}
+      {/* Simple Main UI */}
+      <GlassCard style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <Sec icon="&#128100;">WarEra Spieler</Sec>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                value={apiUser} onChange={e => setApiUser(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && loadFromAPI()}
+                placeholder="Username..."
+                style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 8, color: C.text, padding: "10px 14px", fontSize: 14, fontFamily: F.m, outline: "none", flex: 1 }}
+              />
+              <Btn on big color={C.accent} onClick={loadFromAPI} disabled={apiLoading || !apiUser.trim()}>
+                {apiLoading ? "Lädt..." : "Import & Optimieren"}
               </Btn>
-            </Tip>
-            {apiError && <span style={{ fontSize: 10, color: C.red, fontFamily: F.m }}>{apiError}</span>}
-            {apiInfo && <span style={{ fontSize: 10, color: C.green, fontFamily: F.m }}>{apiInfo}</span>}
+            </div>
           </div>
-          {!facs.length && <div style={{ padding: 24, textAlign: "center", color: C.textMuted }}>Keine Fabriken</div>}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(152px, 1fr))", gap: 8 }}>
-            {facs.map((f, i) => {
-              const p = calcPPH(f.level);
-              return <div key={i} style={{ ...glass(0.06, 12), borderRadius: 10, padding: "12px 14px", border: "1px solid rgba(255,255,255,0.12)" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                  <span style={{ fontFamily: F.h, fontSize: 14, fontWeight: 700, color: C.accent, textShadow: "0 0 8px " + C.accentGlow }}>{i+1}</span>
-                  {f.item && <span style={{ fontSize: 10, color: C.text, fontWeight: 600, fontFamily: F.h, letterSpacing: "0.04em" }}>{f.item}</span>}
-                  <span style={{ fontSize: 13, color: C.green, fontWeight: 700, textShadow: "0 0 8px " + C.greenGlow }}>{(p * 24).toFixed(1)}</span>
-                  <button onClick={() => rmF(i)} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 20, fontWeight: 700, padding: 0, opacity: 0.9, lineHeight: 1 }}>&times;</button>
-                </div>
-                {f.name && <div style={{ fontSize: 11, color: C.textDim, marginBottom: 6, fontFamily: F.m, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 500 }}>{f.name}</div>}
-                <div style={{ display: "flex", gap: 6 }}>
-                  <div style={{ flex: 1 }}>
-                    <label style={{ fontSize: 10, color: C.textDim, display: "block", marginBottom: 2, fontFamily: F.h, letterSpacing: "0.06em", fontWeight: 600 }}>LVL</label>
-                    <select value={f.level} onChange={e => updF(i, "level", +e.target.value)}
-                      style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 5, color: C.text, padding: "5px 8px", fontSize: 13, width: "100%", fontFamily: F.m, outline: "none" }}>
-                      {Array.from({ length: mxL }, (_, l) => l+1).map(l => <option key={l} value={l}>{l}</option>)}
-                    </select>
-                  </div>
-                </div>
-              </div>;
-            })}
+          <div style={{ display: "flex", gap: 12 }}>
+            <Inp label="Stahl im Lager" value={sS} onChange={setSS} tip="Dein aktueller Stahlbestand" />
+            <Inp label="Beton im Lager" value={sB} onChange={setSB} tip="Dein aktueller Betonbestand" />
           </div>
-        </GlassCard>
+        </div>
+        {apiError && <div style={{ fontSize: 12, color: C.red, fontFamily: F.m }}>{apiError}</div>}
+        {apiInfo && <div style={{ fontSize: 12, color: C.green, fontFamily: F.m }}>{apiInfo}</div>}
+      </GlassCard>
+
+      <div style={{ marginBottom: 14 }}>
+        <Btn on={showAdvanced} onClick={() => setShowAdvanced(!showAdvanced)}>
+          {showAdvanced ? "Optionen ausblenden \u25B4" : "Fortgeschrittene Optionen \u25BE"}
+        </Btn>
       </div>
 
-      {/* Next Actions */}
-      {res && displayActs.length > 0 && <GlassCard style={{ marginTop: 2 }}>
-        <Sec icon="▶">Naechste Aktionen (Dijkstra-Optimum)</Sec>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr>
-              <th style={TH}>Aktion</th>
-              <th style={TH}>Res.</th>
-              <th style={TH}><Tip text="Benoetigte Ressourcenmenge">Menge</Tip></th>
-              <th style={TH}><Tip text="Vom Lager abgezogen (kostenlos)">Lager</Tip></th>
-              <th style={TH}><Tip text="Effektive PP-Kosten nach Lagerabzug und Markthandel">Eff. PP</Tip></th>
-              <th style={TH}><Tip text="Beschaffungsweg: direkt, via Handel oder Lager">Weg</Tip></th>
-              <th style={TH}><Tip text="Produktionszeit bei aktueller PP-Rate">Dauer</Tip></th>
-              <th style={TH}><Tip text="Produktionsgewinn pro Tag">+PP/d</Tip></th>
-              <th style={TH}><Tip text="Zeitpunkt des Erreichens">Zeitpunkt</Tip></th>
-            </tr></thead>
-            <tbody>{displayActs.map((a, i) => (
-              <tr key={i} style={{ background: i === 0 ? "rgba(240,180,41,0.06)" : i % 2 ? C.rowAlt : "transparent" }}>
-                <td style={TD(i === 0)}><Bdg color={a.type === "buy" ? C.blue : C.green}>{a.type === "buy" ? "NEU" : "UP"}</Bdg><span style={{ marginLeft: 8 }}>{a.action}</span></td>
-                <td style={{ ...TD(false), color: a.resType === "stahl" ? C.stahl : C.betonC }}>{a.resType === "stahl" ? "Stahl" : "Beton"}</td>
-                <td style={TD(false)}>{fmtN(a.resCost)}</td>
-                <td style={{ ...TD(false), color: a.freeRes > 0 ? C.green : C.textMuted }}>{a.freeRes > 0 ? "-" + fmtN(a.freeRes) : "-"}</td>
-                <td style={TD(false)}>{fmtN(a.ppCost)}</td>
-                <td style={{ ...TD(false), fontSize: 10, color: a.method === "Lager" ? C.green : a.method === "direkt" ? C.textMuted : C.accent }}>{a.method}</td>
-                <td style={TD(false)}>{fmtT(a.dt)}</td>
-                <td style={{ ...TD(false), color: C.green }}>+{(a.ppGain * 24).toFixed(1)}</td>
-                <td style={TD(false)}>{fmtT(a.time)}</td>
-              </tr>
-            ))}</tbody>
-          </table>
+      {showAdvanced && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 14, marginBottom: 20 }}>
+          <GlassCard>
+            <Sec icon="&#9881;">Spielregeln & Preise</Sec>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px" }}>
+              <Inp label="Stahlpreis (Auto)" value={sP} onChange={setSP} step={0.0001} suffix="PP" tip="Marktpreis für Stahl" />
+              <Inp label="Betonpreis (Auto)" value={bP} onChange={setBP} step={0.0001} suffix="PP" tip="Marktpreis für Beton" />
+              <Inp label="Max Fabriken" value={mxF} onChange={setMxF} />
+              <Inp label="Max Level" value={mxL} onChange={setMxL} />
+              <Inp label="Upgrade-Basis" value={uB} onChange={setUB} suffix="Stahl" />
+              <Inp label="Fabrik-Basis" value={fB} onChange={setFB} suffix="Beton" />
+            </div>
+            <div style={{ fontSize: 10, color: C.textMuted, marginTop: 8, fontStyle: "italic" }}>
+              * Preise werden beim Import automatisch aktualisiert.
+            </div>
+          </GlassCard>
+          <GlassCard>
+            <Sec icon="&#128203;">Konfiguration (Import/Export)</Sec>
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              <Btn on={copied} onClick={doCopy}>{copied ? "\u2713 Kopiert" : "Code kopieren"}</Btn>
+              <Btn on={showImp} onClick={() => setShowImp(!showImp)}>Import-Code</Btn>
+            </div>
+            {showImp && (
+              <div style={{ display: "flex", gap: 8 }}>
+                <input value={impStr} onChange={e => setImpStr(e.target.value)} placeholder="Code..."
+                  style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 6, color: C.text, padding: "6px 10px", fontSize: 12, fontFamily: F.m, outline: "none", flex: 1 }} />
+                <Btn on color={C.green} onClick={doImport}>Laden</Btn>
+              </div>
+            )}
+            <div style={{ fontSize: 9, color: C.textMuted, wordBreak: "break-all", marginTop: 8 }}>{code}</div>
+          </GlassCard>
         </div>
-      </GlassCard>}
+      )}
 
-      {/* Compute */}
-      <div style={{ display: "flex", alignItems: "center", gap: 16, margin: "10px 0 18px" }}>
-        <Tip text="Dijkstra + Greedy-Vergleich berechnen (kann einige Sekunden dauern)">
-          <Btn on big color={C.accent} onClick={compute} disabled={busy || !facs.length}>{busy ? "Berechne..." : "Optimierung starten"}</Btn>
-        </Tip>
-        {res && <span style={{ fontSize: 11, color: res.ok ? C.green : C.red, textShadow: "0 0 8px " + (res.ok ? C.greenGlow : "rgba(248,113,113,0.3)") }}>
-          {res.ok ? "Optimum gefunden" : "Limit erreicht"} - {res.iter.toLocaleString()} Iterationen
-        </span>}
+      {/* Main Results Display - Side by Side */}
+      <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "flex-start" }}>
+        <div style={{ flex: "1 1 500px", minWidth: 0 }}>
+          {res && (
+            <>
+              <Sec icon="&#128200;">Produktionskurve</Sec>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10, marginBottom: 16 }}>
+                {STRATS.map(s => {
+                  const t = res.finals[s.key], on = actv.includes(s.key);
+                  const isBest = t === Math.min(...Object.values(res.finals).filter(v => v != null)) && t != null;
+                  return (
+                    <div key={s.key} onClick={() => setActv(p => p.includes(s.key) ? p.filter(x => x !== s.key) : [...p, s.key])}
+                      style={{ ...glass(on ? 0.07 : 0.03, 16), borderRadius: 12, padding: "12px", cursor: "pointer",
+                        borderColor: on ? s.color + "55" : "rgba(255,255,255,0.06)", transition: "all 0.2s",
+                        boxShadow: isBest && on ? "0 0 20px " + s.glow : "none" }}>
+                      <div style={{ fontFamily: F.h, fontSize: 9, color: s.color, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 4 }}>{s.label}</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, fontFamily: F.h }}>{t != null ? fmtT(t) : "-"}</div>
+                      {isBest && <div style={{ fontSize: 8, color: s.color, fontWeight: 700 }}>NEIDLOS BESTE</div>}
+                    </div>
+                  );
+                })}
+              </div>
+              <GlassCard style={{ padding: "12px" }}>
+                <ResponsiveContainer width="100%" height={300}>
+                  <AreaChart data={chart}>
+                    <defs>{STRATS.map(s => <linearGradient key={s.key} id={"g_" + s.key} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={s.color} stopOpacity={0.4} /><stop offset="100%" stopColor={s.color} stopOpacity={0} /></linearGradient>)}</defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                    <XAxis dataKey="time" stroke={C.textMuted} tick={{ fontSize: 9 }} tickFormatter={v => v >= 48 ? (v/24).toFixed(0) + "d" : Math.round(v) + "h"} />
+                    <YAxis stroke={C.textMuted} tick={{ fontSize: 9 }} tickFormatter={v => fmtN(v)} />
+                    <Tooltip contentStyle={{ ...glass(0.12, 20), borderRadius: 10, fontSize: 11, border: "none" }} />
+                    {STRATS.filter(s => actv.includes(s.key)).map(s => <Area key={s.key} type="stepAfter" dataKey={s.key} stroke={s.color} strokeWidth={3} fill={"url(#g_" + s.key + ")"} dot={false} />)}
+                  </AreaChart>
+                </ResponsiveContainer>
+              </GlassCard>
+            </>
+          )}
+
+          <Sec icon="&#127981;">Deine Fabriken ({facs.length}/{mxF})</Sec>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(110px, 1fr))", gap: 8, marginBottom: 20 }}>
+            {facs.map((f, i) => (
+              <div key={i} style={{ ...glass(0.08, 10), borderRadius: 8, padding: "8px", textAlign: "center", border: "1px solid rgba(255,255,255,0.08)" }}>
+                <div style={{ fontSize: 10, color: C.accent, fontWeight: 700 }}>F{i+1}</div>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>L{f.level}</div>
+                <div style={{ fontSize: 9, color: C.textDim }}>{f.item}</div>
+              </div>
+            ))}
+            <button onClick={addF} style={{ ...glass(0.05), borderRadius: 8, border: "1px dashed rgba(255,255,255,0.2)", color: C.textMuted, cursor: "pointer", fontSize: 18 }}>+</button>
+          </div>
+        </div>
+
+        <div style={{ flex: "1 1 400px", minWidth: 0 }}>
+          {res && (
+            <>
+              <Sec icon="&#128220;">Bester Bauplan (Dijkstra)</Sec>
+              <GlassCard style={{ padding: "0", overflow: "hidden" }}>
+                <div style={{ maxHeight: "600px", overflowY: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead><tr><th style={TH}>Schritt</th><th style={TH}>Aktion</th><th style={TH}>Zeit</th><th style={TH}>PP/d</th></tr></thead>
+                    <tbody>
+                      {res.paths.dijkstra.map((s, i) => (
+                        <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
+                          <td style={TD(false)}>{i+1}</td>
+                          <td style={TD(false)}>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: s.type === "buy" ? C.blue : C.green }}>{s.action}</div>
+                            <div style={{ fontSize: 9, color: C.textMuted }}>{s.method} &middot; {fmtN(s.resCost)} {s.resType}</div>
+                          </td>
+                          <td style={TD(true)}>{fmtT(s.time)}</td>
+                          <td style={{ ...TD(false), color: C.green }}>+{(s.ppGain * 24).toFixed(1)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </GlassCard>
+            </>
+          )}
+        </div>
       </div>
-
-      {res && <>
-        {/* Strategy Cards */}
-        <div style={{ fontSize: 10, color: C.textMuted, marginBottom: 6, fontFamily: F.m }}>Karten anklicken zum Ein-/Ausblenden im Chart</div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 16 }}>
-          {STRATS.map(s => {
-            const t = res.finals[s.key], n = res.paths[s.key]?.length || 0, on = actv.includes(s.key);
-            const best = Math.min(...Object.values(res.finals).filter(v => v != null));
-            const isBest = t === best && t != null;
-            return <div key={s.key} onClick={() => setActv(p => p.includes(s.key) ? p.filter(x => x !== s.key) : [...p, s.key])}
-              style={{ ...glass(on ? 0.07 : 0.03, 16), borderRadius: 12, padding: "14px 16px", cursor: "pointer",
-                borderColor: on ? s.color + "55" : "rgba(255,255,255,0.06)",
-                boxShadow: isBest && on ? "0 8px 32px rgba(0,0,0,0.4), 0 0 24px " + s.glow : "0 4px 16px rgba(0,0,0,0.3)",
-                transition: "all 0.2s" }}>
-              <div style={{ fontFamily: F.h, fontSize: 10, color: s.color, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8, textShadow: "0 0 10px " + s.glow }}><Tip text={s.tip} pos="bottom">{s.label}</Tip></div>
-              <div style={{ fontSize: 22, fontWeight: 700, fontFamily: F.h, color: t != null ? C.text : C.textMuted }}>{t != null ? fmtT(t) : "-"}</div>
-              <div style={{ fontSize: 10, color: C.textMuted, marginTop: 3 }}>{n} Schritte</div>
-              {isBest && <div style={{ fontFamily: F.h, fontSize: 9, color: s.color, marginTop: 5, fontWeight: 700, letterSpacing: "0.1em", textShadow: "0 0 8px " + s.glow }}>SCHNELLSTER</div>}
-            </div>;
-          })}
-        </div>
-
-        {/* Tabs */}
-        <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
-          <Tip text="Produktionsrate ueber Zeit (Treppenkurve)"><Btn on={tab === "chart"} onClick={() => setTab("chart")}>Kurve</Btn></Tip>
-          <Tip text="Schritt-fuer-Schritt Bau-Reihenfolge"><Btn on={tab === "table"} onClick={() => setTab("table")}>Reihenfolge</Btn></Tip>
-          {tab === "chart" && <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-            <Tip text="Produktionsrate pro Tag"><Btn on={cM === "rate"} color={C.textDim} onClick={() => setCM("rate")}>PP/d</Btn></Tip>
-            <Tip text="Kumulierte Gesamtproduktion"><Btn on={cM === "cum"} color={C.textDim} onClick={() => setCM("cum")}>Kumulativ</Btn></Tip>
-          </div>}
-        </div>
-
-        {/* Chart */}
-        {tab === "chart" && chart.length > 0 && <GlassCard>
-          <ResponsiveContainer width="100%" height={400}>
-            <AreaChart data={chart} margin={{ top: 10, right: 20, bottom: 30, left: 30 }}>
-              <defs>{STRATS.map(s => <linearGradient key={s.key} id={"g_" + s.key} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={s.color} stopOpacity={0.3} /><stop offset="100%" stopColor={s.color} stopOpacity={0.02} />
-              </linearGradient>)}</defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
-              <XAxis dataKey="time" stroke={C.textMuted} tick={{ fontSize: 10, fill: C.textMuted, fontFamily: F.m }}
-                label={{ value: "Zeit", position: "insideBottom", offset: -16, fill: C.textMuted, fontSize: 11, fontFamily: F.h }}
-                tickFormatter={v => v >= 48 ? (v/24).toFixed(0) + "d" : Math.round(v) + "h"} />
-              <YAxis stroke={C.textMuted} tick={{ fontSize: 10, fill: C.textMuted, fontFamily: F.m }}
-                label={{ value: cM === "rate" ? "PP/d" : "Gesamt PP", angle: -90, position: "insideLeft", offset: 8, fill: C.textMuted, fontSize: 11, fontFamily: F.h }}
-                tickFormatter={v => fmtN(v)} />
-              <Tooltip contentStyle={{ ...glass(0.12, 20), borderRadius: 10, fontSize: 12, color: C.text, fontFamily: F.m }}
-                labelFormatter={v => Math.round(v) + "h (Tag " + (v/24).toFixed(1) + ")"}
-                formatter={(v, n) => [cM === "rate" ? (v * 24).toFixed(1) + " PP/d" : fmtN(v) + " PP", n]} />
-              {STRATS.filter(s => actv.includes(s.key)).map(s =>
-                <Area key={s.key} type="stepAfter" dataKey={s.key} name={s.label} stroke={s.color} strokeWidth={2.5} fill={"url(#g_" + s.key + ")"} dot={false} connectNulls />
-              )}
-            </AreaChart>
-          </ResponsiveContainer>
-        </GlassCard>}
-
-        {/* Table */}
-        {tab === "table" && <GlassCard>
-          <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
-            {STRATS.map(s => <Btn key={s.key} on={tS === s.key} color={s.color} onClick={() => setTS(s.key)}>{s.label}</Btn>)}
-          </div>
-          <div style={{ maxHeight: 520, overflowY: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead><tr>{["#", "Aktion", "Res.", "Menge", "Lager", "Weg", "PP", "Dauer", "Gesamt", "PP/d", "+PP/d"].map(h => <th key={h} style={TH}>{h}</th>)}</tr></thead>
-              <tbody>
-                {curPath.map((s, i) => <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
-                  <td style={TD(false)}>{i+1}</td>
-                  <td style={TD(false)}><Bdg color={s.type === "buy" ? C.blue : C.green}>{s.type === "buy" ? "NEU" : "UP"}</Bdg><span style={{ marginLeft: 8 }}>{s.action}</span></td>
-                  <td style={{ ...TD(false), color: s.resType === "stahl" ? C.stahl : C.betonC }}>{s.resType === "stahl" ? "Stahl" : "Beton"}</td>
-                  <td style={TD(false)}>{fmtN(s.resCost)}</td>
-                  <td style={{ ...TD(false), color: s.freeRes > 0 ? C.green : C.textMuted }}>{s.freeRes > 0 ? "-" + s.freeRes : "-"}</td>
-                  <td style={{ ...TD(false), fontSize: 10, color: s.method === "Lager" ? C.green : s.method === "direkt" ? C.textMuted : C.accent }}>{s.method}</td>
-                  <td style={TD(false)}>{fmtN(s.ppCost)}</td>
-                  <td style={TD(false)}>{fmtT(s.dt)}</td>
-                  <td style={TD(true)}>{fmtT(s.time)}</td>
-                  <td style={{ ...TD(false), color: C.green }}>{(s.pph * 24).toFixed(1)}</td>
-                  <td style={{ ...TD(false), color: C.green }}>+{(s.ppGain * 24).toFixed(1)}</td>
-                </tr>)}
-                {!curPath.length && <tr><td colSpan={11} style={{ padding: 24, textAlign: "center", color: C.textMuted }}>Kein Pfad / Max erreicht</td></tr>}
-              </tbody>
-            </table>
-          </div>
-        </GlassCard>}
-      </>}
 
       {/* Cost Ref */}
       <GlassCard style={{ marginTop: 8 }}>
