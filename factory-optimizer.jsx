@@ -354,75 +354,64 @@ export default function App() {
     return d.result.data;
   }
 
-  async function loadFromAPI() {
-    if (!apiUser.trim()) return;
-    setApiLoading(true); setApiError(""); setApiInfo("");
-    try {
-      // 1. Search for user
-      const search = await apiCall("search.searchAnything", { searchText: apiUser.trim() });
-      if (!search.userIds?.length) throw new Error("Spieler nicht gefunden");
-
-      // 2. Find exact match or first result
-      let userId = search.userIds[0];
-      let username = apiUser.trim();
-      for (const uid of search.userIds) {
-        const u = await apiCall("user.getUserLite", { userId: uid });
-        if (u.username.toLowerCase() === apiUser.trim().toLowerCase()) {
-          userId = uid;
-          username = u.username;
-          break;
-        }
-        if (uid === search.userIds[0]) username = u.username;
-      }
-
-      // 3. Get companies
-      const companies = await apiCall("company.getCompanies", { userId, perPage: 100 });
-      const companyIds = companies.items || [];
-      if (!companyIds.length) throw new Error("Keine Fabriken gefunden fuer " + username);
-
-      // 4. Get each company's details
-      const newFacs = [];
-      for (const cid of companyIds) {
-        const comp = await apiCall("company.getById", { companyId: cid });
-        const aeLevel = comp.activeUpgradeLevels?.automatedEngine || 1;
-        newFacs.push({
-          level: aeLevel,
-          name: comp.name || ("Fabrik " + (newFacs.length + 1)),
-          item: comp.itemCode || "?",
-        });
-      }
-
-      // 5. Get market prices
-      try {
-        const prices = await apiCall("itemTrading.getPrices", {});
-        if (prices.steel != null) setSP(Math.round(prices.steel * 10000) / 10000);
-        if (prices.concrete != null) setBP(Math.round(prices.concrete * 10000) / 10000);
-      } catch {}
-
-      setFacs(newFacs);
-      setApiInfo(username + ": " + newFacs.length + " Fabriken geladen, Marktpreise aktualisiert");
-      setRes(null);
-      // Auto-compute after loading
-      setTimeout(() => compute(), 100);
-    } catch (e) {
-      setApiError(e.message || "Fehler beim Laden");
-    }
-    setApiLoading(false);
-  }
-
-  function compute() {
+  function compute(customFacs = null, customParams = null) {
     setBusy(true);
+    const fData = customFacs || facs;
+    const pData = customParams || { ppPerStahl: ppS, ppPerBeton: ppB, stahlPrice: sP, betonPrice: bP, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB, startStahl: sS, startBeton: sB };
+    
     setTimeout(() => {
-      // Re-read params to ensure we use current state if called via timeout
-      const currentParams = { ppPerStahl: ppS, ppPerBeton: ppB, stahlPrice: sP, betonPrice: bP, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB, startStahl: sS, startBeton: sB };
-      const paths = {}, d = runDijkstra(facs, currentParams, sS, sB);
+      const paths = {}, d = runDijkstra(fData, pData, sS, sB);
       paths.dijkstra = d.path;
-      for (const s of STRATS) { if (s.key !== "dijkstra") try { paths[s.key] = simulate(facs, currentParams, s.key, sS, sB); } catch { paths[s.key] = []; } }
+      for (const s of STRATS) { if (s.key !== "dijkstra") try { paths[s.key] = simulate(fData, pData, s.key, sS, sB); } catch { paths[s.key] = []; } }
       const finals = {};
       for (const s of STRATS) { const p = paths[s.key]; finals[s.key] = p?.length ? p[p.length-1].time : null; }
       setRes({ paths, finals, ok: d.complete, iter: d.iter });
       setBusy(false);
     }, 50);
+  }
+
+  async function loadFromAPI() {
+    if (!apiUser.trim()) return;
+    setApiLoading(true); setApiError(""); setApiInfo("");
+    try {
+      const search = await apiCall("search.searchAnything", { searchText: apiUser.trim() });
+      if (!search.userIds?.length) throw new Error("Spieler nicht gefunden");
+
+      let userId = search.userIds[0];
+      let username = apiUser.trim();
+      for (const uid of search.userIds) {
+        const u = await apiCall("user.getUserLite", { userId: uid });
+        if (u.username.toLowerCase() === apiUser.trim().toLowerCase()) { userId = uid; username = u.username; break; }
+        if (uid === search.userIds[0]) username = u.username;
+      }
+
+      const companies = await apiCall("company.getCompanies", { userId, perPage: 100 });
+      const companyIds = companies.items || [];
+      if (!companyIds.length) throw new Error("Keine Fabriken gefunden");
+
+      const newFacs = [];
+      for (const cid of companyIds) {
+        const comp = await apiCall("company.getById", { companyId: cid });
+        newFacs.push({ level: comp.activeUpgradeLevels?.automatedEngine || 1, name: comp.name, item: comp.itemCode });
+      }
+
+      let newSP = sP, newBP = bP;
+      try {
+        const prices = await apiCall("itemTrading.getPrices", {});
+        if (prices.steel != null) newSP = Math.round(prices.steel * 10000) / 10000;
+        if (prices.concrete != null) newBP = Math.round(prices.concrete * 10000) / 10000;
+      } catch {}
+
+      setSP(newSP); setBP(newBP); setFacs(newFacs);
+      setApiInfo(username + ": " + newFacs.length + " Fabriken geladen.");
+      
+      // Sofort berechnen mit NEUEN Daten
+      const newParams = { ppPerStahl: ppS, ppPerBeton: ppB, stahlPrice: newSP, betonPrice: newBP, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB, startStahl: sS, startBeton: sB };
+      compute(newFacs, newParams);
+    } catch (e) {
+      setApiError(e.message);
+    }
+    setApiLoading(false);
   }
 
   const updF = useCallback((i, k, v) => setFacs(p => p.map((f, j) => j === i ? { ...f, [k]: v } : f)), []);
@@ -548,10 +537,10 @@ export default function App() {
         {!showImp && <span style={{ fontSize: 10, color: C.textMuted, fontFamily: F.m, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 300 }}>{code}</span>}
       </GlassCard>
 
-      {/* Simple Main UI */}
-      <GlassCard style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
-        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-          <div style={{ flex: 1, minWidth: 200 }}>
+      <GlassCard style={{ padding: "20px 24px" }}>
+        <div style={{ display: "flex", gap: "24px", alignItems: "flex-end", flexWrap: "wrap" }}>
+          {/* Linke Seite: Username + Button als Gruppe */}
+          <div style={{ flex: "2 1 400px" }}>
             <Sec icon="&#128100;">WarEra Spieler</Sec>
             <div style={{ display: "flex", gap: 8 }}>
               <input
@@ -565,13 +554,18 @@ export default function App() {
               </Btn>
             </div>
           </div>
-          <div style={{ display: "flex", gap: 12 }}>
-            <Inp label="Stahl im Lager" value={sS} onChange={setSS} tip="Dein aktueller Stahlbestand" />
-            <Inp label="Beton im Lager" value={sB} onChange={setSB} tip="Dein aktueller Betonbestand" />
+
+          {/* Rechte Seite: Lagerbestände */}
+          <div style={{ flex: "1 1 200px", display: "flex", gap: 12 }}>
+            <div style={{ flex: 1 }}><Inp label="Stahl im Lager" value={sS} onChange={setSS} /></div>
+            <div style={{ flex: 1 }}><Inp label="Beton im Lager" value={sB} onChange={setSB} /></div>
           </div>
         </div>
-        {apiError && <div style={{ fontSize: 12, color: C.red, fontFamily: F.m }}>{apiError}</div>}
-        {apiInfo && <div style={{ fontSize: 12, color: C.green, fontFamily: F.m }}>{apiInfo}</div>}
+        {(apiError || apiInfo) && (
+          <div style={{ marginTop: 12, fontSize: 12, fontFamily: F.m, color: apiError ? C.red : C.green }}>
+            {apiError || apiInfo}
+          </div>
+        )}
       </GlassCard>
 
       <div style={{ marginBottom: 14 }}>
@@ -583,17 +577,13 @@ export default function App() {
       {showAdvanced && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 14, marginBottom: 20 }}>
           <GlassCard>
-            <Sec icon="&#9881;">Spielregeln & Preise</Sec>
+            <Sec icon="&#9881;">Marktpreise</Sec>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px" }}>
-              <Inp label="Stahlpreis (Auto)" value={sP} onChange={setSP} step={0.0001} suffix="PP" tip="Marktpreis für Stahl" />
-              <Inp label="Betonpreis (Auto)" value={bP} onChange={setBP} step={0.0001} suffix="PP" tip="Marktpreis für Beton" />
-              <Inp label="Max Fabriken" value={mxF} onChange={setMxF} />
-              <Inp label="Max Level" value={mxL} onChange={setMxL} />
-              <Inp label="Upgrade-Basis" value={uB} onChange={setUB} suffix="Stahl" />
-              <Inp label="Fabrik-Basis" value={fB} onChange={setFB} suffix="Beton" />
+              <Inp label="Stahlpreis (Auto)" value={sP} onChange={v => { setSP(v); compute(); }} step={0.0001} suffix="PP" />
+              <Inp label="Betonpreis (Auto)" value={bP} onChange={v => { setBP(v); compute(); }} step={0.0001} suffix="PP" />
             </div>
             <div style={{ fontSize: 10, color: C.textMuted, marginTop: 8, fontStyle: "italic" }}>
-              * Preise werden beim Import automatisch aktualisiert.
+              * Preise werden beim API-Import automatisch aktualisiert.
             </div>
           </GlassCard>
           <GlassCard>
@@ -610,6 +600,37 @@ export default function App() {
               </div>
             )}
             <div style={{ fontSize: 9, color: C.textMuted, wordBreak: "break-all", marginTop: 8 }}>{code}</div>
+          </GlassCard>
+
+          {/* Cost Ref - Now inside Advanced */}
+          <GlassCard style={{ marginTop: 0 }}>
+            <Sec icon="&#9776;">Kostenreferenz</Sec>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, fontSize: 11 }}>
+              <div>
+                <div style={{ color: C.stahl, fontWeight: 700, fontFamily: F.h, marginBottom: 8, letterSpacing: "0.08em" }}>UPGRADES (STAHL)</div>
+                {Array.from({ length: mxL - 1 }, (_, i) => i+1).map(l => {
+                  const s = upgStahl(l, uB), { pp, method } = effPP(s, "stahl", params);
+                  return <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: C.textDim }}>
+                    <span style={{ width: 70, color: C.text }}>L{l} -&gt; L{l+1}</span>
+                    <span style={{ color: C.stahl }}>{s}</span>
+                    <span>{pp.toFixed(0)} PP</span>
+                    <span style={{ fontSize: 10, color: method === "direkt" ? C.textMuted : C.accent }}>{method}</span>
+                  </div>;
+                })}
+              </div>
+              <div>
+                <div style={{ color: C.betonC, fontWeight: 700, fontFamily: F.h, marginBottom: 8, letterSpacing: "0.08em" }}>FABRIKEN (BETON)</div>
+                {Array.from({ length: mxF }, (_, i) => i+1).map(n => {
+                  const b = facBeton(n, fB), { pp, method } = effPP(b, "beton", params);
+                  return <div key={n} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: C.textDim }}>
+                    <span style={{ width: 70, color: C.text }}>Fabrik #{n}</span>
+                    <span style={{ color: C.betonC }}>{b}</span>
+                    <span>{pp.toFixed(0)} PP</span>
+                    <span style={{ fontSize: 10, color: method === "direkt" ? C.textMuted : C.accent }}>{method}</span>
+                  </div>;
+                })}
+              </div>
+            </div>
           </GlassCard>
         </div>
       )}
@@ -652,15 +673,22 @@ export default function App() {
           )}
 
           <Sec icon="&#127981;">Deine Fabriken ({facs.length}/{mxF})</Sec>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(110px, 1fr))", gap: 8, marginBottom: 20 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 8, marginBottom: 20 }}>
             {facs.map((f, i) => (
-              <div key={i} style={{ ...glass(0.08, 10), borderRadius: 8, padding: "8px", textAlign: "center", border: "1px solid rgba(255,255,255,0.08)" }}>
-                <div style={{ fontSize: 10, color: C.accent, fontWeight: 700 }}>F{i+1}</div>
-                <div style={{ fontSize: 14, fontWeight: 700 }}>L{f.level}</div>
-                <div style={{ fontSize: 9, color: C.textDim }}>{f.item}</div>
+              <div key={i} style={{ ...glass(0.08, 10), borderRadius: 8, padding: "10px", border: "1px solid rgba(255,255,255,0.08)", position: "relative" }}>
+                <button onClick={() => { rmF(i); compute(facs.filter((_, j) => j !== i)); }} style={{ position: "absolute", top: 4, right: 6, background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 16, fontWeight: 700, padding: 0 }}>&times;</button>
+                <div style={{ fontSize: 9, color: C.accent, fontWeight: 700, marginBottom: 2 }}>F{i+1}</div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4, marginBottom: 4 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700 }}>L{f.level}</span>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                    <button onClick={() => { if (f.level < mxL) { const nf = facs.map((x, j) => j === i ? { ...x, level: x.level + 1 } : x); setFacs(nf); compute(nf); } }} style={{ background: "rgba(255,255,255,0.1)", border: "none", color: C.text, fontSize: 8, cursor: "pointer", padding: "0 4px", borderRadius: 2 }}>▲</button>
+                    <button onClick={() => { if (f.level > 1) { const nf = facs.map((x, j) => j === i ? { ...x, level: x.level - 1 } : x); setFacs(nf); compute(nf); } }} style={{ background: "rgba(255,255,255,0.1)", border: "none", color: C.text, fontSize: 8, cursor: "pointer", padding: "0 4px", borderRadius: 2 }}>▼</button>
+                  </div>
+                </div>
+                <div style={{ fontSize: 9, color: C.textDim, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.item || "Unbekannt"}</div>
               </div>
             ))}
-            <button onClick={addF} style={{ ...glass(0.05), borderRadius: 8, border: "1px dashed rgba(255,255,255,0.2)", color: C.textMuted, cursor: "pointer", fontSize: 18 }}>+</button>
+            <button onClick={() => { const nf = [...facs, { level: 1 }]; setFacs(nf); compute(nf); }} style={{ ...glass(0.05), borderRadius: 8, border: "1px dashed rgba(255,255,255,0.2)", color: C.textMuted, cursor: "pointer", fontSize: 18, minHeight: 65 }}>+</button>
           </div>
         </div>
 
@@ -692,37 +720,6 @@ export default function App() {
           )}
         </div>
       </div>
-
-      {/* Cost Ref */}
-      <GlassCard style={{ marginTop: 8 }}>
-        <Sec icon="&#9776;">Kostenreferenz</Sec>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, fontSize: 11 }}>
-          <div>
-            <div style={{ color: C.stahl, fontWeight: 700, fontFamily: F.h, marginBottom: 8, letterSpacing: "0.08em" }}>UPGRADES (STAHL)</div>
-            {Array.from({ length: mxL - 1 }, (_, i) => i+1).map(l => {
-              const s = upgStahl(l, uB), { pp, method } = effPP(s, "stahl", params);
-              return <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: C.textDim }}>
-                <span style={{ width: 70, color: C.text }}>L{l} -&gt; L{l+1}</span>
-                <span style={{ color: C.stahl }}>{s}</span>
-                <span>{pp.toFixed(0)} PP</span>
-                <span style={{ fontSize: 10, color: method === "direkt" ? C.textMuted : C.accent }}>{method}</span>
-              </div>;
-            })}
-          </div>
-          <div>
-            <div style={{ color: C.betonC, fontWeight: 700, fontFamily: F.h, marginBottom: 8, letterSpacing: "0.08em" }}>FABRIKEN (BETON)</div>
-            {Array.from({ length: mxF }, (_, i) => i+1).map(n => {
-              const b = facBeton(n, fB), { pp, method } = effPP(b, "beton", params);
-              return <div key={n} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: C.textDim }}>
-                <span style={{ width: 70, color: C.text }}>Fabrik #{n}</span>
-                <span style={{ color: C.betonC }}>{b}</span>
-                <span>{pp.toFixed(0)} PP</span>
-                <span style={{ fontSize: 10, color: method === "direkt" ? C.textMuted : C.accent }}>{method}</span>
-              </div>;
-            })}
-          </div>
-        </div>
-      </GlassCard>
 
       <div style={{ textAlign: "center", fontSize: 10, color: C.textMuted, marginTop: 16, paddingBottom: 24, fontFamily: F.h, letterSpacing: "0.15em" }}>
         HEBELMINISTERIUM DEUTSCHLAND &middot; FABRIK-OPTIMIERER &middot; DIJKSTRA + MARKTHANDEL
