@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useMemo } from "react";
+import { useState, useCallback, useRef, useMemo, createContext, useContext } from "react";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
 /* ═══════════════════════════════════════════════════════
@@ -194,16 +194,12 @@ function runDijkstra(startFacs, params, sStahl, sBeton, recipes, prices, mode) {
     if (visited.has(key)) continue; visited.add(key);
     if (facKey(facs) === gk) return { path, complete: true, iter };
     
-    // Total "Buying Power" in PP/h
-    // Current ProductionRate (PP/h) + Profit scaled to PP
     const pph = totalPPH(facs);
     if (pph <= 0) continue;
     
-    // Optimization: Add "Market Power" to PPH to reach goals faster
     const profitH = totalProfit(facs, prices, recipes);
-    // Conversion: 1 $ = (ppS / sP) PP (approx)
     const factor = params.stahlPrice > 0 ? params.ppPerStahl / params.stahlPrice : 10;
-    const effectivePPH = pph + (mode === "profit" ? profitH * factor : 0);
+    const effectivePPH = Math.max(0.001, pph + (mode === "profit" ? profitH * factor : 0));
 
     const seen = new Set();
     for (let i = 0; i < facs.length; i++) {
@@ -230,7 +226,7 @@ function runDijkstra(startFacs, params, sStahl, sBeton, recipes, prices, mode) {
       const n = facs.length + 1, beton = facBeton(n, factoryBase);
       const free = Math.min(rb, beton), need = beton - free;
       const { pp, method } = need > 0 ? effPP(need, "beton", params) : { pp: 0, method: "Lager" };
-      const dt = pph > 0 ? pp / pph : Infinity;
+      const dt = pp / effectivePPH;
       const nf = [...facs.map(f => ({ ...f })), { level: 1, bonus: defaultBonus, item: "concrete" }];
       const nrb = rb - free, nk = sk(nf, rs, nrb);
       if (!visited.has(nk)) {
@@ -264,7 +260,7 @@ function simulate(facs, params, strategy, sStahl, sBeton, recipes, prices, mode)
       
       const profitH = totalProfit(st, prices, recipes);
       const factor = params.stahlPrice > 0 ? params.ppPerStahl / params.stahlPrice : 10;
-      const effectivePPH = pph + (mode === "profit" ? profitH * factor : 0);
+      const effectivePPH = Math.max(0.001, pph + (mode === "profit" ? profitH * factor : 0));
 
       acts.push({ type: "upgrade", idx: i, resCost: stahl, resType: "stahl", freeRes: free,
         method: free === stahl ? "Lager" : method, ppCost: pp, ppGain: gain,
@@ -277,7 +273,7 @@ function simulate(facs, params, strategy, sStahl, sBeton, recipes, prices, mode)
       
       const profitH = totalProfit(st, prices, recipes);
       const factor = params.stahlPrice > 0 ? params.ppPerStahl / params.stahlPrice : 10;
-      const effectivePPH = pph + (mode === "profit" ? profitH * factor : 0);
+      const effectivePPH = Math.max(0.001, pph + (mode === "profit" ? profitH * factor : 0));
 
       acts.push({ type: "buy", resCost: beton, resType: "beton", freeRes: free,
         method: free === beton ? "Lager" : method, ppCost: pp, ppGain: gain,
@@ -318,6 +314,71 @@ function fmtT(h) { if (h <= 0) return "sofort"; if (h < 1) return (h*60).toFixed
 function fmtN(n) { if (Math.abs(n) >= 1e6) return (n/1e6).toFixed(1) + "M"; if (Math.abs(n) >= 1e3) return (n/1e3).toFixed(1) + "k"; return Number.isInteger(n) ? String(n) : n.toFixed(1); }
 
 // ── Styled primitives ──
+const ThemeContext = createContext(THEMES.grau);
+
+const glassStyle = (opacity = 0.05, blur = 20) => ({
+  background: `rgba(255,255,255,${opacity})`,
+  backdropFilter: `blur(${blur}px)`,
+  WebkitBackdropFilter: `blur(${blur}px)`,
+  border: "1px solid rgba(255,255,255,0.1)",
+  boxShadow: "0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)",
+});
+
+function GlassCard({ children, style, glow }) {
+  return <div style={{ ...glassStyle(), borderRadius: 12, padding: "16px 20px", marginBottom: 14, ...(glow ? { boxShadow: "0 8px 32px rgba(0,0,0,0.5), 0 0 24px " + glow } : {}), ...style }}>{children}</div>;
+}
+
+function Sec({ children, icon }) {
+  const { C, F } = useContext(ThemeContext);
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+      {icon && <span style={{ fontSize: 15 }}>{icon}</span>}
+      <span style={{ fontFamily: F.h, fontSize: 13, fontWeight: 700, color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase" }}>{children}</span>
+    </div>
+  );
+}
+
+function Inp({ label, value, onChange, step = 1, suffix, tip }) {
+  const { C, F } = useContext(ThemeContext);
+  const inner = <div style={{ marginBottom: 8 }}>
+    <label style={{ fontFamily: F.m, fontSize: 10, color: C.textDim, marginBottom: 3, display: "block", letterSpacing: "0.03em" }}>{label} {tip && <span style={{ color: C.textMuted, cursor: "help" }}>&#9432;</span>}</label>
+    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+      <input type="number" step={step} value={value} onChange={e => onChange(Number(e.target.value))}
+        style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 6, color: C.text,
+          padding: "7px 10px", fontSize: 13, width: "100%", boxSizing: "border-box", outline: "none",
+          fontFamily: F.m, transition: "border-color 0.2s, box-shadow 0.2s" }}
+        onFocus={e => { e.target.style.borderColor = C.accent + "88"; e.target.style.boxShadow = "0 0 12px " + C.accentGlow; }}
+        onBlur={e => { e.target.style.borderColor = C.inputBorder; e.target.style.boxShadow = "none"; }} />
+      {suffix && <span style={{ fontFamily: F.m, fontSize: 10, color: C.textMuted, whiteSpace: "nowrap" }}>{suffix}</span>}
+    </div>
+  </div>;
+  return tip ? <Tip text={tip}>{inner}</Tip> : inner;
+}
+
+function Bdg({ color, children }) {
+  const { F } = useContext(ThemeContext);
+  return <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 4, fontSize: 9, fontWeight: 700, fontFamily: F.h, background: color + "25", color, border: "1px solid " + color + "44", letterSpacing: "0.06em", textTransform: "uppercase", textShadow: "0 0 8px " + color + "44" }}>{children}</span>;
+}
+
+function Tip({ text, children, pos = "top" }) {
+  const { F } = useContext(ThemeContext);
+  if (!text) return children;
+  return <span className="tip-wrap">{children}<span className="tip-box" style={{ ...(pos === "bottom" ? { bottom: "auto", top: "calc(100% + 8px)" } : {}), fontFamily: F.m }}>{text}</span></span>;
+}
+
+function Btn({ on, color, children, onClick, big, disabled }) {
+  const { C, F } = useContext(ThemeContext);
+  const clr = color || C.accent;
+  return <button onClick={onClick} disabled={disabled} style={{
+    padding: big ? "11px 28px" : "6px 14px", borderRadius: 8, border: "1px solid " + (on ? clr + "88" : "rgba(255,255,255,0.08)"),
+    background: on ? clr + "18" : "rgba(255,255,255,0.03)", color: disabled ? C.textMuted : on ? clr : C.textDim,
+    cursor: disabled ? "not-allowed" : "pointer", fontSize: big ? 14 : 11, fontFamily: F.h, fontWeight: 700,
+    letterSpacing: "0.08em", textTransform: "uppercase", transition: "all 0.2s", opacity: disabled ? 0.4 : 1,
+    boxShadow: on ? "0 0 16px " + clr + "22, inset 0 1px 0 rgba(255,255,255,0.06)" : "0 2px 8px rgba(0,0,0,0.2)",
+    textShadow: on ? "0 0 10px " + clr + "44" : "none",
+  }}>{children}</button>;
+}
+
 // ── Main ──
 export default function App() {
   // Theme
@@ -325,60 +386,8 @@ export default function App() {
   const T = THEMES[theme];
   const { C, F } = T;
 
-  const glassStyle = (opacity = 0.05, blur = 20) => ({
-    background: `rgba(255,255,255,${opacity})`,
-    backdropFilter: `blur(${blur}px)`,
-    WebkitBackdropFilter: `blur(${blur}px)`,
-    border: "1px solid rgba(255,255,255,0.1)",
-    boxShadow: "0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)",
-  });
-
-  // Styled primitives
-  const GlassCard = ({ children, style, glow }) => (
-    <div style={{ ...glassStyle(), borderRadius: 12, padding: "16px 20px", marginBottom: 14, ...(glow ? { boxShadow: "0 8px 32px rgba(0,0,0,0.5), 0 0 24px " + glow } : {}), ...style }}>{children}</div>
-  );
-  const Sec = ({ children, icon }) => (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-      {icon && <span style={{ fontSize: 15 }}>{icon}</span>}
-      <span style={{ fontFamily: F.h, fontSize: 13, fontWeight: 700, color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase" }}>{children}</span>
-    </div>
-  );
   const TH = { textAlign: "left", padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.08)", color: C.textDim, fontSize: 9, fontFamily: F.h, letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 700 };
   const TD = (hl) => ({ padding: "6px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", color: hl ? C.accent : C.text, fontSize: 12, fontFamily: F.m });
-
-  function Inp({ label, value, onChange, step = 1, suffix, tip }) {
-    const inner = <div style={{ marginBottom: 8 }}>
-      <label style={{ fontFamily: F.m, fontSize: 10, color: C.textDim, marginBottom: 3, display: "block", letterSpacing: "0.03em" }}>{label} {tip && <span style={{ color: C.textMuted, cursor: "help" }}>&#9432;</span>}</label>
-      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-        <input type="number" step={step} value={value} onChange={e => onChange(Number(e.target.value))}
-          style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 6, color: C.text,
-            padding: "7px 10px", fontSize: 13, width: "100%", boxSizing: "border-box", outline: "none",
-            fontFamily: F.m, transition: "border-color 0.2s, box-shadow 0.2s" }}
-          onFocus={e => { e.target.style.borderColor = C.accent + "88"; e.target.style.boxShadow = "0 0 12px " + C.accentGlow; }}
-          onBlur={e => { e.target.style.borderColor = C.inputBorder; e.target.style.boxShadow = "none"; }} />
-        {suffix && <span style={{ fontFamily: F.m, fontSize: 10, color: C.textMuted, whiteSpace: "nowrap" }}>{suffix}</span>}
-      </div>
-    </div>;
-    return tip ? <Tip text={tip}>{inner}</Tip> : inner;
-  }
-  function Bdg({ color, children }) {
-    return <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 4, fontSize: 9, fontWeight: 700, fontFamily: F.h, background: color + "25", color, border: "1px solid " + color + "44", letterSpacing: "0.06em", textTransform: "uppercase", textShadow: "0 0 8px " + color + "44" }}>{children}</span>;
-  }
-  function Tip({ text, children, pos = "top" }) {
-    if (!text) return children;
-    return <span className="tip-wrap">{children}<span className="tip-box" style={{ ...(pos === "bottom" ? { bottom: "auto", top: "calc(100% + 8px)" } : {}), fontFamily: F.m }}>{text}</span></span>;
-  }
-  function Btn({ on, color, children, onClick, big, disabled }) {
-    const clr = color || C.accent;
-    return <button onClick={onClick} disabled={disabled} style={{
-      padding: big ? "11px 28px" : "6px 14px", borderRadius: 8, border: "1px solid " + (on ? clr + "88" : "rgba(255,255,255,0.08)"),
-      background: on ? clr + "18" : "rgba(255,255,255,0.03)", color: disabled ? C.textMuted : on ? clr : C.textDim,
-      cursor: disabled ? "not-allowed" : "pointer", fontSize: big ? 14 : 11, fontFamily: F.h, fontWeight: 700,
-      letterSpacing: "0.08em", textTransform: "uppercase", transition: "all 0.2s", opacity: disabled ? 0.4 : 1,
-      boxShadow: on ? "0 0 16px " + clr + "22, inset 0 1px 0 rgba(255,255,255,0.06)" : "0 2px 8px rgba(0,0,0,0.2)",
-      textShadow: on ? "0 0 10px " + clr + "44" : "none",
-    }}>{children}</button>;
-  }
 
   const [ppS, setPpS] = useState(20);
   const [ppB, setPpB] = useState(20);
@@ -542,14 +551,23 @@ export default function App() {
       const gain = optMode === "profit" ? getProfit({ ...f, level: f.level+1 }, allPrices, RECIPES) - getProfit(f, allPrices, RECIPES) : calcPPH(1, f.bonus);
       const fullPP = effPP(stahl, "stahl", params).pp;
       
-      a.push({ label: "F" + (i+1) + " L" + f.level + " -> " + (f.level+1) + " (" + f.item + ")", type: "upgrade", resType: "Stahl", resCost: stahl, free, ppCost: fullPP, method: free === stahl ? "Lager" : method, ppGain: gain * 24, hours: pp / pph, amortH: gain > 0 ? pp / gain : Infinity });
+      const factor = params.stahlPrice > 0 ? params.ppPerStahl / params.stahlPrice : 10;
+      const effectivePPH = Math.max(0.001, pph + (optMode === "profit" ? profitH * factor : 0));
+      const gainPP = optMode === "profit" ? gain * factor : gain;
+
+      a.push({ label: "F" + (i+1) + " L" + f.level + " -> " + (f.level+1) + " (" + f.item + ")", type: "upgrade", resType: "Stahl", resCost: stahl, free, ppCost: fullPP, method: free === stahl ? "Lager" : method, ppGain: gain * 24, hours: pp / effectivePPH, amortH: gainPP > 0 ? fullPP / gainPP : Infinity });
     });
     if (facs.length < mxF) {
       const n = facs.length + 1, beton = facBeton(n, fB), free = Math.min(sB, beton), need = beton - free;
       const { pp, method } = need > 0 ? effPP(need, "beton", params) : { pp: 0, method: "Lager" };
       const gain = optMode === "profit" ? getProfit({ level: 1, bonus: dB, item: "concrete" }, allPrices, RECIPES) : calcPPH(1, dB);
       const fullPP = effPP(beton, "beton", params).pp;
-      a.push({ label: "Neue Fabrik #" + n, type: "buy", resType: "Beton", resCost: beton, free, ppCost: fullPP, method: free === beton ? "Lager" : method, ppGain: gain * 24, hours: pp / pph, amortH: gain > 0 ? pp / gain : Infinity });
+
+      const factor = params.stahlPrice > 0 ? params.ppPerStahl / params.stahlPrice : 10;
+      const effectivePPH = Math.max(0.001, pph + (optMode === "profit" ? profitH * factor : 0));
+      const gainPP = optMode === "profit" ? gain * factor : gain;
+
+      a.push({ label: "Neue Fabrik #" + n, type: "buy", resType: "Beton", resCost: beton, free, ppCost: fullPP, method: free === beton ? "Lager" : method, ppGain: gain * 24, hours: pp / effectivePPH, amortH: gainPP > 0 ? fullPP / gainPP : Infinity });
     }
     const score = (x) => x.ppGain / Math.max(x.ppCost, 1);
     a.sort((x, y) => score(y) - score(x));
@@ -593,6 +611,7 @@ export default function App() {
   const curPath = res?.paths?.[tS] || [];
 
   return (
+    <ThemeContext.Provider value={T}>
     <div style={{
       background: T.bg,
       color: C.text, minHeight: "100vh", fontFamily: F.m, padding: "28px 24px", maxWidth: 1260, margin: "0 auto",
@@ -930,5 +949,6 @@ export default function App() {
         HEBELMINISTERIUM DEUTSCHLAND &middot; FABRIK-OPTIMIERER &middot; DIJKSTRA + MARKTHANDEL
       </div>
     </div>
+    </ThemeContext.Provider>
   );
 }
