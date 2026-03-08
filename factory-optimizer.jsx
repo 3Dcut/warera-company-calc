@@ -175,7 +175,7 @@ class Heap {
 
 function facKey(fs) { return fs.map(f => f.item + ":" + f.bonus + ":" + f.level).sort().join("|"); }
 
-function runDijkstra(startFacs, params, sStahl, sBeton, recipes, prices, mode) {
+function runDijkstra(startFacs, params, sStahl, sBeton, recipes, prices, mode, upperBound = Infinity, maxIter = 500000) {
   const { maxFactories, maxLevel, upgradeBase, factoryBase, defaultBonus } = params;
   const heap = new Heap(), visited = new Set();
   const gp = []; for (const f of startFacs) gp.push(f.item + ":" + f.bonus + ":" + maxLevel);
@@ -187,9 +187,10 @@ function runDijkstra(startFacs, params, sStahl, sBeton, recipes, prices, mode) {
   heap.push(0, { facs: startFacs.map(f => ({ ...f })), path: [], rs: sStahl, rb: sBeton });
   let iter = 0;
 
-  while (heap.size > 0 && iter < 500000) {
+  while (heap.size > 0 && iter < maxIter) {
     iter++;
     const { p: time, v: { facs, path, rs, rb } } = heap.pop();
+    if (time > upperBound) continue;
     const key = sk(facs, rs, rb);
     if (visited.has(key)) continue; visited.add(key);
     if (facKey(facs) === gk) return { path, complete: true, iter };
@@ -409,6 +410,7 @@ export default function App() {
   const [tS, setTS] = useState("dijkstra");
   const [res, setRes] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [maxIter, setMaxIter] = useState(500000);
   const [impStr, setImpStr] = useState("");
   const [showImp, setShowImp] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -591,15 +593,18 @@ export default function App() {
   const compute = useCallback(() => {
     setBusy(true);
     setTimeout(() => {
-      const paths = {}, d = runDijkstra(facs, params, sS, sB, RECIPES, allPrices, optMode);
-      paths.dijkstra = d.path;
+      const paths = {};
       for (const s of STRATS) { if (s.key !== "dijkstra") try { paths[s.key] = simulate(facs, params, s.key, sS, sB, RECIPES, allPrices, optMode); } catch { paths[s.key] = []; } }
+      const cpPath = paths.cheapest || [];
+      const ub = cpPath.length ? cpPath[cpPath.length - 1].time : Infinity;
+      const d = runDijkstra(facs, params, sS, sB, RECIPES, allPrices, optMode, ub, maxIter);
+      paths.dijkstra = d.path;
       const finals = {};
       for (const s of STRATS) { const p = paths[s.key]; finals[s.key] = p?.length ? p[p.length-1].time : null; }
       setRes({ paths, finals, ok: d.complete, iter: d.iter });
       setBusy(false);
     }, 50);
-  }, [facs, params, sS, sB, optMode, allPrices, STRATS]);
+  }, [facs, params, sS, sB, optMode, allPrices, maxIter, STRATS]);
 
   const chart = res ? (() => {
     const startVal = optMode === "profit" ? profitH : pph;
@@ -826,6 +831,9 @@ export default function App() {
         <Tip text="Dijkstra + Greedy-Vergleich berechnen (kann einige Sekunden dauern)">
           <Btn on big color={C.accent} onClick={compute} disabled={busy || !facs.length}>{busy ? "Berechne..." : "Optimierung starten"}</Btn>
         </Tip>
+        <div style={{ width: 140 }}>
+          <Inp label="Max Iterationen" value={maxIter} onChange={setMaxIter} step={100000} tip="Maximale Dijkstra-Iterationen (Standard: 500.000, mehr = langsamer aber genauer)" />
+        </div>
         {res && <span style={{ fontSize: 11, color: res.ok ? C.green : C.red, textShadow: "0 0 8px " + (res.ok ? C.greenGlow : "rgba(248,113,113,0.3)") }}>
           {res.ok ? "Optimum gefunden" : "Limit erreicht"} - {res.iter.toLocaleString()} Iterationen
         </span>}
