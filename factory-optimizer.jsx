@@ -187,7 +187,7 @@ function runDijkstra(startFacs, params, sStahl, sBeton, recipes, prices, mode) {
   heap.push(0, { facs: startFacs.map(f => ({ ...f })), path: [], rs: sStahl, rb: sBeton });
   let iter = 0;
 
-  while (heap.size > 0 && iter < 50000) {
+  while (heap.size > 0 && iter < 500000) {
     iter++;
     const { p: time, v: { facs, path, rs, rb } } = heap.pop();
     const key = sk(facs, rs, rb);
@@ -502,7 +502,7 @@ export default function App() {
   }
 
   const updF = useCallback((i, k, v) => setFacs(p => p.map((f, j) => j === i ? { ...f, [k]: v } : f)), []);
-  const addF = useCallback(() => setFacs(p => [...p, { level: 1, bonus: dB }]), [dB]);
+  const addF = useCallback(() => setFacs(p => [...p, { level: 1, bonus: dB, item: "concrete" }]), [dB]);
   const rmF = useCallback(i => setFacs(p => p.filter((_, j) => j !== i)), []);
 
   const params = { ppPerStahl: ppS, ppPerBeton: ppB, stahlPrice: sP, betonPrice: bP, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB, defaultBonus: dB, startStahl: sS, startBeton: sB };
@@ -602,7 +602,8 @@ export default function App() {
   }, [facs, params, sS, sB, optMode, allPrices, STRATS]);
 
   const chart = res ? (() => {
-    const rd = buildChart(res.paths, pph, actv);
+    const startVal = optMode === "profit" ? profitH : pph;
+    const rd = buildChart(res.paths, startVal, actv);
     if (cM === "rate") return rd;
     const acc = {}; let prev = 0;
     return rd.map(d => { const dt = d.time - prev; const pt = { time: d.time }; for (const k of actv) { if (!(k in acc)) acc[k] = 0; acc[k] += (d[k]||0) * dt; pt[k] = Math.round(acc[k]); } prev = d.time; return pt; });
