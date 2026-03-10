@@ -529,12 +529,14 @@ export default function App() {
           <div style={{ flex: "2 1 400px" }}>
             <Sec icon="&#128100;">WarEra Spieler</Sec>
             <div style={{ display: "flex", gap: 8 }}>
-              <input
-                value={apiUser} onChange={e => setApiUser(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && loadFromAPI()}
-                placeholder="Username..."
-                style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 8, color: C.text, padding: "10px 14px", fontSize: 14, fontFamily: F.m, outline: "none", flex: 1 }}
-              />
+              <Tip text="Gib den Namen eines Spielers ein, um seine Fabriken und Daten direkt von der WarEra-API zu laden.">
+                <input
+                  value={apiUser} onChange={e => setApiUser(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && loadFromAPI()}
+                  placeholder="Username..."
+                  style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 8, color: C.text, padding: "10px 14px", fontSize: 14, fontFamily: F.m, outline: "none", flex: 1 }}
+                />
+              </Tip>
               <Btn on big color={C.accent} onClick={loadFromAPI} disabled={apiLoading || !apiUser.trim()}>
                 {apiLoading ? "Lädt..." : "Import & Optimieren"}
               </Btn>
@@ -543,8 +545,8 @@ export default function App() {
 
           {/* Rechte Seite: Lagerbestände */}
           <div style={{ flex: "1 1 200px", display: "flex", gap: 12 }}>
-            <div style={{ flex: 1 }}><Inp label="Stahl im Lager" value={sS} onChange={setSS} /></div>
-            <div style={{ flex: 1 }}><Inp label="Beton im Lager" value={sB} onChange={setSB} /></div>
+            <div style={{ flex: 1 }}><Inp label="Stahl im Lager" value={sS} onChange={setSS} suffix="Stk" tip="Dein aktueller Vorrat an Stahl, der für Upgrades verwendet werden kann." /></div>
+            <div style={{ flex: 1 }}><Inp label="Beton im Lager" value={sB} onChange={setSB} suffix="Bt" tip="Dein aktueller Vorrat an Beton, der für neue Fabriken verwendet werden kann." /></div>
           </div>
         </div>
         {(apiError || apiInfo) && (
@@ -563,10 +565,25 @@ export default function App() {
       {showAdvanced && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 14, marginBottom: 20 }}>
           <GlassCard>
+            <Sec icon="&#9881;">Parameter & Einheiten</Sec>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "0 12px" }}>
+              <Inp label="PP pro Stahl" value={ppS} onChange={v => { setPpS(v); compute(); }} suffix="PP/Stk" tip="Wie viele Produktionspunkte (PP) ein Stück Stahl wert ist." />
+              <Inp label="PP pro Beton" value={ppB} onChange={v => { setPpB(v); compute(); }} suffix="PP/Bt" tip="Wie viele Produktionspunkte (PP) ein Stück Beton wert ist." />
+              <Inp label="Max. Fabriken" value={mxF} onChange={v => { setMxF(v); compute(); }} suffix="Stk" tip="Die maximale Anzahl an Fabriken, die du bauen möchtest." />
+              <Inp label="Max. Level" value={mxL} onChange={v => { setMxL(v); compute(); }} suffix="Lvl" tip="Das maximale Level, das jede Fabrik erreichen soll." />
+              <Inp label="Basis Upg-Kosten" value={uB} onChange={v => { setUB(v); compute(); }} suffix="Stk" tip="Basiskosten an Stahl für ein Upgrade von Level 1 auf 2." />
+              <Inp label="Basis Fab-Kosten" value={fB} onChange={v => { setFB(v); compute(); }} suffix="Bt" tip="Basiskosten an Beton für die allererste Fabrik." />
+            </div>
+          </GlassCard>
+          <GlassCard>
             <Sec icon="&#128203;">Konfiguration (Import/Export)</Sec>
             <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-              <Btn on={copied} onClick={doCopy}>{copied ? "\u2713 Kopiert" : "Code kopieren"}</Btn>
-              <Btn on={showImp} onClick={() => setShowImp(!showImp)}>Import-Code</Btn>
+              <Tip text="Alle Parameter + Fabriken als Code in die Zwischenablage kopieren">
+                <Btn on={copied} onClick={doCopy}>{copied ? "\u2713 Kopiert" : "Code kopieren"}</Btn>
+              </Tip>
+              <Tip text="Einen gespeicherten Code eingeben, um Parameter und Fabriken zu laden">
+                <Btn on={showImp} onClick={() => setShowImp(!showImp)}>Import-Code</Btn>
+              </Tip>
             </div>
             {showImp && (
               <div style={{ display: "flex", gap: 8 }}>
@@ -622,14 +639,16 @@ export default function App() {
                   const t = res.finals[s.key], on = actv.includes(s.key);
                   const isBest = t === Math.min(...Object.values(res.finals).filter(v => v != null)) && t != null;
                   return (
-                    <div key={s.key} onClick={() => setActv(p => p.includes(s.key) ? p.filter(x => x !== s.key) : [...p, s.key])}
-                      style={{ ...glass(on ? 0.07 : 0.03, 16), borderRadius: 12, padding: "12px", cursor: "pointer",
-                        borderColor: on ? s.color + "55" : "rgba(255,255,255,0.06)", transition: "all 0.2s",
-                        boxShadow: isBest && on ? "0 0 20px " + s.glow : "none" }}>
-                      <div style={{ fontFamily: F.h, fontSize: 9, color: s.color, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 4 }}>{s.label}</div>
-                      <div style={{ fontSize: 18, fontWeight: 700, fontFamily: F.h }}>{t != null ? fmtT(t) : "-"}</div>
-                      {isBest && <div style={{ fontSize: 8, color: s.color, fontWeight: 700 }}>NEIDLOS BESTE</div>}
-                    </div>
+                    <Tip key={s.key} text={s.tip}>
+                      <div onClick={() => setActv(p => p.includes(s.key) ? p.filter(x => x !== s.key) : [...p, s.key])}
+                        style={{ ...glass(on ? 0.07 : 0.03, 16), borderRadius: 12, padding: "12px", cursor: "pointer",
+                          borderColor: on ? s.color + "55" : "rgba(255,255,255,0.06)", transition: "all 0.2s",
+                          boxShadow: isBest && on ? "0 0 20px " + s.glow : "none" }}>
+                        <div style={{ fontFamily: F.h, fontSize: 9, color: s.color, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 4 }}>{s.label}</div>
+                        <div style={{ fontSize: 18, fontWeight: 700, fontFamily: F.h }}>{t != null ? fmtT(t) : "-"}</div>
+                        {isBest && <div style={{ fontSize: 8, color: s.color, fontWeight: 700 }}>NEIDLOS BESTE</div>}
+                      </div>
+                    </Tip>
                   );
                 })}
               </div>
@@ -652,19 +671,27 @@ export default function App() {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 8, marginBottom: 20 }}>
             {facs.map((f, i) => (
               <div key={i} style={{ ...glass(0.08, 10), borderRadius: 8, padding: "10px", border: "1px solid rgba(255,255,255,0.08)", position: "relative" }}>
-                <button onClick={() => { rmF(i); compute(facs.filter((_, j) => j !== i)); }} style={{ position: "absolute", top: 4, right: 6, background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 16, fontWeight: 700, padding: 0 }}>&times;</button>
+                <Tip text="Fabrik aus der Planung entfernen">
+                  <button onClick={() => { rmF(i); compute(facs.filter((_, j) => j !== i)); }} style={{ position: "absolute", top: 4, right: 6, background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 16, fontWeight: 700, padding: 0 }}>&times;</button>
+                </Tip>
                 <div style={{ fontSize: 9, color: C.accent, fontWeight: 700, marginBottom: 2 }}>F{i+1}</div>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4, marginBottom: 4 }}>
                   <span style={{ fontSize: 13, fontWeight: 700 }}>L{f.level}</span>
                   <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-                    <button onClick={() => { if (f.level < mxL) { const nf = facs.map((x, j) => j === i ? { ...x, level: x.level + 1 } : x); setFacs(nf); compute(nf); } }} style={{ background: "rgba(255,255,255,0.1)", border: "none", color: C.text, fontSize: 8, cursor: "pointer", padding: "0 4px", borderRadius: 2 }}>▲</button>
-                    <button onClick={() => { if (f.level > 1) { const nf = facs.map((x, j) => j === i ? { ...x, level: x.level - 1 } : x); setFacs(nf); compute(nf); } }} style={{ background: "rgba(255,255,255,0.1)", border: "none", color: C.text, fontSize: 8, cursor: "pointer", padding: "0 4px", borderRadius: 2 }}>▼</button>
+                    <Tip text="Level erhöhen (Planungszustand)">
+                      <button onClick={() => { if (f.level < mxL) { const nf = facs.map((x, j) => j === i ? { ...x, level: x.level + 1 } : x); setFacs(nf); compute(nf); } }} style={{ background: "rgba(255,255,255,0.1)", border: "none", color: C.text, fontSize: 8, cursor: "pointer", padding: "0 4px", borderRadius: 2 }}>▲</button>
+                    </Tip>
+                    <Tip text="Level senken (Planungszustand)">
+                      <button onClick={() => { if (f.level > 1) { const nf = facs.map((x, j) => j === i ? { ...x, level: x.level - 1 } : x); setFacs(nf); compute(nf); } }} style={{ background: "rgba(255,255,255,0.1)", border: "none", color: C.text, fontSize: 8, cursor: "pointer", padding: "0 4px", borderRadius: 2 }}>▼</button>
+                    </Tip>
                   </div>
                 </div>
                 <div style={{ fontSize: 9, color: C.textDim, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.item || "Unbekannt"}</div>
               </div>
             ))}
-            <button onClick={() => { const nf = [...facs, { level: 1 }]; setFacs(nf); compute(nf); }} style={{ ...glass(0.05), borderRadius: 8, border: "1px dashed rgba(255,255,255,0.2)", color: C.textMuted, cursor: "pointer", fontSize: 18, minHeight: 65 }}>+</button>
+            <Tip text="Neue Fabrik (L1) zur Planung hinzufügen">
+              <button onClick={() => { const nf = [...facs, { level: 1 }]; setFacs(nf); compute(nf); }} style={{ ...glass(0.05), borderRadius: 8, border: "1px dashed rgba(255,255,255,0.2)", color: C.textMuted, cursor: "pointer", fontSize: 18, minHeight: 65, width: "100%" }}>+</button>
+            </Tip>
           </div>
         </div>
 
@@ -675,7 +702,12 @@ export default function App() {
               <GlassCard style={{ padding: "0", overflow: "hidden" }}>
                 <div style={{ maxHeight: "600px", overflowY: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead><tr><th style={TH}>Schritt</th><th style={TH}>Aktion</th><th style={TH}>Zeit</th><th style={TH}>PP/d</th></tr></thead>
+                    <thead><tr>
+                      <th style={TH}><Tip text="Schrittnummer im Bauplan">Schritt</Tip></th>
+                      <th style={TH}><Tip text="Die auszuführende Aktion">Aktion</Tip></th>
+                      <th style={TH}><Tip text="Zeitpunkt (kumuliert) ab jetzt">Zeit</Tip></th>
+                      <th style={TH}><Tip text="Gewinn an Produktionsrate durch diesen Schritt">PP/d Gewinn</Tip></th>
+                    </tr></thead>
                     <tbody>
                       {res.paths.dijkstra.map((s, i) => (
                         <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
