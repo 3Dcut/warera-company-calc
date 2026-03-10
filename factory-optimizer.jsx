@@ -489,6 +489,7 @@ export default function App() {
             <div style={{ display: "flex", gap: 8 }}>
               <Tip text="Gib den Namen eines Spielers ein, um seine Fabriken und Daten direkt von der WarEra-API zu laden.">
                 <input
+                  aria-label="WarEra Username"
                   value={apiUser} onChange={e => setApiUser(e.target.value)}
                   onKeyDown={e => e.key === "Enter" && loadFromAPI()}
                   placeholder="Username..."
@@ -622,17 +623,17 @@ export default function App() {
             {facs.map((f, i) => (
               <div key={i} style={{ ...glass(0.08, 10), borderRadius: 8, padding: "10px", border: "1px solid rgba(255,255,255,0.08)", position: "relative" }}>
                 <Tip text="Fabrik aus der Planung entfernen">
-                  <button onClick={() => { rmF(i); compute(facs.filter((_, j) => j !== i)); }} style={{ position: "absolute", top: 4, right: 6, background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 16, fontWeight: 700, padding: 0 }}>&times;</button>
+                  <button aria-label="Fabrik entfernen" onClick={() => { rmF(i); compute(facs.filter((_, j) => j !== i)); }} style={{ position: "absolute", top: 4, right: 6, background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 16, fontWeight: 700, padding: 0 }}>&times;</button>
                 </Tip>
                 <div style={{ fontSize: 9, color: C.accent, fontWeight: 700, marginBottom: 2 }}>F{i+1}</div>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4, marginBottom: 4 }}>
                   <span style={{ fontSize: 13, fontWeight: 700 }}>L{f.level}</span>
                   <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
                     <Tip text="Level erhöhen (Planungszustand)">
-                      <button onClick={() => { if (f.level < mxL) { const nf = facs.map((x, j) => j === i ? { ...x, level: x.level + 1 } : x); setFacs(nf); compute(nf); } }} style={{ background: "rgba(255,255,255,0.1)", border: "none", color: C.text, fontSize: 8, cursor: "pointer", padding: "0 4px", borderRadius: 2 }}>▲</button>
+                      <button aria-label="Level erhöhen" onClick={() => { if (f.level < mxL) { const nf = facs.map((x, j) => j === i ? { ...x, level: x.level + 1 } : x); setFacs(nf); compute(nf); } }} style={{ background: "rgba(255,255,255,0.1)", border: "none", color: C.text, fontSize: 8, cursor: "pointer", padding: "0 4px", borderRadius: 2 }}>▲</button>
                     </Tip>
                     <Tip text="Level senken (Planungszustand)">
-                      <button onClick={() => { if (f.level > 1) { const nf = facs.map((x, j) => j === i ? { ...x, level: x.level - 1 } : x); setFacs(nf); compute(nf); } }} style={{ background: "rgba(255,255,255,0.1)", border: "none", color: C.text, fontSize: 8, cursor: "pointer", padding: "0 4px", borderRadius: 2 }}>▼</button>
+                      <button aria-label="Level senken" onClick={() => { if (f.level > 1) { const nf = facs.map((x, j) => j === i ? { ...x, level: x.level - 1 } : x); setFacs(nf); compute(nf); } }} style={{ background: "rgba(255,255,255,0.1)", border: "none", color: C.text, fontSize: 8, cursor: "pointer", padding: "0 4px", borderRadius: 2 }}>▼</button>
                     </Tip>
                   </div>
                 </div>
@@ -640,7 +641,7 @@ export default function App() {
               </div>
             ))}
             <Tip text="Neue Fabrik (L1) zur Planung hinzufügen">
-              <button onClick={() => { const nf = [...facs, { level: 1 }]; setFacs(nf); compute(nf); }} style={{ ...glass(0.05), borderRadius: 8, border: "1px dashed rgba(255,255,255,0.2)", color: C.textMuted, cursor: "pointer", fontSize: 18, minHeight: 65, width: "100%" }}>+</button>
+              <button aria-label="Neue Fabrik hinzufügen" onClick={() => { const nf = [...facs, { level: 1 }]; setFacs(nf); compute(nf); }} style={{ ...glass(0.05), borderRadius: 8, border: "1px dashed rgba(255,255,255,0.2)", color: C.textMuted, cursor: "pointer", fontSize: 18, minHeight: 65, width: "100%" }}>+</button>
             </Tip>
           </div>
         </div>
