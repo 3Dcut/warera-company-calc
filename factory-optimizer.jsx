@@ -95,7 +95,7 @@ function getStrats() {
 
 // ── Encode / Decode ──
 function encodeState(params, facs, theme) {
-  const p = [params.ppPerStahl, params.ppPerBeton, params.stahlPrice, params.betonPrice,
+  const p = [params.ppPerStahl, params.ppPerBeton,
     params.maxFactories, params.maxLevel, params.upgradeBase, params.factoryBase,
     params.startStahl, params.startBeton].join(",");
   const f = facs.map(x => x.level).join(",");
@@ -113,9 +113,9 @@ function decodeState(str) {
       return { level: l };
     });
     return {
-      params: { ppPerStahl: p[0], ppPerBeton: p[1], stahlPrice: p[2], betonPrice: p[3],
-        maxFactories: p[4], maxLevel: p[5], upgradeBase: p[6], factoryBase: p[7],
-        startStahl: p[8], startBeton: p[9] },
+      params: { ppPerStahl: p[0], ppPerBeton: p[1],
+        maxFactories: p[2], maxLevel: p[3], upgradeBase: p[4], factoryBase: p[5],
+        startStahl: p[6], startBeton: p[7] },
       facs, theme: thm === "pink" ? "pink" : "grau"
     };
   } catch { return null; }
@@ -129,13 +129,9 @@ function totalPPH(fs) { return fs.reduce((s, f) => s + calcPPH(f.level), 0); }
 
 function effPP(amount, resType, p) {
   if (resType === "stahl") {
-    const d = amount * p.ppPerStahl;
-    const v = p.betonPrice > 0 ? amount * (p.stahlPrice / p.betonPrice) * p.ppPerBeton : Infinity;
-    return v < d ? { pp: v, method: "via Beton" } : { pp: d, method: "direkt" };
+    return { pp: amount * p.ppPerStahl, method: "direkt" };
   }
-  const d = amount * p.ppPerBeton;
-  const v = p.stahlPrice > 0 ? amount * (p.betonPrice / p.stahlPrice) * p.ppPerStahl : Infinity;
-  return v < d ? { pp: v, method: "via Stahl" } : { pp: d, method: "direkt" };
+  return { pp: amount * p.ppPerBeton, method: "direkt" };
 }
 
 class Heap {
@@ -311,8 +307,6 @@ const TD = (hl) => ({ padding: "6px 10px", borderBottom: "1px solid rgba(255,255
 export default function App() {
   const [ppS, setPpS] = useState(20);
   const [ppB, setPpB] = useState(20);
-  const [sP, setSP] = useState(2.0);
-  const [bP, setBP] = useState(2.0);
   const [mxF, setMxF] = useState(12);
   const [mxL, setMxL] = useState(7);
   const [uB, setUB] = useState(20);
@@ -357,7 +351,7 @@ export default function App() {
   function compute(customFacs = null, customParams = null) {
     setBusy(true);
     const fData = customFacs || facs;
-    const pData = customParams || { ppPerStahl: ppS, ppPerBeton: ppB, stahlPrice: sP, betonPrice: bP, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB, startStahl: sS, startBeton: sB };
+    const pData = customParams || { ppPerStahl: ppS, ppPerBeton: ppB, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB, startStahl: sS, startBeton: sB };
     
     setTimeout(() => {
       const paths = {}, d = runDijkstra(fData, pData, sS, sB);
@@ -395,18 +389,11 @@ export default function App() {
         newFacs.push({ level: comp.activeUpgradeLevels?.automatedEngine || 1, name: comp.name, item: comp.itemCode });
       }
 
-      let newSP = sP, newBP = bP;
-      try {
-        const prices = await apiCall("itemTrading.getPrices", {});
-        if (prices.steel != null) newSP = Math.round(prices.steel * 10000) / 10000;
-        if (prices.concrete != null) newBP = Math.round(prices.concrete * 10000) / 10000;
-      } catch {}
-
-      setSP(newSP); setBP(newBP); setFacs(newFacs);
+      setFacs(newFacs);
       setApiInfo(username + ": " + newFacs.length + " Fabriken geladen.");
       
       // Sofort berechnen mit NEUEN Daten
-      const newParams = { ppPerStahl: ppS, ppPerBeton: ppB, stahlPrice: newSP, betonPrice: newBP, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB, startStahl: sS, startBeton: sB };
+      const newParams = { ppPerStahl: ppS, ppPerBeton: ppB, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB, startStahl: sS, startBeton: sB };
       compute(newFacs, newParams);
     } catch (e) {
       setApiError(e.message);
@@ -418,7 +405,7 @@ export default function App() {
   const addF = useCallback(() => setFacs(p => [...p, { level: 1 }]), []);
   const rmF = useCallback(i => setFacs(p => p.filter((_, j) => j !== i)), []);
 
-  const params = { ppPerStahl: ppS, ppPerBeton: ppB, stahlPrice: sP, betonPrice: bP, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB, startStahl: sS, startBeton: sB };
+  const params = { ppPerStahl: ppS, ppPerBeton: ppB, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB, startStahl: sS, startBeton: sB };
   const pph = totalPPH(facs);
 
   const code = encodeState(params, facs, theme);
@@ -427,7 +414,7 @@ export default function App() {
     const d = decodeState(impStr);
     if (!d) return;
     const p = d.params;
-    setPpS(p.ppPerStahl); setPpB(p.ppPerBeton); setSP(p.stahlPrice); setBP(p.betonPrice);
+    setPpS(p.ppPerStahl); setPpB(p.ppPerBeton);
     setMxF(p.maxFactories); setMxL(p.maxLevel); setUB(p.upgradeBase); setFB(p.factoryBase);
     setSS(p.startStahl); setSB(p.startBeton);
     setFacs(d.facs);
@@ -445,11 +432,7 @@ export default function App() {
     });
   }
 
-  const trade = (() => {
-    if (sP <= 0 || bP <= 0) return null;
-    const sv = (sP / bP) * ppB, bv = (bP / sP) * ppS;
-    return { sE: Math.min(ppS, sv), sM: sv < ppS ? "via Beton" : "direkt", bE: Math.min(ppB, bv), bM: bv < ppB ? "via Stahl" : "direkt" };
-  })();
+  const trade = null;
 
   const displayActs = res?.paths?.dijkstra?.slice(0, 3) || [];
 
@@ -577,16 +560,6 @@ export default function App() {
       {showAdvanced && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 14, marginBottom: 20 }}>
           <GlassCard>
-            <Sec icon="&#9881;">Marktpreise</Sec>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px" }}>
-              <Inp label="Stahlpreis (Auto)" value={sP} onChange={v => { setSP(v); compute(); }} step={0.0001} suffix="PP" />
-              <Inp label="Betonpreis (Auto)" value={bP} onChange={v => { setBP(v); compute(); }} step={0.0001} suffix="PP" />
-            </div>
-            <div style={{ fontSize: 10, color: C.textMuted, marginTop: 8, fontStyle: "italic" }}>
-              * Preise werden beim API-Import automatisch aktualisiert.
-            </div>
-          </GlassCard>
-          <GlassCard>
             <Sec icon="&#128203;">Konfiguration (Import/Export)</Sec>
             <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
               <Btn on={copied} onClick={doCopy}>{copied ? "\u2713 Kopiert" : "Code kopieren"}</Btn>
@@ -626,7 +599,7 @@ export default function App() {
                     <span style={{ width: 70, color: C.text }}>Fabrik #{n}</span>
                     <span style={{ color: C.betonC }}>{b}</span>
                     <span>{pp.toFixed(0)} PP</span>
-                    <span style={{ fontSize: 10, color: method === "direkt" ? C.textMuted : C.accent }}>{method}</span>
+                    <span style={{ fontSize: 10, color: C.textMuted }}>{method}</span>
                   </div>;
                 })}
               </div>
