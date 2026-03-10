@@ -96,8 +96,7 @@ function getStrats() {
 // ── Encode / Decode ──
 function encodeState(params, facs, theme) {
   const p = [params.ppPerStahl, params.ppPerBeton,
-    params.maxFactories, params.maxLevel, params.upgradeBase, params.factoryBase,
-    params.startStahl, params.startBeton].join(",");
+    params.maxFactories, params.maxLevel, params.upgradeBase, params.factoryBase].join(",");
   const f = facs.map(x => x.level).join(",");
   try { return btoa(p + "|" + f + "|" + theme); } catch { return ""; }
 }
@@ -114,8 +113,7 @@ function decodeState(str) {
     });
     return {
       params: { ppPerStahl: p[0], ppPerBeton: p[1],
-        maxFactories: p[2], maxLevel: p[3], upgradeBase: p[4], factoryBase: p[5],
-        startStahl: p[6], startBeton: p[7] },
+        maxFactories: p[2], maxLevel: p[3], upgradeBase: p[4], factoryBase: p[5] },
       facs, theme: thm === "pink" ? "pink" : "grau"
     };
   } catch { return null; }
@@ -128,10 +126,8 @@ function calcPPH(level) { return level; }
 function totalPPH(fs) { return fs.reduce((s, f) => s + calcPPH(f.level), 0); }
 
 function effPP(amount, resType, p) {
-  if (resType === "stahl") {
-    return { pp: amount * p.ppPerStahl, method: "direkt" };
-  }
-  return { pp: amount * p.ppPerBeton, method: "direkt" };
+  if (resType === "stahl") return amount * p.ppPerStahl;
+  return amount * p.ppPerBeton;
 }
 
 class Heap {
@@ -143,7 +139,7 @@ class Heap {
 
 function facKey(fs) { return fs.map(f => f.level).sort().join("|"); }
 
-function runDijkstra(startFacs, params, sStahl, sBeton) {
+function runDijkstra(startFacs, params) {
   const { maxFactories, maxLevel, upgradeBase, factoryBase } = params;
   const heap = new Heap(), visited = new Set();
   const gp = []; for (const f of startFacs) gp.push(maxLevel);
@@ -151,48 +147,43 @@ function runDijkstra(startFacs, params, sStahl, sBeton) {
   const gk = gp.sort().join("|");
   if (facKey(startFacs) === gk) return { path: [], complete: true, iter: 0 };
 
-  const sk = (fs, rs, rb) => facKey(fs) + ";" + rs + ";" + rb;
-  heap.push(0, { facs: startFacs.map(f => ({ ...f })), path: [], rs: sStahl, rb: sBeton });
+  const sk = (fs) => facKey(fs);
+  heap.push(0, { facs: startFacs.map(f => ({ ...f })), path: [] });
   let iter = 0;
 
   while (heap.size > 0 && iter < 500000) {
     iter++;
-    const { p: time, v: { facs, path, rs, rb } } = heap.pop();
-    const key = sk(facs, rs, rb);
+    const { p: time, v: { facs, path } } = heap.pop();
+    const key = sk(facs);
     if (visited.has(key)) continue; visited.add(key);
     if (facKey(facs) === gk) return { path, complete: true, iter };
     const pph = totalPPH(facs); if (pph <= 0) continue;
-    const seen = new Set();
 
     for (let i = 0; i < facs.length; i++) {
       if (facs[i].level >= maxLevel) continue;
       const lvl = facs[i].level, stahl = upgStahl(lvl, upgradeBase);
-      const free = Math.min(rs, stahl), need = stahl - free;
-      const { pp, method } = need > 0 ? effPP(need, "stahl", params) : { pp: 0, method: "Lager" };
+      const pp = effPP(stahl, "stahl", params);
       const dt = pp / pph;
       const nf = facs.map((f, j) => j === i ? { ...f, level: f.level + 1 } : { ...f });
-      const nrs = rs - free, nk = sk(nf, nrs, rb);
+      const nk = sk(nf);
       if (!visited.has(nk)) {
-        heap.push(time + dt, { facs: nf, rs: nrs, rb, path: [...path, {
+        heap.push(time + dt, { facs: nf, path: [...path, {
           action: "Upgrade L" + lvl + " -> L" + (lvl+1),
-          type: "upgrade", resType: "stahl", resCost: stahl, freeRes: free,
-          method: free === stahl ? "Lager" : method, ppCost: pp,
-          ppGain: calcPPH(1), dt, time: time + dt, pph: totalPPH(nf),
+          type: "upgrade", resType: "stahl", resCost: stahl,
+          ppCost: pp, ppGain: calcPPH(1), dt, time: time + dt, pph: totalPPH(nf),
         }]});
       }
     }
     if (facs.length < maxFactories) {
       const n = facs.length + 1, beton = facBeton(n, factoryBase);
-      const free = Math.min(rb, beton), need = beton - free;
-      const { pp, method } = need > 0 ? effPP(need, "beton", params) : { pp: 0, method: "Lager" };
+      const pp = effPP(beton, "beton", params);
       const dt = pph > 0 ? pp / pph : Infinity;
       const nf = [...facs.map(f => ({ ...f })), { level: 1 }];
-      const nrb = rb - free, nk = sk(nf, rs, nrb);
+      const nk = sk(nf);
       if (!visited.has(nk)) {
-        heap.push(time + dt, { facs: nf, rs, rb: nrb, path: [...path, {
+        heap.push(time + dt, { facs: nf, path: [...path, {
           action: "Neue Fabrik #" + n, type: "buy", resType: "beton", resCost: beton,
-          freeRes: free, method: free === beton ? "Lager" : method, ppCost: pp,
-          ppGain: calcPPH(1), dt, time: time + dt, pph: totalPPH(nf),
+          ppCost: pp, ppGain: calcPPH(1), dt, time: time + dt, pph: totalPPH(nf),
         }]});
       }
     }
@@ -200,30 +191,28 @@ function runDijkstra(startFacs, params, sStahl, sBeton) {
   return { path: [], complete: false, iter };
 }
 
-function simulate(facs, params, strategy, sStahl, sBeton) {
+function simulate(facs, params, strategy) {
   const { maxFactories, maxLevel, upgradeBase, factoryBase } = params;
-  let st = facs.map(f => ({ ...f })), t = 0, rs = sStahl, rb = sBeton;
+  let st = facs.map(f => ({ ...f })), t = 0;
   const path = []; let safe = 0;
   while (safe < 300) {
     safe++;
     if (st.length >= maxFactories && st.every(f => f.level >= maxLevel)) break;
     const pph = totalPPH(st); if (pph <= 0) break;
-    const acts = [], seen = new Set();
+    const acts = [];
     st.forEach((f, i) => {
       if (f.level >= maxLevel) return;
-      const stahl = upgStahl(f.level, upgradeBase), free = Math.min(rs, stahl), need = stahl - free;
-      const { pp, method } = need > 0 ? effPP(need, "stahl", params) : { pp: 0, method: "Lager" };
+      const stahl = upgStahl(f.level, upgradeBase);
+      const pp = effPP(stahl, "stahl", params);
       const ppG = calcPPH(1);
-      acts.push({ type: "upgrade", idx: i, resCost: stahl, resType: "stahl", freeRes: free,
-        method: free === stahl ? "Lager" : method, ppCost: pp, ppGain: ppG,
-        dt: pp / pph, label: "Upgrade L" + f.level + " -> L" + (f.level+1) });
+      acts.push({ type: "upgrade", idx: i, resCost: stahl, resType: "stahl",
+        ppCost: pp, ppGain: ppG, dt: pp / pph, label: "Upgrade L" + f.level + " -> L" + (f.level+1) });
     });
     if (st.length < maxFactories) {
-      const n = st.length + 1, beton = facBeton(n, factoryBase), free = Math.min(rb, beton), need = beton - free;
-      const { pp, method } = need > 0 ? effPP(need, "beton", params) : { pp: 0, method: "Lager" };
-      acts.push({ type: "buy", resCost: beton, resType: "beton", freeRes: free,
-        method: free === beton ? "Lager" : method, ppCost: pp, ppGain: calcPPH(1),
-        dt: pp / pph, label: "Neue Fabrik #" + n });
+      const n = st.length + 1, beton = facBeton(n, factoryBase);
+      const pp = effPP(beton, "beton", params);
+      acts.push({ type: "buy", resCost: beton, resType: "beton",
+        ppCost: pp, ppGain: calcPPH(1), dt: pp / pph, label: "Neue Fabrik #" + n });
     }
     if (!acts.length) break;
     let pick;
@@ -231,11 +220,10 @@ function simulate(facs, params, strategy, sStahl, sBeton) {
     else if (strategy === "upgrade_first") { const u = acts.filter(a => a.type === "upgrade").sort((a,b) => a.ppCost - b.ppCost); pick = u.length ? u[0] : acts.find(a => a.type === "buy"); }
     else { const b = acts.filter(a => a.type === "buy"); pick = b.length ? b[0] : acts.sort((a,b) => a.ppCost - b.ppCost)[0]; }
     t += pick.dt;
-    if (pick.type === "upgrade") { rs -= pick.freeRes; st = st.map((f, j) => j === pick.idx ? { ...f, level: f.level + 1 } : f); }
-    else { rb -= pick.freeRes; st = [...st, { level: 1 }]; }
+    if (pick.type === "upgrade") { st = st.map((f, j) => j === pick.idx ? { ...f, level: f.level + 1 } : f); }
+    else { st = [...st, { level: 1 }]; }
     path.push({ action: pick.label, type: pick.type, resType: pick.resType, resCost: pick.resCost,
-      freeRes: pick.freeRes, method: pick.method, ppCost: pick.ppCost, ppGain: pick.ppGain,
-      dt: pick.dt, time: t, pph: totalPPH(st) });
+      ppCost: pick.ppCost, ppGain: pick.ppGain, dt: pick.dt, time: t, pph: totalPPH(st) });
   }
   return path;
 }
@@ -314,8 +302,6 @@ export default function App() {
   const [mxL, setMxL] = useState(7);
   const [uB, setUB] = useState(20);
   const [fB, setFB] = useState(50);
-  const [sS, setSS] = useState(0);
-  const [sB, setSB] = useState(0);
   const [facs, setFacs] = useState([{ level: 1 }]);
   const [actv, setActv] = useState(["dijkstra", "cheapest"]);
   const [tab, setTab] = useState("chart");
@@ -354,12 +340,12 @@ export default function App() {
   function compute(customFacs = null, customParams = null) {
     setBusy(true);
     const fData = customFacs || facs;
-    const pData = customParams || { ppPerStahl: ppS, ppPerBeton: ppB, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB, startStahl: sS, startBeton: sB };
+    const pData = customParams || { ppPerStahl: ppS, ppPerBeton: ppB, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB };
     
     setTimeout(() => {
-      const paths = {}, d = runDijkstra(fData, pData, sS, sB);
+      const paths = {}, d = runDijkstra(fData, pData);
       paths.dijkstra = d.path;
-      for (const s of STRATS) { if (s.key !== "dijkstra") try { paths[s.key] = simulate(fData, pData, s.key, sS, sB); } catch { paths[s.key] = []; } }
+      for (const s of STRATS) { if (s.key !== "dijkstra") try { paths[s.key] = simulate(fData, pData, s.key); } catch { paths[s.key] = []; } }
       const finals = {};
       for (const s of STRATS) { const p = paths[s.key]; finals[s.key] = p?.length ? p[p.length-1].time : null; }
       setRes({ paths, finals, ok: d.complete, iter: d.iter });
@@ -396,7 +382,7 @@ export default function App() {
       setApiInfo(username + ": " + newFacs.length + " Fabriken geladen.");
       
       // Sofort berechnen mit NEUEN Daten
-      const newParams = { ppPerStahl: ppS, ppPerBeton: ppB, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB, startStahl: sS, startBeton: sB };
+      const newParams = { ppPerStahl: ppS, ppPerBeton: ppB, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB };
       compute(newFacs, newParams);
     } catch (e) {
       setApiError(e.message);
@@ -408,7 +394,7 @@ export default function App() {
   const addF = useCallback(() => setFacs(p => [...p, { level: 1 }]), []);
   const rmF = useCallback(i => setFacs(p => p.filter((_, j) => j !== i)), []);
 
-  const params = { ppPerStahl: ppS, ppPerBeton: ppB, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB, startStahl: sS, startBeton: sB };
+  const params = { ppPerStahl: ppS, ppPerBeton: ppB, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB };
   const pph = totalPPH(facs);
 
   const code = encodeState(params, facs, theme);
@@ -419,7 +405,6 @@ export default function App() {
     const p = d.params;
     setPpS(p.ppPerStahl); setPpB(p.ppPerBeton);
     setMxF(p.maxFactories); setMxL(p.maxLevel); setUB(p.upgradeBase); setFB(p.factoryBase);
-    setSS(p.startStahl); setSB(p.startBeton);
     setFacs(d.facs);
     if (d.theme) setTheme(d.theme);
     setShowImp(false); setImpStr(""); setRes(null);
@@ -515,12 +500,6 @@ export default function App() {
               </Btn>
             </div>
           </div>
-
-          {/* Rechte Seite: Lagerbestände */}
-          <div style={{ flex: "1 1 200px", display: "flex", gap: 12 }}>
-            <div style={{ flex: 1 }}><Inp label="Stahl im Lager" value={sS} onChange={setSS} suffix="Stk" tip="Dein aktueller Vorrat an Stahl, der für Upgrades verwendet werden kann." /></div>
-            <div style={{ flex: 1 }}><Inp label="Beton im Lager" value={sB} onChange={setSB} suffix="Bt" tip="Dein aktueller Vorrat an Beton, der für neue Fabriken verwendet werden kann." /></div>
-          </div>
         </div>
         {(apiError || apiInfo) && (
           <div style={{ marginTop: 12, fontSize: 12, fontFamily: F.m, color: apiError ? C.red : C.green }}>
@@ -575,24 +554,22 @@ export default function App() {
               <div>
                 <div style={{ color: C.stahl, fontWeight: 700, fontFamily: F.h, marginBottom: 8, letterSpacing: "0.08em" }}>UPGRADES (STAHL)</div>
                 {Array.from({ length: mxL - 1 }, (_, i) => i+1).map(l => {
-                  const s = upgStahl(l, uB), { pp, method } = effPP(s, "stahl", params);
+                  const s = upgStahl(l, uB), pp = effPP(s, "stahl", params);
                   return <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: C.textDim }}>
                     <span style={{ width: 70, color: C.text }}>L{l} -&gt; L{l+1}</span>
-                    <span style={{ color: C.stahl }}>{fmt(s, 0)}</span>
+                    <span style={{ color: C.stahl }}>{fmt(s, 0)} Einh.</span>
                     <span>{fmt(pp, 0)} PP</span>
-                    <span style={{ fontSize: 10, color: C.textMuted }}>{method}</span>
                   </div>;
                 })}
               </div>
               <div>
                 <div style={{ color: C.betonC, fontWeight: 700, fontFamily: F.h, marginBottom: 8, letterSpacing: "0.08em" }}>FABRIKEN (BETON)</div>
                 {Array.from({ length: mxF }, (_, i) => i+1).map(n => {
-                  const b = facBeton(n, fB), { pp, method } = effPP(b, "beton", params);
+                  const b = facBeton(n, fB), pp = effPP(b, "beton", params);
                   return <div key={n} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: C.textDim }}>
                     <span style={{ width: 70, color: C.text }}>Fabrik #{n}</span>
-                    <span style={{ color: C.betonC }}>{fmt(b, 0)}</span>
+                    <span style={{ color: C.betonC }}>{fmt(b, 0)} Einh.</span>
                     <span>{fmt(pp, 0)} PP</span>
-                    <span style={{ fontSize: 10, color: C.textMuted }}>{method}</span>
                   </div>;
                 })}
               </div>
@@ -687,7 +664,7 @@ export default function App() {
                           <td style={TD(false)}>{i+1}</td>
                           <td style={TD(false)}>
                             <div style={{ fontSize: 11, fontWeight: 700, color: s.type === "buy" ? C.blue : C.green }}>{s.action}</div>
-                            <div style={{ fontSize: 9, color: C.textMuted }}>{s.method} &middot; {fmtN(s.resCost)} {s.resType}</div>
+                            <div style={{ fontSize: 9, color: C.textMuted }}>{fmtN(s.ppCost)} PP ({fmt(s.resCost, 0)} Einh.)</div>
                           </td>
                           <td style={TD(true)}>{fmtT(s.time)}</td>
                           <td style={{ ...TD(false), color: C.green }}>+{fmt(s.ppGain * 24, 1)}</td>
