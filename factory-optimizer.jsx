@@ -596,7 +596,7 @@ export default function App() {
                       boxShadow: isBest && on ? "0 0 20px " + s.glow : "none" }}>
                     <div style={{ fontFamily: F.h, fontSize: 12, color: s.color, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>{s.label}</div>
                     <div style={{ fontSize: 24, fontWeight: 700, fontFamily: F.h }}>{t != null ? fmtT(t) : "-"}</div>
-                    {isBest && <div style={{ fontSize: 10, color: s.color, fontWeight: 700, marginTop: 4 }}>NEIDLOS BESTE</div>}
+                    {isBest && <div style={{ fontSize: 10, color: s.color, fontWeight: 700, marginTop: 4 }}>BESTE</div>}
                   </div>
                 </Tip>
               );
