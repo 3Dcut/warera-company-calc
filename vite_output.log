@@ -1,0 +1,11 @@
+
+> warera-company-calc@1.0.0 dev /app
+> vite
+
+Port 5173 is in use, trying another one...
+
+  VITE v5.4.21  ready in 281 ms
+
+  ➜  Local:   http://localhost:5174/warera-company-calc/
+  ➜  Network: use --host to expose
+9:18:04 PM [vite] hmr update /factory-optimizer.jsx
