@@ -255,8 +255,11 @@ function buildChart(paths, startPPH, keys) {
   });
 }
 
-function fmtT(h) { if (h <= 0) return "sofort"; if (h < 1) return (h*60).toFixed(0) + "m"; if (h < 24) return h.toFixed(1) + "h"; const d = h / 24; return d < 365 ? d.toFixed(1) + "d" : (d/365).toFixed(1) + "y"; }
-function fmtN(n) { if (Math.abs(n) >= 1e6) return (n/1e6).toFixed(1) + "M"; if (Math.abs(n) >= 1e3) return (n/1e3).toFixed(1) + "k"; return Number.isInteger(n) ? String(n) : n.toFixed(1); }
+function fmt(n, d = 1) {
+  return new Intl.NumberFormat('de-DE', { minimumFractionDigits: 0, maximumFractionDigits: d }).format(n);
+}
+function fmtT(h) { if (h <= 0) return "sofort"; if (h < 1) return fmt(h*60, 0) + "m"; if (h < 24) return fmt(h, 1) + "h"; const d = h / 24; return d < 365 ? fmt(d, 1) + "d" : fmt(d/365, 1) + "y"; }
+function fmtN(n) { if (Math.abs(n) >= 1e6) return fmt(n/1e6, 1) + "M"; if (Math.abs(n) >= 1e3) return fmt(n/1e3, 1) + "k"; return fmt(n, 1); }
 
 // ── Styled primitives ──
 function GlassCard({ children, style, glow }) {
@@ -485,8 +488,8 @@ export default function App() {
             </button>
           </Tip>
           <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 26, fontWeight: 700, color: C.accent, fontFamily: F.h, textShadow: "0 0 20px " + C.accentGlow }}>{(pph * 24).toFixed(1)} <span style={{ fontSize: 14, color: C.textDim }}>PP/d</span></div>
-            <div style={{ fontSize: 12, color: C.textDim }}>{pph.toFixed(1)} PP/h</div>
+            <div style={{ fontSize: 26, fontWeight: 700, color: C.accent, fontFamily: F.h, textShadow: "0 0 20px " + C.accentGlow }}>{fmt(pph * 24, 1)} <span style={{ fontSize: 14, color: C.textDim }}>PP/d</span></div>
+            <div style={{ fontSize: 12, color: C.textDim }}>{fmt(pph, 1)} PP/h</div>
           </div>
         </div>
       </div>
@@ -585,9 +588,9 @@ export default function App() {
                   const s = upgStahl(l, uB), { pp, method } = effPP(s, "stahl", params);
                   return <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: C.textDim }}>
                     <span style={{ width: 70, color: C.text }}>L{l} -&gt; L{l+1}</span>
-                    <span style={{ color: C.stahl }}>{s}</span>
-                    <span>{pp.toFixed(0)} PP</span>
-                    <span style={{ fontSize: 10, color: method === "direkt" ? C.textMuted : C.accent }}>{method}</span>
+                    <span style={{ color: C.stahl }}>{fmt(s, 0)}</span>
+                    <span>{fmt(pp, 0)} PP</span>
+                    <span style={{ fontSize: 10, color: C.textMuted }}>{method}</span>
                   </div>;
                 })}
               </div>
@@ -597,8 +600,8 @@ export default function App() {
                   const b = facBeton(n, fB), { pp, method } = effPP(b, "beton", params);
                   return <div key={n} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: C.textDim }}>
                     <span style={{ width: 70, color: C.text }}>Fabrik #{n}</span>
-                    <span style={{ color: C.betonC }}>{b}</span>
-                    <span>{pp.toFixed(0)} PP</span>
+                    <span style={{ color: C.betonC }}>{fmt(b, 0)}</span>
+                    <span>{fmt(pp, 0)} PP</span>
                     <span style={{ fontSize: 10, color: C.textMuted }}>{method}</span>
                   </div>;
                 })}
@@ -682,7 +685,7 @@ export default function App() {
                             <div style={{ fontSize: 9, color: C.textMuted }}>{s.method} &middot; {fmtN(s.resCost)} {s.resType}</div>
                           </td>
                           <td style={TD(true)}>{fmtT(s.time)}</td>
-                          <td style={{ ...TD(false), color: C.green }}>+{(s.ppGain * 24).toFixed(1)}</td>
+                          <td style={{ ...TD(false), color: C.green }}>+{fmt(s.ppGain * 24, 1)}</td>
                         </tr>
                       ))}
                     </tbody>
