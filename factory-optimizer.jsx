@@ -584,7 +584,7 @@ export default function App() {
       {res && (
         <div style={{ marginBottom: 20 }}>
           <Sec icon="&#128200;">Produktionskurve</Sec>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 14, marginBottom: 20 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 20 }}>
             {STRATS.map(s => {
               const t = res.finals[s.key], on = actv.includes(s.key);
               const isBest = t === Math.min(...Object.values(res.finals).filter(v => v != null)) && t != null;
