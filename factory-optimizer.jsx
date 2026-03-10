@@ -61,7 +61,7 @@ styleEl.textContent = `
   .tip-wrap { position: relative; display: inline-flex; }
   .tip-wrap .tip-box {
     display: none; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
-    padding: 6px 10px; border-radius: 6px; font-size: 11px; line-height: 1.4; white-space: nowrap; z-index: 100; pointer-events: none;
+    padding: 8px 12px; border-radius: 6px; font-size: 13px; line-height: 1.4; white-space: nowrap; z-index: 100; pointer-events: none;
     background: rgba(15,20,35,0.92); border: 1px solid rgba(255,255,255,0.12);
     backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
     box-shadow: 0 8px 24px rgba(0,0,0,0.5); color: #d4d4cc;
@@ -254,28 +254,28 @@ function GlassCard({ children, style, glow }) {
   return <div style={{ ...glass(0.05, 20), borderRadius: 12, padding: "16px 20px", marginBottom: 14, ...(glow ? { boxShadow: "0 8px 32px rgba(0,0,0,0.5), 0 0 24px " + glow } : {}), ...style }}>{children}</div>;
 }
 function Sec({ children, icon }) {
-  return <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-    {icon && <span style={{ fontSize: 15 }}>{icon}</span>}
-    <span style={{ fontFamily: F.h, fontSize: 13, fontWeight: 700, color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase" }}>{children}</span>
+  return <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+    {icon && <span style={{ fontSize: 18 }}>{icon}</span>}
+    <span style={{ fontFamily: F.h, fontSize: 15, fontWeight: 700, color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase" }}>{children}</span>
   </div>;
 }
 function Inp({ label, value, onChange, step = 1, suffix, tip }) {
-  const inner = <div style={{ marginBottom: 8 }}>
-    <label style={{ fontFamily: F.m, fontSize: 10, color: C.textDim, marginBottom: 3, display: "block", letterSpacing: "0.03em" }}>{label} {tip && <span style={{ color: C.textMuted, cursor: "help" }}>&#9432;</span>}</label>
-    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+  const inner = <div style={{ marginBottom: 12 }}>
+    <label style={{ fontFamily: F.m, fontSize: 12, color: C.textDim, marginBottom: 5, display: "block", letterSpacing: "0.03em" }}>{label} {tip && <span style={{ color: C.textMuted, cursor: "help" }}>&#9432;</span>}</label>
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
       <input type="number" step={step} value={value} onChange={e => onChange(Number(e.target.value))}
         style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 6, color: C.text,
-          padding: "7px 10px", fontSize: 13, width: "100%", boxSizing: "border-box", outline: "none",
+          padding: "9px 12px", fontSize: 14, width: "100%", boxSizing: "border-box", outline: "none",
           fontFamily: F.m, transition: "border-color 0.2s, box-shadow 0.2s" }}
         onFocus={e => { e.target.style.borderColor = C.accent + "88"; e.target.style.boxShadow = "0 0 12px " + C.accentGlow; }}
         onBlur={e => { e.target.style.borderColor = C.inputBorder; e.target.style.boxShadow = "none"; }} />
-      {suffix && <span style={{ fontFamily: F.m, fontSize: 10, color: C.textMuted, whiteSpace: "nowrap" }}>{suffix}</span>}
+      {suffix && <span style={{ fontFamily: F.m, fontSize: 12, color: C.textMuted, whiteSpace: "nowrap" }}>{suffix}</span>}
     </div>
   </div>;
   return tip ? <Tip text={tip}>{inner}</Tip> : inner;
 }
 function Bdg({ color, children }) {
-  return <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 4, fontSize: 9, fontWeight: 700, fontFamily: F.h, background: color + "25", color, border: "1px solid " + color + "44", letterSpacing: "0.06em", textTransform: "uppercase", textShadow: "0 0 8px " + color + "44" }}>{children}</span>;
+  return <span style={{ display: "inline-block", padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, fontFamily: F.h, background: color + "25", color, border: "1px solid " + color + "44", letterSpacing: "0.06em", textTransform: "uppercase", textShadow: "0 0 8px " + color + "44" }}>{children}</span>;
 }
 function Tip({ text, children, pos = "top" }) {
   if (!text) return children;
@@ -283,16 +283,16 @@ function Tip({ text, children, pos = "top" }) {
 }
 function Btn({ on, color = C.accent, children, onClick, big, disabled }) {
   return <button onClick={onClick} disabled={disabled} style={{
-    padding: big ? "11px 28px" : "6px 14px", borderRadius: 8, border: "1px solid " + (on ? color + "88" : "rgba(255,255,255,0.08)"),
+    padding: big ? "14px 32px" : "8px 18px", borderRadius: 8, border: "1px solid " + (on ? color + "88" : "rgba(255,255,255,0.08)"),
     background: on ? color + "18" : "rgba(255,255,255,0.03)", color: disabled ? C.textMuted : on ? color : C.textDim,
-    cursor: disabled ? "not-allowed" : "pointer", fontSize: big ? 14 : 11, fontFamily: F.h, fontWeight: 700,
+    cursor: disabled ? "not-allowed" : "pointer", fontSize: big ? 16 : 13, fontFamily: F.h, fontWeight: 700,
     letterSpacing: "0.08em", textTransform: "uppercase", transition: "all 0.2s", opacity: disabled ? 0.4 : 1,
     boxShadow: on ? "0 0 16px " + color + "22, inset 0 1px 0 rgba(255,255,255,0.06)" : "0 2px 8px rgba(0,0,0,0.2)",
     textShadow: on ? "0 0 10px " + color + "44" : "none",
   }}>{children}</button>;
 }
-const TH = { textAlign: "left", padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.08)", color: C.textDim, fontSize: 9, fontFamily: F.h, letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 700 };
-const TD = (hl) => ({ padding: "6px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", color: hl ? C.accent : C.text, fontSize: 12, fontFamily: F.m });
+const TH = { textAlign: "left", padding: "10px 14px", borderBottom: "1px solid rgba(255,255,255,0.08)", color: C.textDim, fontSize: 11, fontFamily: F.h, letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 700 };
+const TD = (hl) => ({ padding: "8px 14px", borderBottom: "1px solid rgba(255,255,255,0.04)", color: hl ? C.accent : C.text, fontSize: 14, fontFamily: F.m });
 
 // ── Main ──
 export default function App() {
@@ -450,22 +450,22 @@ export default function App() {
       {/* Header */}
       <div style={{ display: "flex", alignItems: "flex-end", gap: 16, marginBottom: 28, paddingBottom: 20, borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
         <div style={{ flex: 1 }}>
-          <div style={{ fontFamily: F.h, fontSize: 11, color: C.textMuted, letterSpacing: "0.2em", textTransform: "uppercase", marginBottom: 4 }}>WarEra Produktions-Planungstool</div>
-          <h1 style={{ fontFamily: F.h, fontSize: 24, fontWeight: 700, color: C.accent, margin: 0, letterSpacing: "0.04em", textShadow: "0 0 30px " + C.accentGlow, lineHeight: 1.2 }}>
+          <div style={{ fontFamily: F.h, fontSize: 13, color: C.textMuted, letterSpacing: "0.2em", textTransform: "uppercase", marginBottom: 6 }}>WarEra Produktions-Planungstool</div>
+          <h1 style={{ fontFamily: F.h, fontSize: 32, fontWeight: 700, color: C.accent, margin: 0, letterSpacing: "0.04em", textShadow: "0 0 30px " + C.accentGlow, lineHeight: 1.2 }}>
             Fabrik-Optimierer<br />
-            <span style={{ fontSize: 14, fontWeight: 600, color: C.textDim, letterSpacing: "0.08em" }}>des Hebelministeriums Deutschland</span>
+            <span style={{ fontSize: 18, fontWeight: 600, color: C.textDim, letterSpacing: "0.08em" }}>des Hebelministeriums Deutschland</span>
           </h1>
         </div>
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 10 }}>
           <Tip text={"Theme wechseln: " + (theme === "grau" ? "Pink" : "Grau")}>
             <button onClick={() => setTheme(t => t === "grau" ? "pink" : "grau")} style={{
-              padding: "6px 14px", borderRadius: 20,
+              padding: "8px 18px", borderRadius: 20,
               border: "1px solid " + (theme === "pink" ? "rgba(255,107,157,0.5)" : "rgba(255,255,255,0.1)"),
               background: theme === "pink"
                 ? "linear-gradient(135deg, rgba(255,107,157,0.2), rgba(200,130,255,0.15))"
                 : "rgba(255,255,255,0.04)",
               color: theme === "pink" ? "#ff6b9d" : C.textDim,
-              cursor: "pointer", fontSize: 11, fontFamily: F.h, fontWeight: 700,
+              cursor: "pointer", fontSize: 13, fontFamily: F.h, fontWeight: 700,
               letterSpacing: "0.08em", textTransform: "uppercase", transition: "all 0.3s",
               boxShadow: theme === "pink" ? "0 0 16px rgba(255,107,157,0.2)" : "0 2px 8px rgba(0,0,0,0.2)",
             }}>
@@ -473,8 +473,8 @@ export default function App() {
             </button>
           </Tip>
           <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 26, fontWeight: 700, color: C.accent, fontFamily: F.h, textShadow: "0 0 20px " + C.accentGlow }}>{fmt(pph * 24, 1)} <span style={{ fontSize: 14, color: C.textDim }}>PP/d</span></div>
-            <div style={{ fontSize: 12, color: C.textDim }}>{fmt(pph, 1)} PP/h</div>
+            <div style={{ fontSize: 36, fontWeight: 700, color: C.accent, fontFamily: F.h, textShadow: "0 0 20px " + C.accentGlow }}>{fmt(pph * 24, 1)} <span style={{ fontSize: 18, color: C.textDim }}>PP/d</span></div>
+            <div style={{ fontSize: 16, color: C.textDim }}>{fmt(pph, 1)} PP/h</div>
           </div>
         </div>
       </div>
@@ -585,32 +585,32 @@ export default function App() {
           {res && (
             <>
               <Sec icon="&#128200;">Produktionskurve</Sec>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10, marginBottom: 16 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 14, marginBottom: 20 }}>
                 {STRATS.map(s => {
                   const t = res.finals[s.key], on = actv.includes(s.key);
                   const isBest = t === Math.min(...Object.values(res.finals).filter(v => v != null)) && t != null;
                   return (
                     <Tip key={s.key} text={s.tip}>
                       <div onClick={() => setActv(p => p.includes(s.key) ? p.filter(x => x !== s.key) : [...p, s.key])}
-                        style={{ ...glass(on ? 0.07 : 0.03, 16), borderRadius: 12, padding: "12px", cursor: "pointer",
+                        style={{ ...glass(on ? 0.07 : 0.03, 16), borderRadius: 12, padding: "16px", cursor: "pointer",
                           borderColor: on ? s.color + "55" : "rgba(255,255,255,0.06)", transition: "all 0.2s",
                           boxShadow: isBest && on ? "0 0 20px " + s.glow : "none" }}>
-                        <div style={{ fontFamily: F.h, fontSize: 9, color: s.color, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 4 }}>{s.label}</div>
-                        <div style={{ fontSize: 18, fontWeight: 700, fontFamily: F.h }}>{t != null ? fmtT(t) : "-"}</div>
-                        {isBest && <div style={{ fontSize: 8, color: s.color, fontWeight: 700 }}>NEIDLOS BESTE</div>}
+                        <div style={{ fontFamily: F.h, fontSize: 12, color: s.color, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>{s.label}</div>
+                        <div style={{ fontSize: 24, fontWeight: 700, fontFamily: F.h }}>{t != null ? fmtT(t) : "-"}</div>
+                        {isBest && <div style={{ fontSize: 10, color: s.color, fontWeight: 700, marginTop: 4 }}>NEIDLOS BESTE</div>}
                       </div>
                     </Tip>
                   );
                 })}
               </div>
-              <GlassCard style={{ padding: "12px" }}>
-                <ResponsiveContainer width="100%" height={300}>
+              <GlassCard style={{ padding: "16px" }}>
+                <ResponsiveContainer width="100%" height={350}>
                   <AreaChart data={chart}>
                     <defs>{STRATS.map(s => <linearGradient key={s.key} id={"g_" + s.key} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={s.color} stopOpacity={0.4} /><stop offset="100%" stopColor={s.color} stopOpacity={0} /></linearGradient>)}</defs>
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                    <XAxis dataKey="time" stroke={C.textMuted} tick={{ fontSize: 9 }} tickFormatter={v => v >= 48 ? (v/24).toFixed(0) + "d" : Math.round(v) + "h"} />
-                    <YAxis stroke={C.textMuted} tick={{ fontSize: 9 }} tickFormatter={v => fmtN(v)} />
-                    <Tooltip contentStyle={{ ...glass(0.12, 20), borderRadius: 10, fontSize: 11, border: "none" }} />
+                    <XAxis dataKey="time" stroke={C.textMuted} tick={{ fontSize: 12 }} tickFormatter={v => v >= 48 ? (v/24).toFixed(0) + "d" : Math.round(v) + "h"} />
+                    <YAxis stroke={C.textMuted} tick={{ fontSize: 12 }} tickFormatter={v => fmtN(v)} />
+                    <Tooltip contentStyle={{ ...glass(0.12, 20), borderRadius: 10, fontSize: 13, border: "none" }} labelFormatter={v => v >= 48 ? (v/24).toFixed(1) + "d" : Math.round(v*10)/10 + "h"} formatter={(v, n) => [fmt(v, 1) + " PP/h", STRATS.find(s => s.key === n)?.label || n]} />
                     {STRATS.filter(s => actv.includes(s.key)).map(s => <Area key={s.key} type="stepAfter" dataKey={s.key} stroke={s.color} strokeWidth={3} fill={"url(#g_" + s.key + ")"} dot={false} />)}
                   </AreaChart>
                 </ResponsiveContainer>
@@ -619,29 +619,31 @@ export default function App() {
           )}
 
           <Sec icon="&#127981;">Deine Fabriken ({facs.length}/{mxF})</Sec>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 8, marginBottom: 20 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 12, marginBottom: 20 }}>
             {facs.map((f, i) => (
-              <div key={i} style={{ ...glass(0.08, 10), borderRadius: 8, padding: "10px", border: "1px solid rgba(255,255,255,0.08)", position: "relative" }}>
+              <div key={i} style={{ ...glass(0.08, 10), borderRadius: 12, padding: "14px", border: "1px solid rgba(255,255,255,0.08)", position: "relative", transition: "transform 0.2s, box-shadow 0.2s" }} onMouseOver={e => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 6px 20px rgba(0,0,0,0.4)"; }} onMouseOut={e => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = glass(0.08, 10).boxShadow; }}>
                 <Tip text="Fabrik aus der Planung entfernen">
-                  <button aria-label="Fabrik entfernen" onClick={() => { rmF(i); compute(facs.filter((_, j) => j !== i)); }} style={{ position: "absolute", top: 4, right: 6, background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 16, fontWeight: 700, padding: 0 }}>&times;</button>
+                  <button aria-label="Fabrik entfernen" onClick={() => { rmF(i); compute(facs.filter((_, j) => j !== i)); }} style={{ position: "absolute", top: 8, right: 8, background: "rgba(255,50,50,0.1)", border: "1px solid rgba(255,50,50,0.3)", borderRadius: "50%", color: C.red, cursor: "pointer", fontSize: 14, fontWeight: 700, width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s" }} onMouseOver={e => { e.currentTarget.style.background = C.red; e.currentTarget.style.color = "#fff"; }} onMouseOut={e => { e.currentTarget.style.background = "rgba(255,50,50,0.1)"; e.currentTarget.style.color = C.red; }}>&times;</button>
                 </Tip>
-                <div style={{ fontSize: 9, color: C.accent, fontWeight: 700, marginBottom: 2 }}>F{i+1}</div>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4, marginBottom: 4 }}>
-                  <span style={{ fontSize: 13, fontWeight: 700 }}>L{f.level}</span>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                <div style={{ fontSize: 12, color: C.accent, fontWeight: 700, marginBottom: 6, letterSpacing: "0.05em" }}>F{i+1}</div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginBottom: 8 }}>
+                  <span style={{ fontSize: 20, fontWeight: 700, fontFamily: F.h }}>L{f.level}</span>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                     <Tip text="Level erhöhen (Planungszustand)">
-                      <button aria-label="Level erhöhen" onClick={() => { if (f.level < mxL) { const nf = facs.map((x, j) => j === i ? { ...x, level: x.level + 1 } : x); setFacs(nf); compute(nf); } }} style={{ background: "rgba(255,255,255,0.1)", border: "none", color: C.text, fontSize: 8, cursor: "pointer", padding: "0 4px", borderRadius: 2 }}>▲</button>
+                      <button aria-label="Level erhöhen" onClick={() => { if (f.level < mxL) { const nf = facs.map((x, j) => j === i ? { ...x, level: x.level + 1 } : x); setFacs(nf); compute(nf); } }} style={{ background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", color: C.text, fontSize: 10, cursor: "pointer", padding: "2px 6px", borderRadius: 4, transition: "background 0.2s" }} onMouseOver={e => e.currentTarget.style.background = "rgba(255,255,255,0.2)"} onMouseOut={e => e.currentTarget.style.background = "rgba(255,255,255,0.1)"}>▲</button>
                     </Tip>
                     <Tip text="Level senken (Planungszustand)">
-                      <button aria-label="Level senken" onClick={() => { if (f.level > 1) { const nf = facs.map((x, j) => j === i ? { ...x, level: x.level - 1 } : x); setFacs(nf); compute(nf); } }} style={{ background: "rgba(255,255,255,0.1)", border: "none", color: C.text, fontSize: 8, cursor: "pointer", padding: "0 4px", borderRadius: 2 }}>▼</button>
+                      <button aria-label="Level senken" onClick={() => { if (f.level > 1) { const nf = facs.map((x, j) => j === i ? { ...x, level: x.level - 1 } : x); setFacs(nf); compute(nf); } }} style={{ background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", color: C.text, fontSize: 10, cursor: "pointer", padding: "2px 6px", borderRadius: 4, transition: "background 0.2s" }} onMouseOver={e => e.currentTarget.style.background = "rgba(255,255,255,0.2)"} onMouseOut={e => e.currentTarget.style.background = "rgba(255,255,255,0.1)"}>▼</button>
                     </Tip>
                   </div>
                 </div>
-                <div style={{ fontSize: 9, color: C.textDim, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.item || "Unbekannt"}</div>
+                <div style={{ fontSize: 11, color: C.textDim, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "center", background: "rgba(0,0,0,0.2)", padding: "4px 8px", borderRadius: 6 }}>{f.item || "Unbekannt"}</div>
               </div>
             ))}
             <Tip text="Neue Fabrik (L1) zur Planung hinzufügen">
-              <button aria-label="Neue Fabrik hinzufügen" onClick={() => { const nf = [...facs, { level: 1 }]; setFacs(nf); compute(nf); }} style={{ ...glass(0.05), borderRadius: 8, border: "1px dashed rgba(255,255,255,0.2)", color: C.textMuted, cursor: "pointer", fontSize: 18, minHeight: 65, width: "100%" }}>+</button>
+              <button aria-label="Neue Fabrik hinzufügen" onClick={() => { const nf = [...facs, { level: 1 }]; setFacs(nf); compute(nf); }} style={{ ...glass(0.05), borderRadius: 12, border: "2px dashed rgba(255,255,255,0.2)", color: C.textMuted, cursor: "pointer", fontSize: 24, minHeight: 90, width: "100%", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s" }} onMouseOver={e => { e.currentTarget.style.background = "rgba(255,255,255,0.1)"; e.currentTarget.style.borderColor = C.accent; e.currentTarget.style.color = C.accent; }} onMouseOut={e => { e.currentTarget.style.background = glass(0.05).background; e.currentTarget.style.borderColor = "rgba(255,255,255,0.2)"; e.currentTarget.style.color = C.textMuted; }}>
+                +
+              </button>
             </Tip>
           </div>
         </div>
