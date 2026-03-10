@@ -494,34 +494,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* Import/Export Bar */}
-      <GlassCard style={{ padding: "10px 16px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <span style={{ fontFamily: F.h, fontSize: 11, color: C.textDim, letterSpacing: "0.08em", textTransform: "uppercase" }}>Konfiguration:</span>
-        <Tip text="Alle Parameter + Fabriken als Code in die Zwischenablage kopieren">
-          <button ref={expRef} onClick={doCopy} style={{
-            padding: "6px 14px", borderRadius: 8,
-            border: "1px solid " + (copied ? C.green + "88" : "rgba(255,255,255,0.08)"),
-            background: copied ? C.green + "22" : "rgba(255,255,255,0.03)",
-            color: copied ? C.green : C.textDim,
-            cursor: "pointer", fontSize: 11, fontFamily: F.h, fontWeight: 700,
-            letterSpacing: "0.08em", textTransform: "uppercase", transition: "all 0.3s",
-            boxShadow: copied ? "0 0 20px " + C.greenGlow : "0 2px 8px rgba(0,0,0,0.2)",
-            textShadow: copied ? "0 0 10px " + C.greenGlow : "none",
-          }}>
-            {copied ? "\u2713 Kopiert!" : "Exportieren"}
-          </button>
-        </Tip>
-        <Tip text="Gespeicherten Code einfuegen und Konfiguration laden">
-          <Btn on={showImp} onClick={() => setShowImp(!showImp)}>Importieren</Btn>
-        </Tip>
-        {showImp && <>
-          <input value={impStr} onChange={e => setImpStr(e.target.value)} placeholder="Code einfuegen..."
-            style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 6, color: C.text, padding: "6px 10px", fontSize: 12, fontFamily: F.m, outline: "none", flex: 1, minWidth: 200 }}
-            onKeyDown={e => e.key === "Enter" && doImport()} />
-          <Btn on color={C.green} onClick={doImport}>Laden</Btn>
-        </>}
-        {!showImp && <span style={{ fontSize: 10, color: C.textMuted, fontFamily: F.m, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 300 }}>{code}</span>}
-      </GlassCard>
+
 
       <GlassCard style={{ padding: "20px 24px" }}>
         <div style={{ display: "flex", gap: "24px", alignItems: "flex-end", flexWrap: "wrap" }}>
