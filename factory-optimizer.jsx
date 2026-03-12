@@ -361,28 +361,33 @@ export default function App() {
       let username;
       const input = apiUser.trim();
 
-      // Prüfe ob die Eingabe eine direkte User-ID sein könnte (z.B. numerisch)
-      const isDirectId = /^\d+$/.test(input) || (input.length > 20 && input.includes("-"));
-
-      if (isDirectId) {
-        try {
-          const u = await apiCall("user.getUserLite", { userId: input });
+      // Robuste Strategie: Versuche JEDE Eingabe zuerst als direkte User-ID
+      try {
+        const u = await apiCall("user.getUserLite", { userId: input });
+        if (u && u.username) {
           userId = input;
           username = u.username;
-        } catch (e) {
-          // Falls User-ID nicht gefunden wurde, versuchen wir es als Suchanfrage
         }
+      } catch (e) {
+        // Falls kein direkter Treffer (z.B. bei Benutzernamen), gehen wir zur Suche über
       }
 
       if (!userId) {
         const search = await apiCall("search.searchAnything", { searchText: input });
         if (!search.userIds?.length) throw new Error("Spieler oder ID nicht gefunden");
 
+        // Bei mehreren Such-Ergebnissen suchen wir nach einer exakten Namensübereinstimmung
         userId = search.userIds[0];
-        username = input;
+        username = input; 
+        
         for (const uid of search.userIds) {
           const u = await apiCall("user.getUserLite", { userId: uid });
-          if (u.username.toLowerCase() === input.toLowerCase()) { userId = uid; username = u.username; break; }
+          if (u.username.toLowerCase() === input.toLowerCase()) {
+            userId = uid;
+            username = u.username;
+            break;
+          }
+          // Fallback: echten Namen des ersten Suchtreffers verwenden
           if (uid === search.userIds[0]) username = u.username;
         }
       }
