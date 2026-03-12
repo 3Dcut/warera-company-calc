@@ -357,15 +357,34 @@ export default function App() {
     if (!apiUser.trim()) return;
     setApiLoading(true); setApiError(""); setApiInfo("");
     try {
-      const search = await apiCall("search.searchAnything", { searchText: apiUser.trim() });
-      if (!search.userIds?.length) throw new Error("Spieler nicht gefunden");
+      let userId;
+      let username;
+      const input = apiUser.trim();
 
-      let userId = search.userIds[0];
-      let username = apiUser.trim();
-      for (const uid of search.userIds) {
-        const u = await apiCall("user.getUserLite", { userId: uid });
-        if (u.username.toLowerCase() === apiUser.trim().toLowerCase()) { userId = uid; username = u.username; break; }
-        if (uid === search.userIds[0]) username = u.username;
+      // Prüfe ob die Eingabe eine direkte User-ID sein könnte (z.B. numerisch)
+      const isDirectId = /^\d+$/.test(input) || (input.length > 20 && input.includes("-"));
+
+      if (isDirectId) {
+        try {
+          const u = await apiCall("user.getUserLite", { userId: input });
+          userId = input;
+          username = u.username;
+        } catch (e) {
+          // Falls User-ID nicht gefunden wurde, versuchen wir es als Suchanfrage
+        }
+      }
+
+      if (!userId) {
+        const search = await apiCall("search.searchAnything", { searchText: input });
+        if (!search.userIds?.length) throw new Error("Spieler oder ID nicht gefunden");
+
+        userId = search.userIds[0];
+        username = input;
+        for (const uid of search.userIds) {
+          const u = await apiCall("user.getUserLite", { userId: uid });
+          if (u.username.toLowerCase() === input.toLowerCase()) { userId = uid; username = u.username; break; }
+          if (uid === search.userIds[0]) username = u.username;
+        }
       }
 
       const companies = await apiCall("company.getCompanies", { userId, perPage: 100 });
