@@ -377,26 +377,26 @@ export default function App() {
         if (!search.userIds?.length) throw new Error("Spieler oder ID nicht gefunden");
 
         // Bei mehreren Such-Ergebnissen suchen wir nach einer exakten Namensübereinstimmung
-        let foundExact = false;
-        console.log("Suche Treffer für:", input);
+        let foundExactUid = null;
+        let foundExactName = null;
+        
         for (const uid of search.userIds) {
-          const u = await apiCall("user.getUserLite", { userId: uid });
-          console.log("Prüfe Treffer:", u.username, " (ID: " + uid + ")");
-          if (u.username.toLowerCase() === input.toLowerCase()) {
-            console.log("EXAKTER TREFFER GEFUNDEN!");
-            userId = uid;
-            username = u.username;
-            foundExact = true;
-            break;
-          }
-          // Fallback: Wir merken uns den ersten Treffer, falls kein exakter Name gefunden wird
-          if (uid === search.userIds[0]) {
-            console.log("Setze Fallback auf ersten Treffer:", u.username);
-            userId = uid;
-            username = u.username;
-          }
+          try {
+            const u = await apiCall("user.getUserLite", { userId: uid });
+            if (u.username.toLowerCase() === input.toLowerCase()) {
+              foundExactUid = uid;
+              foundExactName = u.username;
+              break;
+            }
+          } catch (e) { /* ignore single load errors */ }
         }
-        if (!userId) throw new Error("Spieler oder ID nicht gefunden");
+
+        if (foundExactUid) {
+          userId = foundExactUid;
+          username = foundExactName;
+        } else {
+          throw new Error(`Keine exakte Übereinstimmung für "${input}" gefunden. Bitte verwende die direkte User-ID.`);
+        }
       }
 
       const companies = await apiCall("company.getCompanies", { userId, perPage: 100 });
