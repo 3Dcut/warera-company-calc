@@ -377,19 +377,22 @@ export default function App() {
         if (!search.userIds?.length) throw new Error("Spieler oder ID nicht gefunden");
 
         // Bei mehreren Such-Ergebnissen suchen wir nach einer exakten Namensübereinstimmung
-        userId = search.userIds[0];
-        username = input; 
-        
+        let foundExact = false;
         for (const uid of search.userIds) {
           const u = await apiCall("user.getUserLite", { userId: uid });
           if (u.username.toLowerCase() === input.toLowerCase()) {
             userId = uid;
             username = u.username;
+            foundExact = true;
             break;
           }
-          // Fallback: echten Namen des ersten Suchtreffers verwenden
-          if (uid === search.userIds[0]) username = u.username;
+          // Fallback: Wir merken uns den ersten Treffer, falls kein exakter Name gefunden wird
+          if (uid === search.userIds[0]) {
+            userId = uid;
+            username = u.username;
+          }
         }
+        if (!userId) throw new Error("Spieler oder ID nicht gefunden");
       }
 
       const companies = await apiCall("company.getCompanies", { userId, perPage: 100 });
