@@ -378,9 +378,12 @@ export default function App() {
 
         // Bei mehreren Such-Ergebnissen suchen wir nach einer exakten Namensübereinstimmung
         let foundExact = false;
+        console.log("Suche Treffer für:", input);
         for (const uid of search.userIds) {
           const u = await apiCall("user.getUserLite", { userId: uid });
+          console.log("Prüfe Treffer:", u.username, " (ID: " + uid + ")");
           if (u.username.toLowerCase() === input.toLowerCase()) {
+            console.log("EXAKTER TREFFER GEFUNDEN!");
             userId = uid;
             username = u.username;
             foundExact = true;
@@ -388,6 +391,7 @@ export default function App() {
           }
           // Fallback: Wir merken uns den ersten Treffer, falls kein exakter Name gefunden wird
           if (uid === search.userIds[0]) {
+            console.log("Setze Fallback auf ersten Treffer:", u.username);
             userId = uid;
             username = u.username;
           }
