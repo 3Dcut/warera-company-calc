@@ -1,7 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "mcp__Claude_Preview__preview_start"
+      "mcp__Claude_Preview__preview_start",
+      "WebFetch(domain:api2.warera.io)",
+      "Bash(curl -s https://api2.warera.io/openapi.json)",
+      "Bash(find /c/repos/wareraAPi/shared/api -name *.py)",
+      "Bash(grep -r \"warsWith\\\\|allies\" /c/repos/wareraAPi/projects/relations/src/*.py)",
+      "Bash(find /c/repos/relations_vercel -type f -name *.py -o -name *.js -o -name *.ts)",
+      "Bash(npm run:*)"
     ]
   }
 }
