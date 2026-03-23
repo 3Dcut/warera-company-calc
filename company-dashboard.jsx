@@ -455,12 +455,15 @@ export default function CompanyDashboard({ theme, setTheme }) {
         const dailyContribution = unitsPerDay * margin;
         const dailyWage = calcWorkerCostPerH(w) * 24;
         if (dailyWage > dailyContribution && dailyWage > 0) {
+          const wBasePPH = calcWorkerBasePPH(w);
+          const breakEvenWage = wBasePPH > 0 ? dailyContribution / (wBasePPH * 24) : 0;
           warnings.push({
             company: comp,
             worker: w,
             dailyWage,
             dailyContribution,
             loss: dailyWage - dailyContribution,
+            breakEvenWage,
           });
         }
       }
@@ -1078,6 +1081,8 @@ export default function CompanyDashboard({ theme, setTheme }) {
                     <thead><tr>
                       <th style={TH}>Fabrik</th>
                       <th style={TH}>Arbeiter</th>
+                      <th style={TH}>Lohn (PP)</th>
+                      <th style={TH}>Max Lohn (PP)</th>
                       <th style={TH}>Lohn/Tag</th>
                       <th style={TH}>Beitrag/Tag</th>
                       <th style={TH}>Verlust/Tag</th>
@@ -1090,6 +1095,8 @@ export default function CompanyDashboard({ theme, setTheme }) {
                             <div>{w.worker.username || w.worker.userId?.slice(0, 8) || "Arbeiter"}</div>
                             <div style={{ fontSize: 10, color: C.textMuted }}>E:{w.worker.energy} P:{w.worker.productivity}</div>
                           </td>
+                          <td style={{ ...TD(false), color: C.red }}>{fmt(w.worker.wage || 0, 3)} G</td>
+                          <td style={{ ...TD(false), color: C.green }}>{fmt(w.breakEvenWage, 3)} G</td>
                           <td style={{ ...TD(false), color: C.red }}>{fmt(w.dailyWage, 2)} G</td>
                           <td style={{ ...TD(false), color: C.green }}>{fmt(w.dailyContribution, 2)} G</td>
                           <td style={{ ...TD(false), color: C.red, fontWeight: 700 }}>-{fmt(w.loss, 2)} G</td>
