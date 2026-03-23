@@ -110,7 +110,7 @@ function runDijkstra(startFacs, params) {
       
       if (!visited.has(nk)) {
         heap.push(time + dt, { facs: nf, path: [...path, {
-          action: "Upgrade L" + lvl + " -> L" + (lvl+1),
+          action: "Upgrade F" + (i+1) + " (" + (facs[i].name || facs[i].item || "Neu") + ") L" + lvl + " -> L" + (lvl+1),
           type: "upgrade", resType: "stahl", resCost: stahl,
           goldCost, goldGainDay: facs[i].goldPerLevelPerDay, dt, time: time + dt, 
           rateDay: totalGoldPerDay(nf, params), savings: newSavings,
@@ -140,7 +140,7 @@ function runDijkstra(startFacs, params) {
       
       if (!visited.has(nk)) {
         heap.push(time + dt, { facs: nf, path: [...path, {
-          action: "Neue Fabrik #" + n, type: "buy", resType: "beton", resCost: beton,
+          action: "Neue Fabrik #" + n + " (" + (optData?.bestProduct?.itemCode || "Neu") + ")", type: "buy", resType: "beton", resCost: beton,
           goldCost, goldGainDay: newFacGoldPerLevelDay, dt, time: time + dt, 
           rateDay: totalGoldPerDay(nf, params), savings: newSavings,
         }], savings: newSavings });
@@ -176,7 +176,7 @@ function simulate(startFacs, params, strategy) {
       const goldCost = stahl * priceStahl;
       let dt = savings < goldCost ? (rateHour > 0 ? ((goldCost - savings) / rateHour) : Infinity) : 0;
       acts.push({ type: "upgrade", idx: i, resCost: stahl, resType: "stahl",
-        goldCost, goldGainDay: f.goldPerLevelPerDay, dt, label: "Upgrade L" + f.level + " -> L" + (f.level+1) });
+        goldCost, goldGainDay: f.goldPerLevelPerDay, dt, label: "Upgrade F" + (i+1) + " (" + (f.name || f.item || "Neu") + ") L" + f.level + " -> L" + (f.level+1) });
     });
     
     if (st.length < maxFactories) {
@@ -185,7 +185,7 @@ function simulate(startFacs, params, strategy) {
       const goldCost = beton * priceBeton;
       let dt = savings < goldCost ? (rateHour > 0 ? ((goldCost - savings) / rateHour) : Infinity) : 0;
       acts.push({ type: "buy", resCost: beton, resType: "beton",
-        goldCost, goldGainDay: newFacGoldPerLevelDay, dt, label: "Neue Fabrik #" + n });
+        goldCost, goldGainDay: newFacGoldPerLevelDay, dt, label: "Neue Fabrik #" + n + " (" + (optData?.bestProduct?.itemCode || "Neu") + ")" });
     }
     
     if (!acts.length) break;
@@ -495,7 +495,9 @@ export default function App({ theme, setTheme, optData }) {
                 </div>
 
                 <div style={{ flex: 1, padding: "0 20px" }}>
-                  <div style={{ fontSize: 12, color: C.textDim, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", background: "rgba(0,0,0,0.2)", padding: "4px 12px", borderRadius: 6, display: "inline-block" }}>{f.item || "Unbekannt"}</div>
+                  <div style={{ fontSize: 12, color: C.textDim, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", background: "rgba(0,0,0,0.2)", padding: "4px 12px", borderRadius: 6, display: "inline-block" }}>
+                    {f.name && f.name !== f.item ? <span style={{ color: C.text }}>{f.name} <span style={{color: C.textMuted}}>({f.item})</span></span> : <span>{f.item || "Neu"}</span>}
+                  </div>
                 </div>
 
                 <Tip text="Fabrik aus der Planung entfernen">
