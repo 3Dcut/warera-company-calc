@@ -456,15 +456,18 @@ export default function CompanyDashboard({ theme, setTheme }) {
     return products.sort((a, b) => b.goldPerPP - a.goldPerPP);
   }
 
-  function getProductSwitchSuggestions() {
+  function getGlobalOptimization() {
     if (!gameConfig) return [];
     const allProducts = getAllProductsRanked();
     const betonPrice = getItemPrice("concrete") || 1;
-    const switchCost = 5 * betonPrice; // 5 concrete to switch
+    const moveCost = gameConfig.company?.moveCost || 5;
+    const changeCost = gameConfig.company?.changeItemCost || 5;
+    
     const suggestions = [];
-
+    
     for (const comp of companies) {
       const currentItem = comp.itemCode;
+      const currentRegion = comp.region;
       const currentBonus = getRegionBonus(comp);
       const currentRevenue = calcDailyRevenue(comp);
       const currentCost = calcDailyCost(comp);
@@ -472,50 +475,62 @@ export default function CompanyDashboard({ theme, setTheme }) {
       const engineLevel = comp.activeUpgradeLevels?.automatedEngine || 1;
       const compId = comp._id;
       const ws = workers[compId] || [];
-
+      
+      let bestDailyGain = 0;
+      let bestSuggestion = null;
+      
       for (const prod of allProducts) {
-        if (prod.itemCode === currentItem) continue;
-        // Calculate what this factory would earn with the new product
-        const region = regions[comp.region];
-        const country = getCountryForRegion(comp.region);
-        const newBonus = calcTotalBonus(region, prod.itemCode, country, gameConfig);
-        const newEnginePP = engineLevel * 24 * (1 + newBonus / 100);
-        const newWorkerPP = ws.reduce((sum, w) => {
-          const basePPH = calcWorkerBasePPH(w);
-          return sum + basePPH * (1 + newBonus / 100) * (1 + (w.fidelity || 0) / 100) * 24;
-        }, 0);
-        const newTotalPP = newEnginePP + newWorkerPP;
-        const newRevenue = (newTotalPP / prod.pp) * prod.netMargin;
-        const newCost = ws.reduce((sum, w) => sum + calcWorkerCostPerH(w) * 24, 0); // wage unchanged
-        const newProfit = newRevenue - newCost;
-        const dailyGain = newProfit - currentProfit;
-
-        if (dailyGain > 0) {
-          const paybackDays = switchCost / dailyGain;
-          suggestions.push({
-            company: comp,
-            currentItem,
-            currentProfit,
-            currentBonus,
-            newItem: prod.itemCode,
-            newBonus,
-            newProfit,
-            dailyGain,
-            switchCost,
-            paybackDays,
-          });
+        for (const regionId of Object.keys(regions)) {
+          if (prod.itemCode === currentItem && regionId === currentRegion) continue;
+          
+          const region = regions[regionId];
+          const country = getCountryForRegion(regionId);
+          const newBonus = calcTotalBonus(region, prod.itemCode, country, gameConfig);
+          
+          const newEnginePP = engineLevel * 24 * (1 + newBonus / 100);
+          // Assuming workers are fired and re-hired? No, workers move with the factory (is loyalty kept? Let's assume yes).
+          const newWorkerPP = ws.reduce((sum, w) => {
+            const basePPH = calcWorkerBasePPH(w);
+            return sum + basePPH * (1 + newBonus / 100) * (1 + (w.fidelity || 0) / 100) * 24;
+          }, 0);
+          const newTotalPP = newEnginePP + newWorkerPP;
+          const newRevenue = (newTotalPP / prod.pp) * prod.netMargin;
+          const newCost = ws.reduce((sum, w) => sum + calcWorkerCostPerH(w) * 24, 0);
+          const newProfit = newRevenue - newCost;
+          const dailyGain = newProfit - currentProfit;
+          
+          if (dailyGain > bestDailyGain) {
+            let concreteNeeded = 0;
+            if (regionId !== currentRegion) concreteNeeded += moveCost;
+            if (prod.itemCode !== currentItem) concreteNeeded += changeCost;
+            
+            const totalCost = concreteNeeded * betonPrice;
+            const paybackDays = totalCost / dailyGain;
+            
+            bestDailyGain = dailyGain;
+            bestSuggestion = {
+              company: comp,
+              currentItem,
+              currentRegion: regions[currentRegion],
+              currentBonus,
+              currentProfit,
+              newItem: prod.itemCode,
+              newRegion: region,
+              newBonus,
+              newProfit,
+              dailyGain,
+              totalCost,
+              concreteNeeded,
+              paybackDays
+            };
+          }
         }
       }
-    }
-    // Only keep the best suggestion per factory
-    const bestPerFactory = {};
-    for (const s of suggestions) {
-      const fid = s.company._id;
-      if (!bestPerFactory[fid] || s.dailyGain > bestPerFactory[fid].dailyGain) {
-        bestPerFactory[fid] = s;
+      if (bestSuggestion) {
+        suggestions.push(bestSuggestion);
       }
     }
-    return Object.values(bestPerFactory).sort((a, b) => a.paybackDays - b.paybackDays);
+    return suggestions.sort((a, b) => a.paybackDays - b.paybackDays);
   }
 
   function getWorkerOptimization() {
@@ -590,7 +605,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
   const wageWarnings = hasData ? getWageLossWarnings() : [];
   const betterRegions = hasData ? getBetterRegions() : [];
   const allProducts = hasData ? getAllProductsRanked() : [];
-  const productSwitches = hasData ? getProductSwitchSuggestions() : [];
+  const globalOptimization = hasData ? getGlobalOptimization() : [];
   const workerOptimization = hasData ? getWorkerOptimization() : [];
   const totalWarnings = enemyWarnings.length + wageWarnings.length;
 
@@ -898,40 +913,44 @@ export default function CompanyDashboard({ theme, setTheme }) {
                 </GlassCard>
               )}
 
-              {/* Product Switch Suggestions */}
-              {productSwitches.length > 0 && (
-                <GlassCard glow={C.accentGlow}>
-                  <Sec icon="&#128260;">Produktions-Umstellung ({productSwitches.length})</Sec>
-                  <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
-                    Fabriken, die mit einem anderen Produkt mehr Gewinn machen würden. Umstellungskosten: 5 Beton.
+              {/* Global Optimization */}
+              <GlassCard glow={globalOptimization.length > 0 ? C.accentGlow : undefined}>
+                <Sec icon="&#128260;">Globale Fabrik-Optimierung ({globalOptimization.length})</Sec>
+                <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
+                  Prüft standortübergreifend, ob eine Fabrik ein anderes Produkt bauen sollte (+5 Beton) oder zusätzlich in ein anderes Land ziehen sollte (+10 Beton insgesamt).
+                </div>
+                {globalOptimization.length === 0 ? (
+                  <div style={{ padding: "16px", textAlign: "center", color: C.green, background: "rgba(0,255,0,0.05)", borderRadius: 8, border: "1px solid " + C.green + "44" }}>
+                    &#10004; Alle deine Fabriken produzieren bereits das absolut profitabelste Produkt! Es gibt keine bessere Kombination aus Produkt und Region.
                   </div>
+                ) : (
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead><tr>
                       <th style={TH}>Fabrik</th>
                       <th style={TH}>Aktuell</th>
                       <th style={TH}></th>
-                      <th style={TH}>Empfehlung</th>
+                      <th style={TH}>Globale Empfehlung</th>
                       <th style={TH}>Gewinn alt</th>
                       <th style={TH}>Gewinn neu</th>
-                      <th style={TH}>Mehrgewinn/Tag</th>
+                      <th style={TH}>Beton</th>
                       <th style={TH}>Amortisation</th>
                     </tr></thead>
                     <tbody>
-                      {productSwitches.map((s, i) => (
+                      {globalOptimization.map((s, i) => (
                         <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
                           <td style={TD(false)}>{s.company.name || "Fabrik"}</td>
                           <td style={TD(false)}>
                             <div>{s.currentItem}</div>
-                            <div style={{ fontSize: 10, color: C.textMuted }}>+{fmt(s.currentBonus, 1)}%</div>
+                            <div style={{ fontSize: 10, color: C.textMuted }}>{s.currentRegion?.name} (+{fmt(s.currentBonus, 1)}%)</div>
                           </td>
                           <td style={{ ...TD(false), color: C.accent, fontSize: 18 }}>&rarr;</td>
                           <td style={TD(false)}>
                             <div style={{ color: C.green, fontWeight: 700 }}>{s.newItem}</div>
-                            <div style={{ fontSize: 10, color: C.green }}>+{fmt(s.newBonus, 1)}%</div>
+                            <div style={{ fontSize: 10, color: C.green }}>{s.newRegion?.name} (+{fmt(s.newBonus, 1)}%)</div>
                           </td>
                           <td style={{ ...TD(false), color: C.textDim }}>{fmt(s.currentProfit, 2)} G</td>
                           <td style={{ ...TD(false), color: C.green }}>{fmt(s.newProfit, 2)} G</td>
-                          <td style={{ ...TD(false), color: C.green, fontWeight: 700 }}>+{fmt(s.dailyGain, 2)} G</td>
+                          <td style={{ ...TD(false), color: C.red }}>{s.concreteNeeded} <span style={{fontSize:10}}>({fmt(s.totalCost, 1)} G)</span></td>
                           <td style={{ ...TD(false), fontWeight: 700, color: s.paybackDays <= 2 ? C.green : s.paybackDays <= 7 ? C.accent : C.red }}>
                             {fmt(s.paybackDays, 1)} Tage
                           </td>
@@ -939,8 +958,8 @@ export default function CompanyDashboard({ theme, setTheme }) {
                       ))}
                     </tbody>
                   </table>
-                </GlassCard>
-              )}
+                )}
+              </GlassCard>
 
               {/* Worker Optimization */}
               {workerOptimization.length > 0 && (
@@ -969,12 +988,16 @@ export default function CompanyDashboard({ theme, setTheme }) {
               )}
 
               {/* Better Regions */}
-              {betterRegions.length > 0 && (
-                <GlassCard glow={C.greenGlow}>
-                  <Sec icon="&#127758;">Bessere Regionen verfügbar ({betterRegions.length})</Sec>
-                  <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
-                    Regionen mit höherem Bonus. Umzugskosten: {gameConfig?.company?.moveCost || 5} Beton.
+              <GlassCard glow={betterRegions.length > 0 ? C.greenGlow : undefined}>
+                <Sec icon="&#127758;">Bessere Regionen verfügbar ({betterRegions.length})</Sec>
+                <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
+                  Prüft, ob aktuelle Fabriken für 5 Beton in ein besseres Land umziehen sollten, ohne das Produkt zu ändern.
+                </div>
+                {betterRegions.length === 0 ? (
+                  <div style={{ padding: "16px", textAlign: "center", color: C.green, background: "rgba(0,255,0,0.05)", borderRadius: 8, border: "1px solid " + C.green + "44" }}>
+                    &#10004; Alle Fabriken befinden sich bereits in der absolut optimalen Region für ihr jeweiliges Produkt. Es gibt keinen berechtigten Umzug.
                   </div>
+                ) : (
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead><tr>
                       <th style={TH}>Fabrik</th>
@@ -1010,19 +1033,8 @@ export default function CompanyDashboard({ theme, setTheme }) {
                       ))}
                     </tbody>
                   </table>
-                </GlassCard>
-              )}
-
-              {/* No suggestions */}
-              {enemyWarnings.length === 0 && wageWarnings.length === 0 && productSwitches.length === 0 && workerOptimization.length === 0 && betterRegions.length === 0 && (
-                <GlassCard>
-                  <div style={{ textAlign: "center", color: C.green, padding: "30px 0" }}>
-                    <span style={{ fontSize: 28 }}>&#10003;</span>
-                    <div style={{ fontFamily: F.h, fontSize: 16, fontWeight: 700, marginTop: 8, letterSpacing: "0.08em", textTransform: "uppercase" }}>Alles optimal!</div>
-                    <div style={{ fontSize: 12, color: C.textDim, marginTop: 4 }}>Keine Optimierungsvorschläge gefunden.</div>
-                  </div>
-                </GlassCard>
-              )}
+                )}
+              </GlassCard>
             </div>
           )}
 
