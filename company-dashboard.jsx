@@ -310,7 +310,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
                 retryDelay = 5000;
                 if (thisBgFetch === currentBgFetch) setBgProgress(prev => prev ? { ...prev, status: "waiting" } : prev);
               }
-              await new Promise(res => setTimeout(res, retryDelay || 50));
+              await new Promise(res => setTimeout(res, retryDelay || 10));
             }
           };
           await Promise.all([worker(), worker()]);

@@ -146,7 +146,10 @@ export async function apiCall(endpoint, body, maxRetries = 3) {
     const headers = { "Content-Type": "application/json" };
     try {
       const apiKey = localStorage.getItem("warera_api_key");
-      if (apiKey) headers["Authorization"] = `Bearer ${apiKey.trim()}`;
+      if (apiKey) {
+        headers["Authorization"] = `Bearer ${apiKey.trim()}`;
+        headers["x-api-key"] = apiKey.trim();
+      }
     } catch {}
 
     const r = await fetch(API_BASE + endpoint, {
