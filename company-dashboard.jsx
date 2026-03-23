@@ -28,33 +28,44 @@ async function batchParallel(ids, fn, concurrency = 5) {
   return results;
 }
 
-// Bonus calculation based on game config:
-// - resourcesBonus: { 1: 5, 2: 0.5, 3: 0.25 } (rank-based climate bonus)
-// - depositResourceBonus: 30 (if region has strategicResource matching item)
-// - Items have climates array; regions have climate field
-function calcRegionBonus(region, itemCode, gameConfig) {
-  if (!region || !gameConfig) return 0;
+// Bonus calculation:
+// 1. Country strategic resources: country.strategicResources.bonuses.productionPercent (applies to ALL companies)
+// 2. Country specialization: +30% if country.specializedItem matches company.itemCode
+// 3. Climate rank bonus: { 1: 5%, 2: 0.5%, 3: 0.25% } for raw items matching region climate
+// 4. Region deposit: +30% if region.strategicResource matches itemCode
+function calcTotalBonus(region, itemCode, country, gameConfig) {
+  if (!gameConfig) return 0;
   let bonus = 0;
 
-  // Deposit bonus: if region's strategicResource matches itemCode
-  if (region.strategicResource === itemCode) {
+  // 1. Country strategic resources production bonus (applies to all companies in this country)
+  if (country?.strategicResources?.bonuses?.productionPercent) {
+    bonus += country.strategicResources.bonuses.productionPercent;
+  }
+
+  // 2. Country specialization bonus (+30% "industrielle Ethik")
+  if (country?.specializedItem === itemCode) {
     bonus += gameConfig.company?.depositResourceBonus || 30;
   }
 
-  // Climate-based bonus: items that match the region's climate get ranked
+  if (!region) return bonus;
+
+  // 3. Climate-based rank bonus (for raw items)
   const items = gameConfig.items || {};
   const regionClimate = region.climate;
-  if (!regionClimate) return bonus;
+  if (regionClimate) {
+    const climateItems = Object.entries(items)
+      .filter(([, item]) => item.type === "raw" && item.climates?.includes(regionClimate))
+      .map(([code]) => code);
+    const rank = climateItems.indexOf(itemCode);
+    if (rank >= 0) {
+      const resourcesBonus = gameConfig.region?.resourcesBonus || { 1: 5, 2: 0.5, 3: 0.25 };
+      bonus += resourcesBonus[rank + 1] || 0;
+    }
+  }
 
-  // Find all raw items that have this climate, rank them
-  const climateItems = Object.entries(items)
-    .filter(([, item]) => item.type === "raw" && item.climates?.includes(regionClimate))
-    .map(([code]) => code);
-
-  const rank = climateItems.indexOf(itemCode);
-  if (rank >= 0) {
-    const resourcesBonus = gameConfig.region?.resourcesBonus || { 1: 5, 2: 0.5, 3: 0.25 };
-    bonus += resourcesBonus[rank + 1] || 0;
+  // 4. Region deposit bonus (if region has a strategicResource matching the item)
+  if (region.strategicResource === itemCode) {
+    bonus += gameConfig.company?.depositResourceBonus || 30;
   }
 
   return bonus;
@@ -200,9 +211,9 @@ export default function CompanyDashboard({ theme }) {
 
   // ── Calculations ──
   function getRegionBonus(comp) {
-    const regionId = comp.region; // field is "region" on company
-    const region = regions[regionId];
-    return calcRegionBonus(region, comp.itemCode, gameConfig);
+    const region = regions[comp.region];
+    const country = getCountryForRegion(comp.region);
+    return calcTotalBonus(region, comp.itemCode, country, gameConfig);
   }
 
   function getRegionName(comp) {
@@ -231,7 +242,8 @@ export default function CompanyDashboard({ theme }) {
     const energy = worker.energy || 0;
     const productivity = worker.productivity || 0;
     const fidelity = worker.fidelity || 0;
-    const basePP = (energy / 10) * productivity;
+    // energy/10 * production_skill per 10h → energy/100 * production_skill per hour
+    const basePP = (energy / 100) * productivity;
     return basePP * (1 + bonus / 100) * (1 + fidelity / 100);
   }
 
@@ -316,7 +328,8 @@ export default function CompanyDashboard({ theme }) {
       let bestBonus = currentBonus;
 
       for (const region of Object.values(allRegions)) {
-        const regionBonus = calcRegionBonus(region, itemCode, gameConfig);
+        const regionCountry = countries[region.country] || null;
+        const regionBonus = calcTotalBonus(region, itemCode, regionCountry, gameConfig);
         if (regionBonus > bestBonus) {
           bestBonus = regionBonus;
           bestRegion = region;

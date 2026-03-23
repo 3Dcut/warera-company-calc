@@ -7,7 +7,11 @@
       "Bash(find /c/repos/wareraAPi/shared/api -name *.py)",
       "Bash(grep -r \"warsWith\\\\|allies\" /c/repos/wareraAPi/projects/relations/src/*.py)",
       "Bash(find /c/repos/relations_vercel -type f -name *.py -o -name *.js -o -name *.ts)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "WebFetch(domain:war-era.vercel.app)",
+      "WebFetch(domain:warera.io)",
+      "WebFetch(domain:app.warera.io)",
+      "Bash(curl -s http://localhost:5173)"
     ]
   }
 }
