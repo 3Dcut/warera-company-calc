@@ -307,7 +307,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
                 loaded++;
                 setBgProgress({ loaded, total: remainingCountriesToFetch.length });
               }
-              await new Promise(res => setTimeout(res, 500));
+              await new Promise(res => setTimeout(res, 250));
             }
           };
           await Promise.all([worker(), worker()]);
