@@ -862,13 +862,20 @@ export default function CompanyDashboard({ theme, setTheme }) {
               </Btn>
             ))}
             {bgProgress && (
-              <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, ...glass(0.05, 8), padding: "4px 12px", borderRadius: 12 }}>
-                <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 }}>Hintergrund-Daten</div>
-                <div style={{ width: 100, height: 6, background: "rgba(255,255,255,0.1)", borderRadius: 3, overflow: "hidden" }}>
+              <div style={{ flex: 1, minWidth: 280, display: "flex", flexDirection: "column", gap: 6, ...glass(0.05, 8), padding: "8px 14px", borderRadius: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 }}>
+                    Hintergrund-Daten
+                  </div>
+                  <div style={{ fontSize: 11, color: C.green, fontWeight: 700 }}>
+                    {Math.round((bgProgress.loaded / Math.max(1, bgProgress.total)) * 100)}%
+                  </div>
+                </div>
+                <div style={{ width: "100%", height: 6, background: "rgba(255,255,255,0.1)", borderRadius: 3, overflow: "hidden" }}>
                   <div style={{ width: `${(bgProgress.loaded / Math.max(1, bgProgress.total)) * 100}%`, height: "100%", background: C.green, transition: "width 0.3s" }} />
                 </div>
-                <div style={{ fontSize: 11, color: C.green, fontWeight: 700, minWidth: 32, textAlign: "right" }}>
-                  {Math.round((bgProgress.loaded / Math.max(1, bgProgress.total)) * 100)}%
+                <div style={{ fontSize: 10, color: C.textMuted }}>
+                  Dauer: 2-3 Min. mit API-Key (sonst länger). Währenddessen ändern sich die profitabelsten Produkte noch!
                 </div>
               </div>
             )}
