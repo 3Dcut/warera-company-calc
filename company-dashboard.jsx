@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { THEMES, C, F, setThemeVars, glass, fmt, fmtT, fmtN, GlassCard, Sec, Bdg, Tip, Btn, getTH, getTD, apiCall } from "./shared.jsx";
+import FactoryOptimizer from "./factory-optimizer.jsx";
 
 // ── Helpers ──
 async function resolveUser(input) {
@@ -71,11 +72,17 @@ function calcTotalBonus(region, itemCode, country, gameConfig) {
   return bonus;
 }
 
-export default function CompanyDashboard({ theme }) {
+export default function CompanyDashboard({ theme, setTheme }) {
   setThemeVars(theme);
   const T = THEMES[theme];
 
-  const [userInput, setUserInput] = useState("");
+  const [userInput, setUserInput] = useState(() => {
+    try {
+      return localStorage.getItem("warera_user_input") || "";
+    } catch {
+      return "";
+    }
+  });
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
   const [error, setError] = useState("");
@@ -205,6 +212,9 @@ export default function CompanyDashboard({ theme }) {
       }
 
       setLoadingMsg("");
+      try {
+        localStorage.setItem("warera_user_input", userInput.trim());
+      } catch {}
     } catch (e) {
       setError(e.message);
     }
@@ -655,6 +665,7 @@ export default function CompanyDashboard({ theme }) {
               { key: "overview", label: "Übersicht", icon: "&#127981;" },
               { key: "optimize", label: "Optimierung", icon: "&#128161;" },
               { key: "market", label: "Profitabelste Produkte", icon: "&#128176;" },
+              { key: "optimizer_build", label: "Fabrikausbau", icon: "&#127976;" },
             ].map(t => (
               <Btn key={t.key} on={subTab === t.key} onClick={() => setSubTab(t.key)} color={C.accent}>
                 <span dangerouslySetInnerHTML={{ __html: t.icon }} /> {t.label}
@@ -1098,6 +1109,11 @@ export default function CompanyDashboard({ theme }) {
                 </table>
               </div>
             </GlassCard>
+          )}
+
+          {/* ── OPTIMIZER BUILD TAB ── */}
+          {subTab === "optimizer_build" && (
+            <FactoryOptimizer theme={theme} setTheme={setTheme} />
           )}
         </>
       )}

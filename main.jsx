@@ -1,11 +1,9 @@
 import React, { useState } from 'react'
 import ReactDOM from 'react-dom/client'
-import App from './factory-optimizer.jsx'
 import CompanyDashboard from './company-dashboard.jsx'
 import { THEMES, setThemeVars, glass, Tip, GlassCard } from './shared.jsx'
 
 function Shell() {
-  const [page, setPage] = useState("dashboard");
   const [theme, setTheme] = useState("grau");
 
   setThemeVars(theme);
@@ -28,7 +26,7 @@ function Shell() {
         <div style={{ flex: 1 }}>
           <div style={{ fontFamily: F.h, fontSize: 13, color: C.textMuted, letterSpacing: "0.2em", textTransform: "uppercase", marginBottom: 6 }}>WarEra Produktions-Planungstool</div>
           <h1 style={{ fontFamily: F.h, fontSize: 32, fontWeight: 700, color: C.accent, margin: 0, letterSpacing: "0.04em", textShadow: "0 0 30px " + C.accentGlow, lineHeight: 1.2 }}>
-            {page === "optimizer" ? "Fabrik-Optimierer" : "Firmen-Dashboard"}<br />
+            Firmen-Dashboard<br />
             <span style={{ fontSize: 18, fontWeight: 600, color: C.textDim, letterSpacing: "0.08em" }}>des Hebelministeriums Deutschland</span>
           </h1>
         </div>
@@ -51,27 +49,6 @@ function Shell() {
         </div>
       </div>
 
-      {/* Page Navigation */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-        {[
-          { key: "dashboard", label: "Firmen-Dashboard", icon: "\u{1F4CA}" },
-          { key: "optimizer", label: "Fabrik-Optimierer", icon: "\u{1F3ED}" },
-        ].map(t => (
-          <button key={t.key} onClick={() => setPage(t.key)} style={{
-            padding: "10px 22px", borderRadius: 8,
-            border: "1px solid " + (page === t.key ? C.accent + "88" : "rgba(255,255,255,0.08)"),
-            background: page === t.key ? C.accent + "18" : "rgba(255,255,255,0.03)",
-            color: page === t.key ? C.accent : C.textDim,
-            cursor: "pointer", fontSize: 15, fontFamily: F.h, fontWeight: 700,
-            letterSpacing: "0.08em", textTransform: "uppercase", transition: "all 0.2s",
-            boxShadow: page === t.key ? "0 0 16px " + C.accentGlow : "0 2px 8px rgba(0,0,0,0.2)",
-            textShadow: page === t.key ? "0 0 10px " + C.accentGlow : "none",
-          }}>
-            {t.icon} {t.label}
-          </button>
-        ))}
-      </div>
-
       {/* Banner */}
       <GlassCard glow="rgba(248,113,113,0.3)" style={{ borderColor: C.red + "44", marginBottom: 20 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -88,8 +65,7 @@ function Shell() {
       </GlassCard>
 
       {/* Page Content */}
-      {page === "optimizer" && <App theme={theme} setTheme={setTheme} />}
-      {page === "dashboard" && <CompanyDashboard theme={theme} />}
+      <CompanyDashboard theme={theme} setTheme={setTheme} />
     </div>
   );
 }
