@@ -65,8 +65,9 @@ function calcTotalBonus(region, itemCode, country, gameConfig, countryEthics) {
 
 
   // 4. Actual Deposit Bonus
-  if (region.deposit === itemCode) {
-    const depositBonus = gameConfig.company?.depositResourceBonus || 30;
+  const depositItem = region.deposit?.type || region.deposit;
+  if (depositItem === itemCode) {
+    const depositBonus = region.deposit?.bonusPercent || gameConfig.company?.depositResourceBonus || 30;
     // "Fanatischer Industrieller" (>= 2) deactivates natural deposits
     if (indVal < 2) {
       bonus += depositBonus;
