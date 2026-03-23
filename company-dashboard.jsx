@@ -402,62 +402,147 @@ export default function CompanyDashboard({ theme }) {
     return warnings;
   }
 
-  function getMostProfitableProducts() {
-    const productMap = {};
-    for (const comp of companies) {
-      const item = comp.itemCode;
-      if (!productMap[item]) {
-        productMap[item] = { itemCode: item, totalProfit: 0, totalRevenue: 0, totalCost: 0, totalPP: 0, companyCount: 0, price: getItemPrice(item) };
-      }
-      productMap[item].totalProfit += calcDailyProfit(comp);
-      productMap[item].totalRevenue += calcDailyRevenue(comp);
-      productMap[item].totalCost += calcDailyCost(comp);
-      productMap[item].totalPP += calcCompanyPPDay(comp);
-      productMap[item].companyCount++;
+  function getAllProductsRanked() {
+    const items = gameConfig?.items || {};
+    const products = [];
+    for (const [code, item] of Object.entries(items)) {
+      if (!item.productionPoints) continue; // skip weapons, equipment, cases
+      if (item.type !== "raw" && item.type !== "product") continue;
+      const price = getItemPrice(code);
+      const pp = item.productionPoints;
+      const goldPerPP = price / pp;
+      // Check if user produces this
+      const userComps = companies.filter(c => c.itemCode === code);
+      products.push({
+        itemCode: code, type: item.type, price, pp, goldPerPP,
+        userCompanyCount: userComps.length,
+        userTotalProfit: userComps.reduce((s, c) => s + calcDailyProfit(c), 0),
+        userTotalRevenue: userComps.reduce((s, c) => s + calcDailyRevenue(c), 0),
+        userTotalCost: userComps.reduce((s, c) => s + calcDailyCost(c), 0),
+      });
     }
-    return Object.values(productMap).sort((a, b) => b.totalProfit - a.totalProfit);
+    return products.sort((a, b) => b.goldPerPP - a.goldPerPP);
   }
 
-  function getWorkerReallocation() {
-    const byProduct = {};
+  function getProductSwitchSuggestions() {
+    if (!gameConfig) return [];
+    const allProducts = getAllProductsRanked();
+    const betonPrice = getItemPrice("concrete") || 1;
+    const switchCost = 5 * betonPrice; // 5 concrete to switch
+    const suggestions = [];
+
     for (const comp of companies) {
-      const item = comp.itemCode;
-      if (!byProduct[item]) byProduct[item] = [];
-      byProduct[item].push(comp);
+      const currentItem = comp.itemCode;
+      const currentBonus = getRegionBonus(comp);
+      const currentRevenue = calcDailyRevenue(comp);
+      const currentCost = calcDailyCost(comp);
+      const currentProfit = currentRevenue - currentCost;
+      const engineLevel = comp.activeUpgradeLevels?.automatedEngine || 1;
+      const compId = comp._id;
+      const ws = workers[compId] || [];
+
+      for (const prod of allProducts) {
+        if (prod.itemCode === currentItem) continue;
+        // Calculate what this factory would earn with the new product
+        const region = regions[comp.region];
+        const country = getCountryForRegion(comp.region);
+        const newBonus = calcTotalBonus(region, prod.itemCode, country, gameConfig);
+        const newEnginePP = engineLevel * 24 * (1 + newBonus / 100);
+        const newWorkerPP = ws.reduce((sum, w) => {
+          const basePPH = calcWorkerBasePPH(w);
+          return sum + basePPH * (1 + newBonus / 100) * (1 + (w.fidelity || 0) / 100) * 24;
+        }, 0);
+        const newTotalPP = newEnginePP + newWorkerPP;
+        const newRevenue = (newTotalPP / prod.pp) * prod.price;
+        const newCost = ws.reduce((sum, w) => sum + calcWorkerCostPerH(w) * 24, 0); // wage unchanged
+        const newProfit = newRevenue - newCost;
+        const dailyGain = newProfit - currentProfit;
+
+        if (dailyGain > 0) {
+          const paybackDays = switchCost / dailyGain;
+          suggestions.push({
+            company: comp,
+            currentItem,
+            currentProfit,
+            currentBonus,
+            newItem: prod.itemCode,
+            newBonus,
+            newProfit,
+            dailyGain,
+            switchCost,
+            paybackDays,
+          });
+        }
+      }
+    }
+    // Only keep the best suggestion per factory
+    const bestPerFactory = {};
+    for (const s of suggestions) {
+      const fid = s.company._id;
+      if (!bestPerFactory[fid] || s.dailyGain > bestPerFactory[fid].dailyGain) {
+        bestPerFactory[fid] = s;
+      }
+    }
+    return Object.values(bestPerFactory).sort((a, b) => a.paybackDays - b.paybackDays);
+  }
+
+  function getWorkerOptimization() {
+    // For each worker, find the factory (among user's factories) where they'd generate most net profit
+    if (!gameConfig) return [];
+    const suggestions = [];
+
+    // Build a list of all workers with their current factory
+    const allWorkers = [];
+    for (const comp of companies) {
+      const ws = workers[comp._id] || [];
+      for (const w of ws) {
+        allWorkers.push({ worker: w, currentCompany: comp });
+      }
     }
 
-    const suggestions = [];
-    for (const [item, comps] of Object.entries(byProduct)) {
-      if (comps.length < 2) continue;
-      const sorted = comps.map(c => ({ comp: c, bonus: getRegionBonus(c) })).sort((a, b) => b.bonus - a.bonus);
+    for (const { worker, currentCompany } of allWorkers) {
+      const currentBonus = getRegionBonus(currentCompany);
+      const currentItemConfig = gameConfig?.items?.[currentCompany.itemCode];
+      const currentPPPerUnit = currentItemConfig?.productionPoints || 1;
+      const currentPrice = getItemPrice(currentCompany.itemCode);
+      const basePPH = calcWorkerBasePPH(worker);
+      const fidelity = worker.fidelity || 0;
 
-      for (let i = 1; i < sorted.length; i++) {
-        const lowComp = sorted[i];
-        const highComp = sorted[0];
-        if (highComp.bonus <= lowComp.bonus) continue;
+      const currentPPH = basePPH * (1 + currentBonus / 100) * (1 + fidelity / 100);
+      const currentRevPerH = (currentPPH / currentPPPerUnit) * currentPrice;
+      const costPerH = basePPH * (worker.wage || 0); // same everywhere
+      const currentNetPerH = currentRevPerH - costPerH;
 
-        const lowId = lowComp.comp._id;
-        const ws = workers[lowId] || [];
-        if (!ws.length) continue;
+      let bestFactory = null;
+      let bestNetPerH = currentNetPerH;
 
-        const itemConfig = gameConfig?.items?.[item];
+      for (const comp of companies) {
+        if (comp._id === currentCompany._id) continue;
+        const bonus = getRegionBonus(comp);
+        const itemConfig = gameConfig?.items?.[comp.itemCode];
         const ppPerUnit = itemConfig?.productionPoints || 1;
-        const price = getItemPrice(item);
-        for (const w of ws) {
-          const currentPPH = calcWorkerPPH(w, lowComp.bonus);
-          const newPPH = calcWorkerPPH(w, highComp.bonus);
-          const dailyGain = ((newPPH - currentPPH) * 24 / ppPerUnit) * price;
-          if (dailyGain > 0) {
-            suggestions.push({
-              worker: w,
-              fromCompany: lowComp.comp,
-              toCompany: highComp.comp,
-              fromBonus: lowComp.bonus,
-              toBonus: highComp.bonus,
-              dailyGain,
-            });
-          }
+        const price = getItemPrice(comp.itemCode);
+
+        const pph = basePPH * (1 + bonus / 100) * (1 + fidelity / 100);
+        const revPerH = (pph / ppPerUnit) * price;
+        const netPerH = revPerH - costPerH;
+
+        if (netPerH > bestNetPerH) {
+          bestNetPerH = netPerH;
+          bestFactory = comp;
         }
+      }
+
+      if (bestFactory) {
+        const dailyGain = (bestNetPerH - currentNetPerH) * 24;
+        suggestions.push({
+          worker,
+          fromCompany: currentCompany,
+          toCompany: bestFactory,
+          currentNetPerDay: currentNetPerH * 24,
+          newNetPerDay: bestNetPerH * 24,
+          dailyGain,
+        });
       }
     }
     return suggestions.sort((a, b) => b.dailyGain - a.dailyGain);
@@ -471,8 +556,9 @@ export default function CompanyDashboard({ theme }) {
   const enemyWarnings = hasData ? getEnemyWarnings() : [];
   const wageWarnings = hasData ? getWageLossWarnings() : [];
   const betterRegions = hasData ? getBetterRegions() : [];
-  const profitProducts = hasData ? getMostProfitableProducts() : [];
-  const reallocation = hasData ? getWorkerReallocation() : [];
+  const allProducts = hasData ? getAllProductsRanked() : [];
+  const productSwitches = hasData ? getProductSwitchSuggestions() : [];
+  const workerOptimization = hasData ? getWorkerOptimization() : [];
   const totalWarnings = enemyWarnings.length + wageWarnings.length;
 
   return (
@@ -778,24 +864,68 @@ export default function CompanyDashboard({ theme }) {
                 </GlassCard>
               )}
 
-              {/* Worker Reallocation */}
-              {reallocation.length > 0 && (
-                <GlassCard glow={C.blueGlow}>
-                  <Sec icon="&#128260;">Arbeiter-Umverteilung ({reallocation.length})</Sec>
+              {/* Product Switch Suggestions */}
+              {productSwitches.length > 0 && (
+                <GlassCard glow={C.accentGlow}>
+                  <Sec icon="&#128260;">Produktions-Umstellung ({productSwitches.length})</Sec>
                   <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
-                    Arbeiter könnten in einer Fabrik mit höherem Bonus mehr produzieren.
+                    Fabriken, die mit einem anderen Produkt mehr Gewinn machen würden. Umstellungskosten: 5 Beton.
                   </div>
-                  {reallocation.map((s, i) => (
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead><tr>
+                      <th style={TH}>Fabrik</th>
+                      <th style={TH}>Aktuell</th>
+                      <th style={TH}></th>
+                      <th style={TH}>Empfehlung</th>
+                      <th style={TH}>Gewinn alt</th>
+                      <th style={TH}>Gewinn neu</th>
+                      <th style={TH}>Mehrgewinn/Tag</th>
+                      <th style={TH}>Amortisation</th>
+                    </tr></thead>
+                    <tbody>
+                      {productSwitches.map((s, i) => (
+                        <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
+                          <td style={TD(false)}>{s.company.name || "Fabrik"}</td>
+                          <td style={TD(false)}>
+                            <div>{s.currentItem}</div>
+                            <div style={{ fontSize: 10, color: C.textMuted }}>+{fmt(s.currentBonus, 1)}%</div>
+                          </td>
+                          <td style={{ ...TD(false), color: C.accent, fontSize: 18 }}>&rarr;</td>
+                          <td style={TD(false)}>
+                            <div style={{ color: C.green, fontWeight: 700 }}>{s.newItem}</div>
+                            <div style={{ fontSize: 10, color: C.green }}>+{fmt(s.newBonus, 1)}%</div>
+                          </td>
+                          <td style={{ ...TD(false), color: C.textDim }}>{fmt(s.currentProfit, 2)} G</td>
+                          <td style={{ ...TD(false), color: C.green }}>{fmt(s.newProfit, 2)} G</td>
+                          <td style={{ ...TD(false), color: C.green, fontWeight: 700 }}>+{fmt(s.dailyGain, 2)} G</td>
+                          <td style={{ ...TD(false), fontWeight: 700, color: s.paybackDays <= 2 ? C.green : s.paybackDays <= 7 ? C.accent : C.red }}>
+                            {fmt(s.paybackDays, 1)} Tage
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </GlassCard>
+              )}
+
+              {/* Worker Optimization */}
+              {workerOptimization.length > 0 && (
+                <GlassCard glow={C.blueGlow}>
+                  <Sec icon="&#128101;">Arbeiter-Optimierung ({workerOptimization.length})</Sec>
+                  <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
+                    Arbeiter, die in einer anderen Fabrik mehr Netto-Gewinn bringen würden. Lohn und Treue bleiben erhalten.
+                  </div>
+                  {workerOptimization.map((s, i) => (
                     <div key={i} style={{ ...glass(0.06, 10), borderRadius: 8, padding: "12px 16px", marginBottom: 8 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                         <div>
-                          <span style={{ color: C.textDim }}>{s.worker.username || "Arbeiter"}</span>
+                          <span style={{ color: C.text, fontWeight: 700 }}>{s.worker.username || "Arbeiter"}</span>
                           <span style={{ color: C.textMuted, margin: "0 8px" }}>von</span>
                           <span style={{ color: C.text }}>{s.fromCompany.name || s.fromCompany.itemCode}</span>
-                          <span style={{ color: C.textMuted }}> (+{fmt(s.fromBonus, 1)}%)</span>
+                          <span style={{ color: C.textMuted, fontSize: 11 }}> ({s.fromCompany.itemCode}, {fmt(s.currentNetPerDay, 2)} G/Tag)</span>
                           <span style={{ color: C.accent, margin: "0 8px" }}>&rarr;</span>
-                          <span style={{ color: C.text }}>{s.toCompany.name || s.toCompany.itemCode}</span>
-                          <span style={{ color: C.green }}> (+{fmt(s.toBonus, 1)}%)</span>
+                          <span style={{ color: C.green }}>{s.toCompany.name || s.toCompany.itemCode}</span>
+                          <span style={{ color: C.green, fontSize: 11 }}> ({s.toCompany.itemCode}, {fmt(s.newNetPerDay, 2)} G/Tag)</span>
                         </div>
                         <Bdg color={C.green}>+{fmt(s.dailyGain, 2)} G/Tag</Bdg>
                       </div>
@@ -850,7 +980,7 @@ export default function CompanyDashboard({ theme }) {
               )}
 
               {/* No suggestions */}
-              {enemyWarnings.length === 0 && wageWarnings.length === 0 && reallocation.length === 0 && betterRegions.length === 0 && (
+              {enemyWarnings.length === 0 && wageWarnings.length === 0 && productSwitches.length === 0 && workerOptimization.length === 0 && betterRegions.length === 0 && (
                 <GlassCard>
                   <div style={{ textAlign: "center", color: C.green, padding: "30px 0" }}>
                     <span style={{ fontSize: 28 }}>&#10003;</span>
@@ -864,42 +994,67 @@ export default function CompanyDashboard({ theme }) {
 
           {/* ── MARKET TAB ── */}
           {subTab === "market" && (
-            <GlassCard>
-              <Sec icon="&#128176;">Profitabelste Produkte</Sec>
-              <div style={{ fontSize: 12, color: C.textDim, marginBottom: 16 }}>
-                Basierend auf aktuellen Marktpreisen und deiner Produktion.
+            <GlassCard style={{ padding: 0, overflow: "hidden" }}>
+              <div style={{ padding: "16px 20px 8px" }}>
+                <Sec icon="&#128176;">Alle Produkte nach Effizienz</Sec>
+                <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
+                  Ranking aller produzierbaren Güter nach Gold pro Production Point (basierend auf aktuellen Marktpreisen).
+                </div>
               </div>
-              {profitProducts.length > 0 ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  {profitProducts.map((p, i) => (
-                    <div key={p.itemCode} style={{ ...glass(0.06, 10), borderRadius: 10, padding: "14px 18px", borderColor: i === 0 ? C.green + "44" : "rgba(255,255,255,0.06)" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                          <span style={{ fontFamily: F.h, fontSize: 22, fontWeight: 700, color: C.accent, width: 30 }}>#{i+1}</span>
-                          <div>
-                            <div style={{ fontWeight: 700, fontSize: 16 }}>{p.itemCode}</div>
-                            <div style={{ fontSize: 11, color: C.textMuted }}>
-                              {p.companyCount} Fabrik{p.companyCount > 1 ? "en" : ""}
-                              &middot; Umsatz: {fmt(p.totalRevenue, 2)} G/Tag
-                              &middot; Kosten: {fmt(p.totalCost, 2)} G/Tag
-                              &middot; Preis: {fmt(p.price, 3)} G
-                            </div>
-                          </div>
-                        </div>
-                        <div style={{ textAlign: "right" }}>
-                          <div style={{ fontSize: 20, fontWeight: 700, fontFamily: F.h, color: p.totalProfit >= 0 ? C.green : C.red }}>
-                            {p.totalProfit >= 0 ? "+" : ""}{fmt(p.totalProfit, 2)} G/Tag
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div style={{ textAlign: "center", color: C.textMuted, padding: "20px 0" }}>
-                  Keine Produktdaten verfügbar.
-                </div>
-              )}
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 700 }}>
+                  <thead><tr>
+                    <th style={TH}>#</th>
+                    <th style={TH}>Produkt</th>
+                    <th style={TH}>Typ</th>
+                    <th style={TH}>Preis/Stk</th>
+                    <th style={TH}>PP/Stk</th>
+                    <th style={TH}>Gold/PP</th>
+                    <th style={TH}>Deine Fabriken</th>
+                    <th style={TH}>Dein Gewinn/Tag</th>
+                  </tr></thead>
+                  <tbody>
+                    {allProducts.map((p, i) => {
+                      const isProducing = p.userCompanyCount > 0;
+                      return (
+                        <tr key={p.itemCode} style={{
+                          background: isProducing ? C.accent + "0a" : i % 2 ? C.rowAlt : "transparent",
+                          borderLeft: isProducing ? "3px solid " + C.accent : "3px solid transparent",
+                        }}>
+                          <td style={{ ...TD(false), fontFamily: F.h, fontWeight: 700, color: i < 3 ? C.accent : C.textDim, fontSize: 16 }}>
+                            {i + 1}
+                          </td>
+                          <td style={{ ...TD(false), fontWeight: 700 }}>
+                            {p.itemCode}
+                          </td>
+                          <td style={{ ...TD(false), fontSize: 12 }}>
+                            <Bdg color={p.type === "raw" ? C.blue : C.purple}>{p.type === "raw" ? "Rohstoff" : "Produkt"}</Bdg>
+                          </td>
+                          <td style={{ ...TD(false), color: C.accent }}>{fmt(p.price, 4)} G</td>
+                          <td style={TD(false)}>{p.pp}</td>
+                          <td style={{ ...TD(false), fontWeight: 700, color: i === 0 ? C.green : C.text, fontSize: 15 }}>
+                            {fmt(p.goldPerPP, 4)} G
+                          </td>
+                          <td style={TD(false)}>
+                            {isProducing
+                              ? <span style={{ color: C.accent }}>{p.userCompanyCount} Fabrik{p.userCompanyCount > 1 ? "en" : ""}</span>
+                              : <span style={{ color: C.textMuted }}>-</span>
+                            }
+                          </td>
+                          <td style={TD(false)}>
+                            {isProducing
+                              ? <span style={{ color: p.userTotalProfit >= 0 ? C.green : C.red, fontWeight: 700 }}>
+                                  {p.userTotalProfit >= 0 ? "+" : ""}{fmt(p.userTotalProfit, 2)} G
+                                </span>
+                              : <span style={{ color: C.textMuted }}>-</span>
+                            }
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </GlassCard>
           )}
         </>
