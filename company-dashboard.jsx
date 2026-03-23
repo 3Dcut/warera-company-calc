@@ -733,6 +733,28 @@ export default function CompanyDashboard({ theme, setTheme }) {
   const workerOptimization = hasData ? getWorkerOptimization() : [];
   const totalWarnings = enemyWarnings.length + wageWarnings.length;
 
+  const optimizerProps = hasData ? {
+    prices: prices,
+    bestProduct: allProducts[0],
+    facs: companies.map(c => {
+      const bonus = getRegionBonus(c);
+      const baseGoldPerPP = calcGoldPerPP(c.itemCode);
+      const goldPerPPWithBonus = baseGoldPerPP * (1 + bonus / 100);
+      return {
+        level: c.activeUpgradeLevels?.automatedEngine || 1,
+        name: c.name || c.itemCode,
+        item: c.itemCode,
+        goldPerLevelPerDay: 24 * goldPerPPWithBonus,
+        workerGoldPerDay: (workers[c._id] || []).reduce((sum, w) => {
+          const wPPDay = calcWorkerPPH(w, bonus) * 24;
+          const wGoldDaily = wPPDay * baseGoldPerPP;
+          const wWageDaily = calcWorkerCostPerH(w) * 24;
+          return sum + (wGoldDaily - wWageDaily);
+        }, 0)
+      };
+    })
+  } : null;
+
   return (
     <div>
       {/* User Input */}
@@ -1268,8 +1290,8 @@ export default function CompanyDashboard({ theme, setTheme }) {
           )}
 
           {/* ── OPTIMIZER BUILD TAB ── */}
-          {subTab === "optimizer_build" && (
-            <FactoryOptimizer theme={theme} setTheme={setTheme} preloadedFacs={companies.map(c => ({ level: c.activeUpgradeLevels?.automatedEngine || 1, name: c.name, item: c.itemCode }))} />
+          {subTab === "optimizer_build" && optimizerProps && (
+            <FactoryOptimizer theme={theme} setTheme={setTheme} optData={optimizerProps} />
           )}
         </>
       )}
