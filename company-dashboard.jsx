@@ -30,52 +30,60 @@ async function batchParallel(ids, fn, concurrency = 3) {
   return results;
 }
 
-// Bonus calculation (verified against game data):
-// 1. Country specialization: if country.specializedItem === itemCode → +productionPercent
-//    + if ruling party has industrialism > 0 ("industrielle Ethik") → +30%
-// 2. Climate deposit: if raw item is rank 1 in region's climate → +30% (depositResourceBonus)
-//    + if ruling party has industrialism < 0 ("Agrar-Ethik") → +30%
-// 3. Climate rank 2-3: small bonus from resourcesBonus (0.5%, 0.25%)
 function calcTotalBonus(region, itemCode, country, gameConfig, countryEthics) {
   if (!gameConfig) return 0;
   let bonus = 0;
-  const depositBonus = gameConfig.company?.depositResourceBonus || 30;
 
-  // 1. Country specialization bonus
-  if (country?.specializedItem === itemCode) {
-    // Strategic resources production percent (e.g. 33.25% for Argentina)
-    if (country?.strategicResources?.bonuses?.productionPercent) {
-      bonus += country.strategicResources.bonuses.productionPercent;
-    }
-    // Industrial ethics: ruling party with positive industrialism → +30%
-    if (countryEthics?.industrialism > 0) {
-      bonus += depositBonus;
+  const isIndustrialTarget = ['steel', 'concrete', 'oil', 'lightAmmo', 'ammo', 'heavyAmmo'].includes(itemCode);
+  const isAgrarianTarget = ['coca', 'grain', 'livestock', 'fish'].includes(itemCode);
+  const indVal = countryEthics?.industrialism || 0;
+
+  // 1. Party Ethics Bonus
+  if (indVal === 1 && isIndustrialTarget) {
+    bonus += 10;
+  } else if (indVal >= 2 && isIndustrialTarget) {
+    bonus += 30;
+  }
+
+  if (indVal === -1 && isAgrarianTarget) {
+    bonus += 10;
+  } else if (indVal <= -2 && isAgrarianTarget) {
+    bonus += 30;
+  }
+
+  // 2. Country specialization bonus
+  // Agrar 2 (industrialism <= -2) deactivates the country specialization completely
+  if (indVal > -2) {
+    if (country?.specializedItem === itemCode) {
+      if (country?.strategicResources?.bonuses?.productionPercent) {
+        bonus += country.strategicResources.bonuses.productionPercent;
+      }
     }
   }
 
   if (!region) return bonus;
 
-  // 2. Climate-based deposit & rank bonus (only for raw items)
+  // 3. Climate-based rank bonus (only for raw items)
   const items = gameConfig.items || {};
   const itemConfig = items[itemCode];
   if (itemConfig?.type === "raw" && region.climate) {
-    // Rank raw items that match this region's climate (order from gameConfig)
     const climateItems = Object.entries(items)
       .filter(([, item]) => item.type === "raw" && item.climates?.includes(region.climate))
       .map(([code]) => code);
     const rank = climateItems.indexOf(itemCode);
 
-    if (rank === 0) {
-      // Rank 1 = deposit resource → +30%
-      bonus += depositBonus;
-      // Agrarian ethics: ruling party with negative industrialism → +30% for deposits
-      if (countryEthics?.industrialism < 0) {
-        bonus += depositBonus;
-      }
-    } else if (rank > 0) {
-      // Rank 2+: small climate bonus
+    if (rank >= 0) {
       const resourcesBonus = gameConfig.region?.resourcesBonus || { 1: 5, 2: 0.5, 3: 0.25 };
       bonus += resourcesBonus[rank + 1] || 0;
+    }
+  }
+
+  // 4. Actual Deposit Bonus
+  if (region.deposit === itemCode) {
+    const depositBonus = gameConfig.company?.depositResourceBonus || 30;
+    // "Fanatischer Industrieller" (>= 2) deactivates natural deposits
+    if (indVal < 2) {
+      bonus += depositBonus;
     }
   }
 
