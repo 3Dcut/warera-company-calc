@@ -11,7 +11,8 @@
       "WebFetch(domain:war-era.vercel.app)",
       "WebFetch(domain:warera.io)",
       "WebFetch(domain:app.warera.io)",
-      "Bash(curl -s http://localhost:5173)"
+      "Bash(curl -s http://localhost:5173)",
+      "Bash(python3:*)"
     ]
   }
 }

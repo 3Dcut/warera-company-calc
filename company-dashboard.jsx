@@ -29,34 +29,53 @@ async function batchParallel(ids, fn, concurrency = 5) {
   return results;
 }
 
-// Bonus calculation:
-// 1. Country strategic resources: country.strategicResources.bonuses.productionPercent (applies to ALL companies)
-// 2. Country specialization: +30% if country.specializedItem matches company.itemCode
-// 3. Climate rank bonus: { 1: 5%, 2: 0.5%, 3: 0.25% } for raw items matching region climate
-// 4. Region deposit: +30% if region.strategicResource matches itemCode
-function calcTotalBonus(region, itemCode, country, gameConfig) {
+// Bonus calculation (verified against game data):
+// 1. Country specialization: if country.specializedItem === itemCode → +productionPercent
+//    + if ruling party has industrialism > 0 ("industrielle Ethik") → +30%
+// 2. Climate deposit: if raw item is rank 1 in region's climate → +30% (depositResourceBonus)
+//    + if ruling party has industrialism < 0 ("Agrar-Ethik") → +30%
+// 3. Climate rank 2-3: small bonus from resourcesBonus (0.5%, 0.25%)
+function calcTotalBonus(region, itemCode, country, gameConfig, countryEthics) {
   if (!gameConfig) return 0;
   let bonus = 0;
+  const depositBonus = gameConfig.company?.depositResourceBonus || 30;
 
-  // 1. Country strategic resources production bonus ONLY applies if the item is the country's specialized item!
-  // It does NOT apply broadly to all factories in the country.
+  // 1. Country specialization bonus
   if (country?.specializedItem === itemCode) {
+    // Strategic resources production percent (e.g. 33.25% for Argentina)
     if (country?.strategicResources?.bonuses?.productionPercent) {
       bonus += country.strategicResources.bonuses.productionPercent;
     }
-
-    const itemConfig = gameConfig.items?.[itemCode];
-    // 2. Country specialization bonus (+30% "industrielle Ethik") - generally doesn't apply to consumables like food.
-    if (!itemConfig?.isConsumable) {
-      bonus += gameConfig.company?.depositResourceBonus || 30;
+    // Industrial ethics: ruling party with positive industrialism → +30%
+    if (countryEthics?.industrialism > 0) {
+      bonus += depositBonus;
     }
   }
 
   if (!region) return bonus;
 
-  // 3. Region deposit bonus (if region has a strategicResource matching the item)
-  if (region.strategicResource === itemCode) {
-    bonus += gameConfig.company?.depositResourceBonus || 30;
+  // 2. Climate-based deposit & rank bonus (only for raw items)
+  const items = gameConfig.items || {};
+  const itemConfig = items[itemCode];
+  if (itemConfig?.type === "raw" && region.climate) {
+    // Rank raw items that match this region's climate (order from gameConfig)
+    const climateItems = Object.entries(items)
+      .filter(([, item]) => item.type === "raw" && item.climates?.includes(region.climate))
+      .map(([code]) => code);
+    const rank = climateItems.indexOf(itemCode);
+
+    if (rank === 0) {
+      // Rank 1 = deposit resource → +30%
+      bonus += depositBonus;
+      // Agrarian ethics: ruling party with negative industrialism → +30% for deposits
+      if (countryEthics?.industrialism < 0) {
+        bonus += depositBonus;
+      }
+    } else if (rank > 0) {
+      // Rank 2+: small climate bonus
+      const resourcesBonus = gameConfig.region?.resourcesBonus || { 1: 5, 2: 0.5, 3: 0.25 };
+      bonus += resourcesBonus[rank + 1] || 0;
+    }
   }
 
   return bonus;
@@ -87,6 +106,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
   const [ownerCountry, setOwnerCountry] = useState(null);
   const [allRegions, setAllRegions] = useState({});
   const [gameConfig, setGameConfig] = useState(null);
+  const [partyEthics, setPartyEthics] = useState({}); // countryId -> { industrialism, ... }
 
   const [subTab, setSubTab] = useState("overview");
   const [expandedCompany, setExpandedCompany] = useState(null);
@@ -136,6 +156,23 @@ export default function CompanyDashboard({ theme, setTheme }) {
         if (c?._id) cntMap[c._id] = c;
       }
       setCountries(cntMap);
+
+      // Phase 1b: Load ruling party ethics for all countries with a rulingParty
+      setLoadingMsg("Partei-Ethiken laden...");
+      const ethicsMap = {};
+      const countriesToFetch = Object.values(cntMap).filter(c => c.rulingParty);
+      if (countriesToFetch.length > 0) {
+        const partyResults = await batchParallel(countriesToFetch, async (c) => {
+          try {
+            const p = await apiCall("party.getById", { partyId: c.rulingParty });
+            return { countryId: c._id, ethics: p?.ethics || null };
+          } catch { return { countryId: c._id, ethics: null }; }
+        });
+        for (const { countryId, ethics } of partyResults) {
+          if (ethics) ethicsMap[countryId] = ethics;
+        }
+      }
+      setPartyEthics(ethicsMap);
 
       // Phase 2: Load companies
       setLoadingMsg("Fabriken laden...");
@@ -221,7 +258,8 @@ export default function CompanyDashboard({ theme, setTheme }) {
   function getRegionBonus(comp) {
     const region = regions[comp.region];
     const country = getCountryForRegion(comp.region);
-    return calcTotalBonus(region, comp.itemCode, country, gameConfig);
+    const ethics = country?._id ? partyEthics[country._id] : null;
+    return calcTotalBonus(region, comp.itemCode, country, gameConfig, ethics);
   }
 
   function getRegionName(comp) {
@@ -370,7 +408,8 @@ export default function CompanyDashboard({ theme, setTheme }) {
 
       for (const region of Object.values(allRegions)) {
         const regionCountry = countries[region.country] || null;
-        const regionBonus = calcTotalBonus(region, itemCode, regionCountry, gameConfig);
+        const regionEthics = regionCountry?._id ? partyEthics[regionCountry._id] : null;
+        const regionBonus = calcTotalBonus(region, itemCode, regionCountry, gameConfig, regionEthics);
         if (regionBonus > bestBonus) {
           bestBonus = regionBonus;
           bestRegion = region;
@@ -451,7 +490,8 @@ export default function CompanyDashboard({ theme, setTheme }) {
       for (const regionId of Object.keys(regions)) {
         const region = regions[regionId];
         const country = getCountryForRegion(regionId);
-        const bonus = calcTotalBonus(region, code, country, gameConfig);
+        const cEthics = country?._id ? partyEthics[country._id] : null;
+        const bonus = calcTotalBonus(region, code, country, gameConfig, cEthics);
         if (bonus > maxBonus) {
           maxBonus = bonus;
           bestRegionName = region.name;
@@ -500,7 +540,8 @@ export default function CompanyDashboard({ theme, setTheme }) {
           
           const region = regions[regionId];
           const country = getCountryForRegion(regionId);
-          const newBonus = calcTotalBonus(region, prod.itemCode, country, gameConfig);
+          const optEthics = country?._id ? partyEthics[country._id] : null;
+          const newBonus = calcTotalBonus(region, prod.itemCode, country, gameConfig, optEthics);
           
           const newEnginePP = engineLevel * 24 * (1 + newBonus / 100);
           // Assuming workers are fired and re-hired? No, workers move with the factory (is loyalty kept? Let's assume yes).
