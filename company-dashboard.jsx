@@ -125,6 +125,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
   const [allRegions, setAllRegions] = useState({});
   const [gameConfig, setGameConfig] = useState(null);
   const [partyEthics, setPartyEthics] = useState({}); // countryId -> { industrialism, ... }
+  const [bgProgress, setBgProgress] = useState(null);
 
   const [subTab, setSubTab] = useState("overview");
   const [expandedCompany, setExpandedCompany] = useState(null);
@@ -288,7 +289,9 @@ export default function CompanyDashboard({ theme, setTheme }) {
       const thisBgFetch = ++currentBgFetch;
       const remainingCountriesToFetch = Object.values(cntMap).filter(c => c.rulingParty && !relevantCountryIds.has(c._id));
       if (remainingCountriesToFetch.length > 0) {
+        setBgProgress({ loaded: 0, total: remainingCountriesToFetch.length });
         (async () => {
+          let loaded = 0;
           for (const c of remainingCountriesToFetch) {
             if (thisBgFetch !== currentBgFetch) break; // aborted
             try {
@@ -297,9 +300,16 @@ export default function CompanyDashboard({ theme, setTheme }) {
                 setPartyEthics(prev => ({ ...prev, [c._id]: p.ethics }));
               }
             } catch (e) {}
+            if (thisBgFetch === currentBgFetch) {
+              loaded++;
+              setBgProgress({ loaded, total: remainingCountriesToFetch.length });
+            }
             await new Promise(res => setTimeout(res, 500));
           }
+          if (thisBgFetch === currentBgFetch) setBgProgress(null);
         })();
+      } else {
+        setBgProgress(null);
       }
 
       // Phase 5: Load owner's country for enemy check
@@ -834,7 +844,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
       {hasData && (
         <>
           {/* Sub-Tab Navigation */}
-          <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
             {[
               { key: "overview", label: "Übersicht", icon: "&#127981;" },
               { key: "optimize", label: "Optimierung", icon: "&#128161;" },
@@ -845,6 +855,17 @@ export default function CompanyDashboard({ theme, setTheme }) {
                 <span dangerouslySetInnerHTML={{ __html: t.icon }} /> {t.label}
               </Btn>
             ))}
+            {bgProgress && (
+              <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, ...glass(0.05, 8), padding: "4px 12px", borderRadius: 12 }}>
+                <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 }}>Hintergrund-Daten</div>
+                <div style={{ width: 100, height: 6, background: "rgba(255,255,255,0.1)", borderRadius: 3, overflow: "hidden" }}>
+                  <div style={{ width: `${(bgProgress.loaded / Math.max(1, bgProgress.total)) * 100}%`, height: "100%", background: C.green, transition: "width 0.3s" }} />
+                </div>
+                <div style={{ fontSize: 11, color: C.green, fontWeight: 700, minWidth: 32, textAlign: "right" }}>
+                  {Math.round((bgProgress.loaded / Math.max(1, bgProgress.total)) * 100)}%
+                </div>
+              </div>
+            )}
           </div>
 
           {/* ── OVERVIEW TAB ── */}
