@@ -13,9 +13,9 @@ function getStrats() {
 
 // ── Encode / Decode ──
 function encodeState(params, facs, theme) {
-  const p = [params.ppPerStahl, params.ppPerBeton,
-    params.maxFactories, params.maxLevel, params.upgradeBase, params.factoryBase].join(",");
-  const f = facs.map(x => x.level).join(",");
+  const p = [params.maxFactories, params.maxLevel, params.upgradeBase, params.factoryBase,
+    params.includeWorkers?1:0, params.includeMissions?1:0, params.includeCases?1:0, params.includeDonations?1:0, params.startBalance].join(",");
+  const f = facs.map(x => x.level + ":" + (x.item||"")).join(",");
   try { return btoa(p + "|" + f + "|" + theme); } catch { return ""; }
 }
 
@@ -26,12 +26,12 @@ function decodeState(str) {
     const pStr = parts[0], fStr = parts[1], thm = parts[2] || "grau";
     const p = pStr.split(",").map(Number);
     const facs = fStr.split(",").map(s => {
-      const l = Number(s);
-      return { level: l };
+      const sp = s.split(":");
+      return { level: Number(sp[0]), item: sp[1] || "" };
     });
     return {
-      params: { ppPerStahl: p[0], ppPerBeton: p[1],
-        maxFactories: p[2], maxLevel: p[3], upgradeBase: p[4], factoryBase: p[5] },
+      params: { maxFactories: p[0], maxLevel: p[1], upgradeBase: p[2], factoryBase: p[3],
+        includeWorkers: !!p[4], includeMissions: !!p[5], includeCases: !!p[6], includeDonations: !!p[7], startBalance: p[8] },
       facs, theme: thm === "pink" ? "pink" : "grau"
     };
   } catch { return null; }
@@ -40,12 +40,19 @@ function decodeState(str) {
 // ── Game Logic ──
 const upgStahl = (lvl, base) => base * Math.pow(2, lvl - 1);
 const facBeton = (n, base) => n * base;
-function calcPPH(level) { return level; }
-function totalPPH(fs) { return fs.reduce((s, f) => s + calcPPH(f.level), 0); }
 
-function effPP(amount, resType, p) {
-  if (resType === "stahl") return amount * p.ppPerStahl;
-  return amount * p.ppPerBeton;
+function totalGoldPerDay(fs, params) {
+  const { includeWorkers, includeMissions, includeDonations, includeCases, optData } = params;
+  let g = 0;
+  if (includeMissions) g += 10 + 30/7;
+  // Fallback box price if unknown, assume ~8G
+  if (includeCases) g += (1 + 3/7) * (optData?.prices?.dailyResourceBox || 8); 
+  if (includeDonations) g -= 5;
+  for (const f of fs) {
+    if (f.goldPerLevelPerDay) g += f.level * f.goldPerLevelPerDay;
+    if (includeWorkers && f.workerGoldPerDay) g += f.workerGoldPerDay;
+  }
+  return g; // Net Gold per day
 }
 
 class Heap {
@@ -58,7 +65,11 @@ class Heap {
 function facKey(fs) { return fs.map(f => f.level).sort().join("|"); }
 
 function runDijkstra(startFacs, params) {
-  const { maxFactories, maxLevel, upgradeBase, factoryBase } = params;
+  const { maxFactories, maxLevel, upgradeBase, factoryBase, optData } = params;
+  const priceStahl = optData?.prices?.steel || 1.58;
+  const priceBeton = optData?.prices?.concrete || 1.57;
+  const newFacGoldPerLevelDay = optData?.bestProduct ? (24 * optData.bestProduct.maxGoldPerPP) : 2.5;
+
   const heap = new Heap(), visited = new Set();
   const gp = []; for (const f of startFacs) gp.push(maxLevel);
   for (let i = startFacs.length; i < maxFactories; i++) gp.push(maxLevel);
@@ -66,89 +77,157 @@ function runDijkstra(startFacs, params) {
   if (facKey(startFacs) === gk) return { path: [], complete: true, iter: 0 };
 
   const sk = (fs) => facKey(fs);
-  heap.push(0, { facs: startFacs.map(f => ({ ...f })), path: [] });
+  heap.push(0, { facs: startFacs.map(f => ({ ...f })), path: [], savings: params.startBalance || 0 });
   let iter = 0;
 
   while (heap.size > 0 && iter < 500000) {
     iter++;
-    const { p: time, v: { facs, path } } = heap.pop();
+    const { p: time, v: { facs, path, savings } } = heap.pop();
     const key = sk(facs);
     if (visited.has(key)) continue; visited.add(key);
     if (facKey(facs) === gk) return { path, complete: true, iter };
-    const pph = totalPPH(facs); if (pph <= 0) continue;
+    
+    const rateDay = totalGoldPerDay(facs, params);
+    const rateHour = rateDay / 24;
+    // If we are losing money and have no savings, we are stuck
+    if (rateHour <= 0 && savings <= 0) continue; 
 
     for (let i = 0; i < facs.length; i++) {
       if (facs[i].level >= maxLevel) continue;
-      const lvl = facs[i].level, stahl = upgStahl(lvl, upgradeBase);
-      const pp = effPP(stahl, "stahl", params);
-      const dt = pp / pph;
+      const lvl = facs[i].level;
+      const stahl = upgStahl(lvl, upgradeBase);
+      const goldCost = stahl * priceStahl;
+      
+      let dt = 0;
+      if (savings < goldCost) {
+        if (rateHour <= 0) continue;
+        dt = (goldCost - savings) / rateHour;
+      }
+      
+      const newSavings = savings + (dt * rateHour) - goldCost;
       const nf = facs.map((f, j) => j === i ? { ...f, level: f.level + 1 } : { ...f });
       const nk = sk(nf);
+      
       if (!visited.has(nk)) {
         heap.push(time + dt, { facs: nf, path: [...path, {
           action: "Upgrade L" + lvl + " -> L" + (lvl+1),
           type: "upgrade", resType: "stahl", resCost: stahl,
-          ppCost: pp, ppGain: calcPPH(1), dt, time: time + dt, pph: totalPPH(nf),
-        }]});
+          goldCost, goldGainDay: facs[i].goldPerLevelPerDay, dt, time: time + dt, 
+          rateDay: totalGoldPerDay(nf, params), savings: newSavings,
+        }], savings: newSavings });
       }
     }
+    
     if (facs.length < maxFactories) {
-      const n = facs.length + 1, beton = facBeton(n, factoryBase);
-      const pp = effPP(beton, "beton", params);
-      const dt = pph > 0 ? pp / pph : Infinity;
-      const nf = [...facs.map(f => ({ ...f })), { level: 1 }];
+      const n = facs.length + 1;
+      const beton = facBeton(n, factoryBase);
+      const goldCost = beton * priceBeton;
+      
+      let dt = 0;
+      if (savings < goldCost) {
+        if (rateHour <= 0) continue;
+        dt = (goldCost - savings) / rateHour;
+      }
+      
+      const newSavings = savings + (dt * rateHour) - goldCost;
+      const nf = [...facs.map(f => ({ ...f })), { 
+        level: 1, 
+        item: optData?.bestProduct?.itemCode || "Neu",
+        goldPerLevelPerDay: newFacGoldPerLevelDay,
+        workerGoldPerDay: 0 // Assume no workers assigned yet for simulations
+      }];
       const nk = sk(nf);
+      
       if (!visited.has(nk)) {
         heap.push(time + dt, { facs: nf, path: [...path, {
           action: "Neue Fabrik #" + n, type: "buy", resType: "beton", resCost: beton,
-          ppCost: pp, ppGain: calcPPH(1), dt, time: time + dt, pph: totalPPH(nf),
-        }]});
+          goldCost, goldGainDay: newFacGoldPerLevelDay, dt, time: time + dt, 
+          rateDay: totalGoldPerDay(nf, params), savings: newSavings,
+        }], savings: newSavings });
       }
     }
   }
   return { path: [], complete: false, iter };
 }
 
-function simulate(facs, params, strategy) {
-  const { maxFactories, maxLevel, upgradeBase, factoryBase } = params;
-  let st = facs.map(f => ({ ...f })), t = 0;
+function simulate(startFacs, params, strategy) {
+  const { maxFactories, maxLevel, upgradeBase, factoryBase, optData } = params;
+  const priceStahl = optData?.prices?.steel || 1.58;
+  const priceBeton = optData?.prices?.concrete || 1.57;
+  const newFacGoldPerLevelDay = optData?.bestProduct ? (24 * optData.bestProduct.maxGoldPerPP) : 2.5;
+
+  let st = startFacs.map(f => ({ ...f }));
+  let t = 0;
+  let savings = params.startBalance || 0;
+  
   const path = []; let safe = 0;
   while (safe < 300) {
     safe++;
     if (st.length >= maxFactories && st.every(f => f.level >= maxLevel)) break;
-    const pph = totalPPH(st); if (pph <= 0) break;
+    
+    const rateDay = totalGoldPerDay(st, params);
+    const rateHour = rateDay / 24;
+    if (rateHour <= 0 && savings <= 0) break;
+
     const acts = [];
     st.forEach((f, i) => {
       if (f.level >= maxLevel) return;
       const stahl = upgStahl(f.level, upgradeBase);
-      const pp = effPP(stahl, "stahl", params);
-      const ppG = calcPPH(1);
+      const goldCost = stahl * priceStahl;
+      let dt = savings < goldCost ? (rateHour > 0 ? ((goldCost - savings) / rateHour) : Infinity) : 0;
       acts.push({ type: "upgrade", idx: i, resCost: stahl, resType: "stahl",
-        ppCost: pp, ppGain: ppG, dt: pp / pph, label: "Upgrade L" + f.level + " -> L" + (f.level+1) });
+        goldCost, goldGainDay: f.goldPerLevelPerDay, dt, label: "Upgrade L" + f.level + " -> L" + (f.level+1) });
     });
+    
     if (st.length < maxFactories) {
-      const n = st.length + 1, beton = facBeton(n, factoryBase);
-      const pp = effPP(beton, "beton", params);
+      const n = st.length + 1;
+      const beton = facBeton(n, factoryBase);
+      const goldCost = beton * priceBeton;
+      let dt = savings < goldCost ? (rateHour > 0 ? ((goldCost - savings) / rateHour) : Infinity) : 0;
       acts.push({ type: "buy", resCost: beton, resType: "beton",
-        ppCost: pp, ppGain: calcPPH(1), dt: pp / pph, label: "Neue Fabrik #" + n });
+        goldCost, goldGainDay: newFacGoldPerLevelDay, dt, label: "Neue Fabrik #" + n });
     }
+    
     if (!acts.length) break;
+    
     let pick;
-    if (strategy === "cheapest") pick = acts.sort((a, b) => a.ppCost - b.ppCost)[0];
-    else if (strategy === "upgrade_first") { const u = acts.filter(a => a.type === "upgrade").sort((a,b) => a.ppCost - b.ppCost); pick = u.length ? u[0] : acts.find(a => a.type === "buy"); }
-    else { const b = acts.filter(a => a.type === "buy"); pick = b.length ? b[0] : acts.sort((a,b) => a.ppCost - b.ppCost)[0]; }
+    if (strategy === "cheapest") pick = acts.sort((a, b) => a.goldCost - b.goldCost)[0];
+    else if (strategy === "upgrade_first") { 
+      const u = acts.filter(a => a.type === "upgrade").sort((a,b) => (b.goldGainDay/b.goldCost) - (a.goldGainDay/a.goldCost)); 
+      pick = u.length ? u[0] : acts.find(a => a.type === "buy"); 
+    }
+    else { 
+      // buy first
+      const b = acts.filter(a => a.type === "buy"); 
+      pick = b.length ? b[0] : acts.sort((a,b) => a.goldCost - b.goldCost)[0]; 
+    }
+    
+    if (pick.dt === Infinity) break;
+    
     t += pick.dt;
-    if (pick.type === "upgrade") { st = st.map((f, j) => j === pick.idx ? { ...f, level: f.level + 1 } : f); }
-    else { st = [...st, { level: 1 }]; }
+    savings = savings + (pick.dt * rateHour) - pick.goldCost;
+    
+    if (pick.type === "upgrade") { 
+      st = st.map((f, j) => j === pick.idx ? { ...f, level: f.level + 1 } : f); 
+    } else { 
+      st = [...st, { 
+        level: 1, 
+        item: optData?.bestProduct?.itemCode || "Neu",
+        goldPerLevelPerDay: newFacGoldPerLevelDay,
+        workerGoldPerDay: 0 
+      }]; 
+    }
+    
     path.push({ action: pick.label, type: pick.type, resType: pick.resType, resCost: pick.resCost,
-      ppCost: pick.ppCost, ppGain: pick.ppGain, dt: pick.dt, time: t, pph: totalPPH(st) });
+      goldCost: pick.goldCost, goldGainDay: pick.goldGainDay, dt: pick.dt, time: t, 
+      rateDay: totalGoldPerDay(st, params), savings });
   }
   return path;
 }
 
-function buildChart(paths, startPPH, keys) {
+function buildChart(paths, startRate, keys) {
   const ev = {};
-  for (const k of keys) { const p = paths[k]; if (p?.length) ev[k] = [{ time: 0, pph: startPPH }, ...p.map(s => ({ time: s.time, pph: s.pph }))]; }
+  for (const k of keys) { const p = paths[k]; if (p?.length) ev[k] = [{ time: 0, rateDay: startRate }, ...p.map(s => ({ time: s.time, rateDay: s.rateDay }))]; }
   if (!Object.keys(ev).length) return [];
   const ts = new Set([0]);
   for (const e of Object.values(ev)) for (const x of e) ts.add(x.time);
@@ -156,26 +235,32 @@ function buildChart(paths, startPPH, keys) {
   for (let t = 0; t <= mx; t += step) ts.add(Math.round(t * 10) / 10);
   return [...ts].sort((a,b) => a - b).map(t => {
     const pt = { time: Math.round(t * 100) / 100 };
-    for (const [k, e] of Object.entries(ev)) { let v = startPPH; for (const x of e) { if (x.time <= t) v = x.pph; else break; } pt[k] = Math.round(v * 100) / 100; }
+    for (const [k, e] of Object.entries(ev)) { let v = startRate; for (const x of e) { if (x.time <= t) v = x.rateDay; else break; } pt[k] = Math.round(v * 100) / 100; }
     return pt;
   });
 }
 
+
 // ── Main ──
-export default function App({ theme, setTheme, preloadedFacs }) {
+export default function App({ theme, setTheme, optData }) {
   setThemeVars(theme);
   const T = THEMES[theme];
   const STRATS = getStrats();
   const TH = getTH();
   const TD = getTD;
 
-  const [ppS, setPpS] = useState(20);
-  const [ppB, setPpB] = useState(20);
   const [mxF, setMxF] = useState(12);
   const [mxL, setMxL] = useState(7);
   const [uB, setUB] = useState(20);
   const [fB, setFB] = useState(50);
   const [facs, setFacs] = useState([{ level: 1 }]);
+
+  const [inclW, setInclW] = useState(true);
+  const [inclM, setInclM] = useState(true);
+  const [inclC, setInclC] = useState(true);
+  const [inclD, setInclD] = useState(true);
+  const [stB, setStB] = useState(0);
+
   const [actv, setActv] = useState(["dijkstra", "cheapest"]);
   const [tab, setTab] = useState("chart");
   const [cM, setCM] = useState("rate");
@@ -188,16 +273,20 @@ export default function App({ theme, setTheme, preloadedFacs }) {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    if (preloadedFacs && preloadedFacs.length > 0) {
-      setFacs(preloadedFacs);
-      compute(preloadedFacs);
+    if (optData?.facs && optData.facs.length > 0) {
+      setFacs(optData.facs);
+      compute(optData.facs, null);
     }
-  }, [preloadedFacs]);
+  }, [optData]);
 
   function compute(customFacs = null, customParams = null) {
     setBusy(true);
     const fData = customFacs || facs;
-    const pData = customParams || { ppPerStahl: ppS, ppPerBeton: ppB, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB };
+    const pData = customParams || { 
+      maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB,
+      includeWorkers: inclW, includeMissions: inclM, includeCases: inclC, includeDonations: inclD, startBalance: stB,
+      optData
+    };
 
     setTimeout(() => {
       const paths = {}, d = runDijkstra(fData, pData);
@@ -214,8 +303,12 @@ export default function App({ theme, setTheme, preloadedFacs }) {
   const addF = useCallback(() => setFacs(p => [...p, { level: 1 }]), []);
   const rmF = useCallback(i => setFacs(p => p.filter((_, j) => j !== i)), []);
 
-  const params = { ppPerStahl: ppS, ppPerBeton: ppB, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB };
-  const pph = totalPPH(facs);
+  const params = { 
+    maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB,
+    includeWorkers: inclW, includeMissions: inclM, includeCases: inclC, includeDonations: inclD, startBalance: stB,
+    optData
+  };
+  const pph = totalGoldPerDay(facs, params);
 
   const code = encodeState(params, facs, theme);
 
@@ -223,8 +316,8 @@ export default function App({ theme, setTheme, preloadedFacs }) {
     const d = decodeState(impStr);
     if (!d) return;
     const p = d.params;
-    setPpS(p.ppPerStahl); setPpB(p.ppPerBeton);
     setMxF(p.maxFactories); setMxL(p.maxLevel); setUB(p.upgradeBase); setFB(p.factoryBase);
+    setInclW(p.includeWorkers); setInclM(p.includeMissions); setInclC(p.includeCases); setInclD(p.includeDonations); setStB(p.startBalance || 0);
     setFacs(d.facs);
     if (d.theme) setTheme(d.theme);
     setShowImp(false); setImpStr(""); setRes(null);
@@ -268,8 +361,24 @@ export default function App({ theme, setTheme, preloadedFacs }) {
           <GlassCard>
             <Sec icon="&#9881;">Parameter & Einheiten</Sec>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "0 12px" }}>
-              <Inp label="PP pro Stahl" value={ppS} onChange={v => { setPpS(v); compute(); }} suffix="PP/Stk" tip="Wie viele Produktionspunkte (PP) ein Stück Stahl wert ist." />
-              <Inp label="PP pro Beton" value={ppB} onChange={v => { setPpB(v); compute(); }} suffix="PP/Bt" tip="Wie viele Produktionspunkte (PP) ein Stück Beton wert ist." />
+              <div style={{...glass(0.05, 8), padding: 8, marginBottom: 10, display: "flex", flexDirection: "column", gap: 8, gridColumn: "1 / -1"}}>
+                <div style={{fontSize: 12, fontWeight: "bold", color: C.textDim, textTransform: "uppercase", letterSpacing: "0.05em"}}>Einnahmequellen & Simulation</div>
+                <div style={{display: "flex", gap: 15, flexWrap: "wrap"}}>
+                  <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13}}>
+                    <input type="checkbox" checked={inclW} onChange={e => { setInclW(e.target.checked); compute(null, { ...params, includeWorkers: e.target.checked }); }} /> Mitarbeiter-Gewinn
+                  </label>
+                  <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13}}>
+                    <input type="checkbox" checked={inclM} onChange={e => { setInclM(e.target.checked); compute(null, { ...params, includeMissions: e.target.checked }); }} /> + Missionen (10G/Tag, 30G/W)
+                  </label>
+                  <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13}}>
+                    <input type="checkbox" checked={inclC} onChange={e => { setInclC(e.target.checked); compute(null, { ...params, includeCases: e.target.checked }); }} /> + Kistenverkauf (1/Tag, 3/W)
+                  </label>
+                  <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13}}>
+                    <input type="checkbox" checked={inclD} onChange={e => { setInclD(e.target.checked); compute(null, { ...params, includeDonations: e.target.checked }); }} /> - Spenden (5G/Tag)
+                  </label>
+                </div>
+              </div>
+              <Inp label="Startkapital" value={stB} onChange={v => { setStB(v); compute(); }} suffix="G" tip="Dein berechnetes Startkapital (Gold)." />
               <Inp label="Max. Fabriken" value={mxF} onChange={v => { setMxF(v); compute(); }} suffix="Stk" tip="Die maximale Anzahl an Fabriken, die du bauen möchtest." />
               <Inp label="Max. Level" value={mxL} onChange={v => { setMxL(v); compute(); }} suffix="Lvl" tip="Das maximale Level, das jede Fabrik erreichen soll." />
               <Inp label="Basis Upg-Kosten" value={uB} onChange={v => { setUB(v); compute(); }} suffix="Stk" tip="Basiskosten an Stahl für ein Upgrade von Level 1 auf 2." />
@@ -297,27 +406,27 @@ export default function App({ theme, setTheme, preloadedFacs }) {
           </GlassCard>
 
           <GlassCard style={{ marginTop: 0 }}>
-            <Sec icon="&#9776;">Kostenreferenz</Sec>
+            <Sec icon="&#9776;">Kostenreferenz ({fmt(optData?.prices?.steel, 2)}G/Stahl, {fmt(optData?.prices?.concrete, 2)}G/Beton)</Sec>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, fontSize: 16 }}>
               <div>
-                <div style={{ color: C.stahl, fontWeight: 700, fontFamily: F.h, marginBottom: 12, letterSpacing: "0.08em" }}>UPGRADES (STAHL)</div>
+                <div style={{ color: C.stahl, fontWeight: 700, fontFamily: F.h, marginBottom: 12, letterSpacing: "0.08em" }}>UPGRADES</div>
                 {Array.from({ length: mxL - 1 }, (_, i) => i+1).map(l => {
-                  const s = upgStahl(l, uB), pp = effPP(s, "stahl", params);
+                  const s = upgStahl(l, uB), goldCost = s * (optData?.prices?.steel || 1.58);
                   return <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: C.textDim }}>
                     <span style={{ width: 70, color: C.text }}>L{l} -&gt; L{l+1}</span>
-                    <span style={{ color: C.stahl }}>{fmt(s, 0)} Einh.</span>
-                    <span>{fmt(pp, 0)} PP</span>
+                    <span style={{ color: C.stahl }}>{fmt(s, 0)} Stahl</span>
+                    <span style={{ color: C.gold || "#eab308" }}>{fmt(goldCost, 0)} G</span>
                   </div>;
                 })}
               </div>
               <div>
-                <div style={{ color: C.betonC, fontWeight: 700, fontFamily: F.h, marginBottom: 12, letterSpacing: "0.08em" }}>FABRIKEN (BETON)</div>
+                <div style={{ color: C.betonC, fontWeight: 700, fontFamily: F.h, marginBottom: 12, letterSpacing: "0.08em" }}>FABRIKEN</div>
                 {Array.from({ length: mxF }, (_, i) => i+1).map(n => {
-                  const b = facBeton(n, fB), pp = effPP(b, "beton", params);
+                  const b = facBeton(n, fB), goldCost = b * (optData?.prices?.concrete || 1.57);
                   return <div key={n} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: C.textDim }}>
                     <span style={{ width: 70, color: C.text }}>Fabrik #{n}</span>
-                    <span style={{ color: C.betonC }}>{fmt(b, 0)} Einh.</span>
-                    <span>{fmt(pp, 0)} PP</span>
+                    <span style={{ color: C.betonC }}>{fmt(b, 0)} Beton</span>
+                    <span style={{ color: C.gold || "#eab308" }}>{fmt(goldCost, 0)} G</span>
                   </div>;
                 })}
               </div>
@@ -355,7 +464,7 @@ export default function App({ theme, setTheme, preloadedFacs }) {
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                 <XAxis dataKey="time" stroke={C.textMuted} tick={{ fontSize: 12 }} tickFormatter={v => v >= 48 ? (v/24).toFixed(0) + "d" : Math.round(v) + "h"} />
                 <YAxis stroke={C.textMuted} tick={{ fontSize: 12 }} tickFormatter={v => fmtN(v)} />
-                <Tooltip contentStyle={{ ...glass(0.12, 20), borderRadius: 10, fontSize: 13, border: "none" }} labelFormatter={v => v >= 48 ? (v/24).toFixed(1) + "d" : Math.round(v*10)/10 + "h"} formatter={(v, n) => [fmt(v, 1) + " PP/h", STRATS.find(s => s.key === n)?.label || n]} />
+                <Tooltip contentStyle={{ ...glass(0.12, 20), borderRadius: 10, fontSize: 13, border: "none" }} labelFormatter={v => v >= 48 ? (v/24).toFixed(1) + "d" : Math.round(v*10)/10 + "h"} formatter={(v, n) => [fmt(v, 1) + " Gold/Tag", STRATS.find(s => s.key === n)?.label || n]} />
                 {STRATS.filter(s => actv.includes(s.key)).map(s => <Area key={s.key} type="stepAfter" dataKey={s.key} stroke={s.color} strokeWidth={3} fill={"url(#g_" + s.key + ")"} dot={false} />)}
               </AreaChart>
             </ResponsiveContainer>
