@@ -38,15 +38,18 @@ function calcTotalBonus(region, itemCode, country, gameConfig) {
   if (!gameConfig) return 0;
   let bonus = 0;
 
-  // 1. Country strategic resources production bonus (applies to all companies in this country)
-  if (country?.strategicResources?.bonuses?.productionPercent) {
-    bonus += country.strategicResources.bonuses.productionPercent;
-  }
+  // 1. Country strategic resources production bonus ONLY applies if the item is the country's specialized item!
+  // It does NOT apply broadly to all factories in the country.
+  if (country?.specializedItem === itemCode) {
+    if (country?.strategicResources?.bonuses?.productionPercent) {
+      bonus += country.strategicResources.bonuses.productionPercent;
+    }
 
-  const itemConfig = gameConfig.items?.[itemCode];
-  // 2. Country specialization bonus (+30% "industrielle Ethik") - generally doesn't apply to consumables like food.
-  if (country?.specializedItem === itemCode && !itemConfig?.isConsumable) {
-    bonus += gameConfig.company?.depositResourceBonus || 30;
+    const itemConfig = gameConfig.items?.[itemCode];
+    // 2. Country specialization bonus (+30% "industrielle Ethik") - generally doesn't apply to consumables like food.
+    if (!itemConfig?.isConsumable) {
+      bonus += gameConfig.company?.depositResourceBonus || 30;
+    }
   }
 
   if (!region) return bonus;
