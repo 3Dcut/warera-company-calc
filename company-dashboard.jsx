@@ -19,7 +19,7 @@ async function resolveUser(input) {
   throw new Error(`Keine exakte Übereinstimmung für "${input}".`);
 }
 
-async function batchParallel(ids, fn, concurrency = 1) {
+async function batchParallel(ids, fn, concurrency = 2) {
   const results = [];
   for (let i = 0; i < ids.length; i += concurrency) {
     const batch = ids.slice(i, i + concurrency);
