@@ -50,19 +50,6 @@ function Shell() {
       </div>
 
       {/* Banner */}
-      <GlassCard glow="rgba(248,113,113,0.3)" style={{ borderColor: C.red + "44", marginBottom: 20 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ fontSize: 24 }}>&#9888;</span>
-          <div>
-            <div style={{ fontFamily: F.h, fontSize: 15, fontWeight: 700, color: C.red, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-              Achtung
-            </div>
-            <div style={{ fontSize: 12, color: C.textDim }}>
-              Die Profitberechnung hat momentan einen Fehler. Wird im laufe des tages behoben.
-            </div>
-          </div>
-        </div>
-      </GlassCard>
 
       {/* Page Content */}
       <CompanyDashboard theme={theme} setTheme={setTheme} />
