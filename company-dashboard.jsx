@@ -445,15 +445,30 @@ export default function CompanyDashboard({ theme, setTheme }) {
       const needs = item.productionNeeds || null;
       // Check if user produces this
       const userComps = companies.filter(c => c.itemCode === code);
+      // Calculate maximum possible global efficiency
+      let maxBonus = 0;
+      let bestRegionName = "N/A";
+      for (const regionId of Object.keys(regions)) {
+        const region = regions[regionId];
+        const country = getCountryForRegion(regionId);
+        const bonus = calcTotalBonus(region, code, country, gameConfig);
+        if (bonus > maxBonus) {
+          maxBonus = bonus;
+          bestRegionName = region.name;
+        }
+      }
+      const maxGoldPerPP = goldPerPP * (1 + maxBonus / 100);
+
       products.push({
-        itemCode: code, type: item.type, price, pp, materialCost, netMargin, goldPerPP, needs,
+        itemCode: code, type: item.type, price: price, pp, materialCost, netMargin, goldPerPP, needs,
+        maxBonus, maxGoldPerPP, bestRegionName,
         userCompanyCount: userComps.length,
         userTotalProfit: userComps.reduce((s, c) => s + calcDailyProfit(c), 0),
         userTotalRevenue: userComps.reduce((s, c) => s + calcDailyRevenue(c), 0),
         userTotalCost: userComps.reduce((s, c) => s + calcDailyCost(c), 0),
       });
     }
-    return products.sort((a, b) => b.goldPerPP - a.goldPerPP);
+    return products.sort((a, b) => b.maxGoldPerPP - a.maxGoldPerPP);
   }
 
   function getGlobalOptimization() {
@@ -1059,7 +1074,8 @@ export default function CompanyDashboard({ theme, setTheme }) {
                     <th style={TH}>Material/Stk</th>
                     <th style={TH}>Marge/Stk</th>
                     <th style={TH}>PP/Stk</th>
-                    <th style={TH}>Marge/PP</th>
+                    <th style={TH}>Basis-Marge/PP</th>
+                    <th style={TH}>Max. Marge/PP</th>
                     <th style={TH}>Deine Fabriken</th>
                     <th style={TH}>Dein Gewinn/Tag</th>
                   </tr></thead>
@@ -1095,8 +1111,12 @@ export default function CompanyDashboard({ theme, setTheme }) {
                             {fmt(p.netMargin, 4)} G
                           </td>
                           <td style={TD(false)}>{p.pp}</td>
-                          <td style={{ ...TD(false), fontWeight: 700, color: i === 0 ? C.green : p.goldPerPP > 0 ? C.text : C.red, fontSize: 15 }}>
+                          <td style={{ ...TD(false), fontWeight: 700, color: C.textDim, fontSize: 13 }}>
                             {fmt(p.goldPerPP, 4)} G
+                          </td>
+                          <td style={{ ...TD(false), fontWeight: 700, color: i === 0 ? C.green : p.maxGoldPerPP > 0 ? C.text : C.red, fontSize: 15 }}>
+                            <div>{fmt(p.maxGoldPerPP, 4)} G</div>
+                            <div style={{ fontSize: 10, color: C.green }}>{p.bestRegionName} (+{fmt(p.maxBonus, 1)}%)</div>
                           </td>
                           <td style={TD(false)}>
                             {isProducing
