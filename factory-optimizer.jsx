@@ -287,14 +287,15 @@ export default function App({ theme, setTheme, optData }) {
   const [impStr, setImpStr] = useState("");
   const [showImp, setShowImp] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [useApiWealth, setUseApiWealth] = useState(true);
 
   useEffect(() => {
     if (optData?.facs && optData.facs.length > 0) {
       setFacs(optData.facs);
       
       let nextStB = stB;
-      if (optData.liquidAssets !== undefined) {
-         nextStB = optData.liquidAssets;
+      if (useApiWealth && optData.liquidAssets !== undefined) {
+         nextStB = Math.round(optData.liquidAssets * 100) / 100;
          setStB(nextStB);
       }
 
@@ -305,7 +306,7 @@ export default function App({ theme, setTheme, optData }) {
         optData
       });
     }
-  }, [optData]);
+  }, [optData, useApiWealth]);
 
   function compute(customFacs = null, customParams = null) {
     setBusy(true);
@@ -392,32 +393,20 @@ export default function App({ theme, setTheme, optData }) {
           <GlassCard>
             <Sec icon="&#9881;">Parameter & Einheiten</Sec>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "0 12px" }}>
-              <div style={{...glass(0.05, 8), padding: 8, marginBottom: 10, display: "flex", flexDirection: "column", gap: 8, gridColumn: "1 / -1"}}>
-                <div style={{fontSize: 12, fontWeight: "bold", color: C.textDim, textTransform: "uppercase", letterSpacing: "0.05em"}}>Einnahmequellen & Simulation</div>
-                <div style={{display: "flex", gap: 15, flexWrap: "wrap"}}>
-                  <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13}}>
-                    <input type="checkbox" checked={inclW} onChange={e => { setInclW(e.target.checked); compute(null, { ...params, includeWorkers: e.target.checked }); }} /> Mitarbeiter-Gewinn
-                  </label>
-                  <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13}}>
-                    <input type="checkbox" checked={inclM} onChange={e => { setInclM(e.target.checked); compute(null, { ...params, includeMissions: e.target.checked }); }} /> + Missionen (10G/Tag, 30G/W)
-                  </label>
-                  <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13}}>
-                    <input type="checkbox" checked={inclC} onChange={e => { setInclC(e.target.checked); compute(null, { ...params, includeCases: e.target.checked }); }} /> + Kistenverkauf (1/Tag, 3/W)
-                  </label>
-                  <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13}}>
-                    <input type="checkbox" checked={inclD} onChange={e => { setInclD(e.target.checked); compute(null, { ...params, includeDonations: e.target.checked }); }} /> - Spenden (5G/Tag)
+              <div style={{...glass(0.05, 8), padding: 8, marginTop: 4, marginBottom: 4, display: "flex", flexDirection: "column", gap: 4, gridColumn: "1 / -1"}}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{fontSize: 12, fontWeight: "bold", color: C.textDim, textTransform: "uppercase", letterSpacing: "0.05em"}}>Reichtum Profil (API)</div>
+                  <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 11, color: C.textMuted}}>
+                    <input type="checkbox" checked={useApiWealth} onChange={e => setUseApiWealth(e.target.checked)} /> API Auto-Sync
                   </label>
                 </div>
-              </div>
-              <div style={{...glass(0.05, 8), padding: 8, marginTop: 4, marginBottom: 4, display: "flex", flexDirection: "column", gap: 4, gridColumn: "1 / -1"}}>
-                <div style={{fontSize: 12, fontWeight: "bold", color: C.textDim, textTransform: "uppercase", letterSpacing: "0.05em"}}>Reichtum Profil (API)</div>
                 <div style={{fontSize: 14, color: C.text, display: "flex", flexWrap: "wrap", gap: 15, fontFamily: F.m}}>
                   <span>Gesamt: <b style={{color: C.green}}>{fmtN(optData?.totalWealth || 0)}</b></span>
                   <span>Firmenwert: <b style={{color: C.accent}}>{fmtN(optData?.totalCompaniesValue || 0)}</b></span>
-                  <span>Liquide (Geld+Items): <b style={{color: C.gold || "#eab308"}}>{fmtN(optData?.liquidAssets || 0)}</b></span>
+                  <span>Liquide (Geld+Items+Ausr): <b style={{color: C.gold || "#eab308"}}>{fmtN(Math.round((optData?.liquidAssets || 0) * 100) / 100)}</b></span>
                 </div>
               </div>
-              <Inp label="Startkapital" value={stB} onChange={v => { setStB(v); compute(); }} suffix="G" tip="Dein derzeitiger Kontostand (Gold)." />
+              <Inp label="Startkapital" value={stB} onChange={v => { setStB(v); compute(); }} suffix="G" tip="Geld + Items + Ausrüstung" />
               <Inp label="Stahl im Lager" value={stStahl} onChange={v => { setStStahl(v); compute(); }} suffix="Stk" tip="Vorrätiger Stahl im Inventar (Reduziert Goldkosten beim Upgrade)." />
               <Inp label="Beton im Lager" value={stBeton} onChange={v => { setStBeton(v); compute(); }} suffix="Stk" tip="Vorrätiger Beton im Inventar (Reduziert Goldkosten beim Fabrikkauf)." />
               <Inp label="Max. Fabriken" value={mxF} onChange={v => { setMxF(v); compute(); }} suffix="Stk" tip="Die maximale Anzahl an Fabriken, die du bauen möchtest." />
@@ -481,6 +470,24 @@ export default function App({ theme, setTheme, optData }) {
         <div style={{ marginBottom: 20 }}>
           <Sec icon="&#128200;">Produktionskurve</Sec>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 20 }}>
+            <div style={{ ...glass(0.03, 16), borderRadius: 12, padding: "16px", minWidth: 260, flex: 1 }}>
+              <div style={{ fontFamily: F.h, fontSize: 12, color: C.textDim, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 12 }}>Einnahmequellen & Simulation</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13}}>
+                  <input type="checkbox" checked={inclW} onChange={e => { setInclW(e.target.checked); compute(null, { ...params, includeWorkers: e.target.checked }); }} /> Mitarbeiter-Gewinn
+                </label>
+                <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13}}>
+                  <input type="checkbox" checked={inclM} onChange={e => { setInclM(e.target.checked); compute(null, { ...params, includeMissions: e.target.checked }); }} /> + Missionen (10G/Tag, 30G/W)
+                </label>
+                <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13}}>
+                  <input type="checkbox" checked={inclC} onChange={e => { setInclC(e.target.checked); compute(null, { ...params, includeCases: e.target.checked }); }} /> + Kistenverkauf (1/Tag, 3/W)
+                </label>
+                <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13}}>
+                  <input type="checkbox" checked={inclD} onChange={e => { setInclD(e.target.checked); compute(null, { ...params, includeDonations: e.target.checked }); }} /> - Spenden (5G/Tag)
+                </label>
+              </div>
+            </div>
+
             {STRATS.map(s => {
               const t = res.finals[s.key], on = actv.includes(s.key);
               const isBest = t === Math.min(...Object.values(res.finals).filter(v => v != null)) && t != null;
