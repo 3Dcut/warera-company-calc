@@ -943,16 +943,16 @@ export default function CompanyDashboard({ theme }) {
                     Arbeiter, die in einer anderen Fabrik mehr Netto-Gewinn bringen würden. Lohn und Treue bleiben erhalten.
                   </div>
                   {workerOptimization.map((s, i) => (
-                    <div key={i} style={{ ...glass(0.06, 10), borderRadius: 8, padding: "12px 16px", marginBottom: 8 }}>
+                    <div key={i} style={{ ...glass(0.08, 10), borderRadius: 8, padding: "12px 16px", marginBottom: 8 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                         <div>
-                          <span style={{ color: C.text, fontWeight: 700 }}>{s.worker.username || "Arbeiter"}</span>
-                          <span style={{ color: C.textMuted, margin: "0 8px" }}>von</span>
-                          <span style={{ color: C.text }}>{s.fromCompany.name || s.fromCompany.itemCode}</span>
-                          <span style={{ color: C.textMuted, fontSize: 11 }}> ({s.fromCompany.itemCode}, {fmt(s.currentNetPerDay, 2)} G/Tag)</span>
-                          <span style={{ color: C.accent, margin: "0 8px" }}>&rarr;</span>
-                          <span style={{ color: C.green }}>{s.toCompany.name || s.toCompany.itemCode}</span>
-                          <span style={{ color: C.green, fontSize: 11 }}> ({s.toCompany.itemCode}, {fmt(s.newNetPerDay, 2)} G/Tag)</span>
+                          <span style={{ color: C.accent, fontWeight: 700 }}>{s.worker.username || "Arbeiter"}</span>
+                          <span style={{ color: C.textDim, margin: "0 8px" }}>von</span>
+                          <span style={{ color: C.text, fontWeight: 600 }}>{s.fromCompany.name || s.fromCompany.itemCode}</span>
+                          <span style={{ color: C.textDim, fontSize: 12 }}> ({s.fromCompany.itemCode}, {fmt(s.currentNetPerDay, 2)} G/Tag)</span>
+                          <span style={{ color: C.accent, margin: "0 10px", fontSize: 16 }}>&rarr;</span>
+                          <span style={{ color: C.green, fontWeight: 600 }}>{s.toCompany.name || s.toCompany.itemCode}</span>
+                          <span style={{ color: C.green, fontSize: 12 }}> ({s.toCompany.itemCode}, {fmt(s.newNetPerDay, 2)} G/Tag)</span>
                         </div>
                         <Bdg color={C.green}>+{fmt(s.dailyGain, 2)} G/Tag</Bdg>
                       </div>
