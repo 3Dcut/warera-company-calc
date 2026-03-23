@@ -928,6 +928,81 @@ export default function CompanyDashboard({ theme, setTheme }) {
                 </GlassCard>
               )}
 
+              {/* Better Regions */}
+              <GlassCard glow={betterRegions.length > 0 ? C.greenGlow : undefined}>
+                <Sec icon="&#127758;">Bessere Regionen verfügbar ({betterRegions.length})</Sec>
+                <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
+                  Prüft, ob aktuelle Fabriken für 5 Beton in ein besseres Land umziehen sollten, ohne das Produkt zu ändern.
+                </div>
+                {betterRegions.length === 0 ? (
+                  <div style={{ padding: "16px", textAlign: "center", color: C.green, background: "rgba(0,255,0,0.05)", borderRadius: 8, border: "1px solid " + C.green + "44" }}>
+                    &#10004; Alle Fabriken befinden sich bereits in der absolut optimalen Region für ihr jeweiliges Produkt. Es gibt keinen berechtigten Umzug.
+                  </div>
+                ) : (
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead><tr>
+                      <th style={TH}>Fabrik</th>
+                      <th style={TH}>Aktuell</th>
+                      <th style={TH}></th>
+                      <th style={TH}>Beste Region</th>
+                      <th style={TH}>Mehrgewinn/Tag</th>
+                      <th style={TH}>Umzugskosten</th>
+                      <th style={TH}>Amortisation</th>
+                    </tr></thead>
+                    <tbody>
+                      {betterRegions.map((s, i) => (
+                        <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
+                          <td style={TD(false)}>
+                            <div>{s.company.name || s.company.itemCode}</div>
+                            <div style={{ fontSize: 10, color: C.textMuted }}>{s.company.itemCode}</div>
+                          </td>
+                          <td style={TD(false)}>
+                            <div>{s.currentRegion?.name || "?"}</div>
+                            <div style={{ fontSize: 10, color: C.textMuted }}>+{fmt(s.currentBonus, 1)}%</div>
+                          </td>
+                          <td style={{ ...TD(false), color: C.accent, fontSize: 18 }}>&rarr;</td>
+                          <td style={TD(false)}>
+                            <div style={{ color: C.green }}>{s.bestRegion?.name || "?"}</div>
+                            <div style={{ fontSize: 10, color: C.green }}>+{fmt(s.bestBonus, 1)}%</div>
+                          </td>
+                          <td style={{ ...TD(false), color: C.green, fontWeight: 700 }}>+{fmt(s.dailyGain, 2)} G</td>
+                          <td style={{ ...TD(false), color: C.textDim }}>{fmt(s.relocCost, 2)} G</td>
+                          <td style={{ ...TD(false), fontWeight: 700, color: s.paybackDays <= 7 ? C.green : s.paybackDays <= 30 ? C.accent : C.red }}>
+                            {s.paybackDays === Infinity ? "nie" : fmt(s.paybackDays, 1) + " Tage"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </GlassCard>
+
+              {/* Worker Optimization */}
+              {workerOptimization.length > 0 && (
+                <GlassCard glow={C.blueGlow}>
+                  <Sec icon="&#128101;">Arbeiter-Optimierung ({workerOptimization.length})</Sec>
+                  <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
+                    Arbeiter, die in einer anderen Fabrik mehr Netto-Gewinn bringen würden. Lohn und Treue bleiben erhalten.
+                  </div>
+                  {workerOptimization.map((s, i) => (
+                    <div key={i} style={{ ...glass(0.08, 10), borderRadius: 8, padding: "12px 16px", marginBottom: 8 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                        <div>
+                          <span style={{ color: C.accent, fontWeight: 700 }}>{s.worker.username || "Arbeiter"}</span>
+                          <span style={{ color: C.textDim, margin: "0 8px" }}>von</span>
+                          <span style={{ color: C.text, fontWeight: 600 }}>{s.fromCompany.name || s.fromCompany.itemCode}</span>
+                          <span style={{ color: C.textDim, fontSize: 12 }}> ({s.fromCompany.itemCode}, {fmt(s.currentNetPerDay, 2)} G/Tag)</span>
+                          <span style={{ color: C.accent, margin: "0 10px", fontSize: 16 }}>&rarr;</span>
+                          <span style={{ color: C.green, fontWeight: 600 }}>{s.toCompany.name || s.toCompany.itemCode}</span>
+                          <span style={{ color: C.green, fontSize: 12 }}> ({s.toCompany.itemCode}, {fmt(s.newNetPerDay, 2)} G/Tag)</span>
+                        </div>
+                        <Bdg color={C.green}>+{fmt(s.dailyGain, 2)} G/Tag</Bdg>
+                      </div>
+                    </div>
+                  ))}
+                </GlassCard>
+              )}
+
               {/* Global Optimization */}
               <GlassCard glow={globalOptimization.length > 0 ? C.accentGlow : undefined}>
                 <Sec icon="&#128260;">Globale Fabrik-Optimierung ({globalOptimization.length})</Sec>
@@ -970,81 +1045,6 @@ export default function CompanyDashboard({ theme, setTheme }) {
                           <td style={{ ...TD(false), color: C.red }}>{s.concreteNeeded} <span style={{fontSize:10}}>({fmt(s.totalCost, 1)} G)</span></td>
                           <td style={{ ...TD(false), fontWeight: 700, color: s.paybackDays <= 2 ? C.green : s.paybackDays <= 7 ? C.accent : C.red }}>
                             {fmt(s.paybackDays, 1)} Tage
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </GlassCard>
-
-              {/* Worker Optimization */}
-              {workerOptimization.length > 0 && (
-                <GlassCard glow={C.blueGlow}>
-                  <Sec icon="&#128101;">Arbeiter-Optimierung ({workerOptimization.length})</Sec>
-                  <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
-                    Arbeiter, die in einer anderen Fabrik mehr Netto-Gewinn bringen würden. Lohn und Treue bleiben erhalten.
-                  </div>
-                  {workerOptimization.map((s, i) => (
-                    <div key={i} style={{ ...glass(0.08, 10), borderRadius: 8, padding: "12px 16px", marginBottom: 8 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-                        <div>
-                          <span style={{ color: C.accent, fontWeight: 700 }}>{s.worker.username || "Arbeiter"}</span>
-                          <span style={{ color: C.textDim, margin: "0 8px" }}>von</span>
-                          <span style={{ color: C.text, fontWeight: 600 }}>{s.fromCompany.name || s.fromCompany.itemCode}</span>
-                          <span style={{ color: C.textDim, fontSize: 12 }}> ({s.fromCompany.itemCode}, {fmt(s.currentNetPerDay, 2)} G/Tag)</span>
-                          <span style={{ color: C.accent, margin: "0 10px", fontSize: 16 }}>&rarr;</span>
-                          <span style={{ color: C.green, fontWeight: 600 }}>{s.toCompany.name || s.toCompany.itemCode}</span>
-                          <span style={{ color: C.green, fontSize: 12 }}> ({s.toCompany.itemCode}, {fmt(s.newNetPerDay, 2)} G/Tag)</span>
-                        </div>
-                        <Bdg color={C.green}>+{fmt(s.dailyGain, 2)} G/Tag</Bdg>
-                      </div>
-                    </div>
-                  ))}
-                </GlassCard>
-              )}
-
-              {/* Better Regions */}
-              <GlassCard glow={betterRegions.length > 0 ? C.greenGlow : undefined}>
-                <Sec icon="&#127758;">Bessere Regionen verfügbar ({betterRegions.length})</Sec>
-                <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
-                  Prüft, ob aktuelle Fabriken für 5 Beton in ein besseres Land umziehen sollten, ohne das Produkt zu ändern.
-                </div>
-                {betterRegions.length === 0 ? (
-                  <div style={{ padding: "16px", textAlign: "center", color: C.green, background: "rgba(0,255,0,0.05)", borderRadius: 8, border: "1px solid " + C.green + "44" }}>
-                    &#10004; Alle Fabriken befinden sich bereits in der absolut optimalen Region für ihr jeweiliges Produkt. Es gibt keinen berechtigten Umzug.
-                  </div>
-                ) : (
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead><tr>
-                      <th style={TH}>Fabrik</th>
-                      <th style={TH}>Aktuell</th>
-                      <th style={TH}></th>
-                      <th style={TH}>Beste Region</th>
-                      <th style={TH}>Mehrgewinn/Tag</th>
-                      <th style={TH}>Umzugskosten</th>
-                      <th style={TH}>Amortisation</th>
-                    </tr></thead>
-                    <tbody>
-                      {betterRegions.map((s, i) => (
-                        <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
-                          <td style={TD(false)}>
-                            <div>{s.company.name || s.company.itemCode}</div>
-                            <div style={{ fontSize: 10, color: C.textMuted }}>{s.company.itemCode}</div>
-                          </td>
-                          <td style={TD(false)}>
-                            <div>{s.currentRegion?.name || "?"}</div>
-                            <div style={{ fontSize: 10, color: C.textMuted }}>+{fmt(s.currentBonus, 1)}%</div>
-                          </td>
-                          <td style={{ ...TD(false), color: C.accent, fontSize: 18 }}>&rarr;</td>
-                          <td style={TD(false)}>
-                            <div style={{ color: C.green }}>{s.bestRegion?.name || "?"}</div>
-                            <div style={{ fontSize: 10, color: C.green }}>+{fmt(s.bestBonus, 1)}%</div>
-                          </td>
-                          <td style={{ ...TD(false), color: C.green, fontWeight: 700 }}>+{fmt(s.dailyGain, 2)} G</td>
-                          <td style={{ ...TD(false), color: C.textDim }}>{fmt(s.relocCost, 2)} G</td>
-                          <td style={{ ...TD(false), fontWeight: 700, color: s.paybackDays <= 7 ? C.green : s.paybackDays <= 30 ? C.accent : C.red }}>
-                            {s.paybackDays === Infinity ? "nie" : fmt(s.paybackDays, 1) + " Tage"}
                           </td>
                         </tr>
                       ))}
