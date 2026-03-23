@@ -92,6 +92,7 @@ export default function CompanyDashboard({ theme }) {
   const [gameConfig, setGameConfig] = useState(null);
 
   const [subTab, setSubTab] = useState("overview");
+  const [expandedCompany, setExpandedCompany] = useState(null);
 
   async function loadData() {
     if (!userInput.trim()) return;
@@ -179,6 +180,7 @@ export default function CompanyDashboard({ theme }) {
             const profile = profileMap[wr.user];
             if (profile) {
               wr.energy = profile.skills?.energy?.value || 0;
+              wr.energyCurrent = profile.skills?.energy?.currentBarValue || 0;
               wr.productivity = profile.skills?.production?.value || 0;
               wr.username = profile.username;
             }
@@ -256,10 +258,20 @@ export default function CompanyDashboard({ theme }) {
     return enginePP + workerPP;
   }
 
+  function calcWorkerBasePPH(w) {
+    // Base PP per hour BEFORE bonuses/fidelity
+    return ((w.energy || 0) / 100) * (w.productivity || 0);
+  }
+
+  function calcWorkerCostPerH(w) {
+    // Wage is per PP produced (before bonuses), not per hour
+    return calcWorkerBasePPH(w) * (w.wage || 0);
+  }
+
   function calcDailyCost(comp) {
     const compId = comp._id;
     const ws = workers[compId] || [];
-    return ws.reduce((sum, w) => sum + (w.wage || 0) * 24, 0);
+    return ws.reduce((sum, w) => sum + calcWorkerCostPerH(w) * 24, 0);
   }
 
   function getItemPrice(itemCode) {
@@ -296,7 +308,7 @@ export default function CompanyDashboard({ theme }) {
         const workerPPDay = calcWorkerPPH(w, bonus) * 24;
         const unitsPerDay = workerPPDay / ppPerUnit;
         const dailyContribution = unitsPerDay * price;
-        const dailyWage = (w.wage || 0) * 24;
+        const dailyWage = calcWorkerCostPerH(w) * 24;
         if (dailyWage > dailyContribution && dailyWage > 0) {
           warnings.push({
             company: comp,
@@ -542,9 +554,10 @@ export default function CompanyDashboard({ theme }) {
             <GlassCard style={{ padding: 0, overflow: "hidden" }}>
               <div style={{ padding: "16px 20px 8px" }}>
                 <Sec icon="&#127981;">Fabrik-Übersicht ({companies.length})</Sec>
+                <div style={{ fontSize: 11, color: C.textMuted, marginTop: -10, marginBottom: 8 }}>Klicke auf eine Fabrik um Arbeiter-Details zu sehen</div>
               </div>
               <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1000 }}>
                   <thead><tr>
                     <th style={TH}>Name</th>
                     <th style={TH}>Produkt</th>
@@ -553,7 +566,9 @@ export default function CompanyDashboard({ theme }) {
                     <th style={TH}>Region</th>
                     <th style={TH}>Bonus</th>
                     <th style={TH}>Arbeiter</th>
-                    <th style={TH}>PP/Tag</th>
+                    <th style={TH}>Motor PP/Tag</th>
+                    <th style={TH}>Arbeiter PP/Tag</th>
+                    <th style={TH}>Gesamt PP/Tag</th>
                     <th style={TH}>Umsatz/Tag</th>
                     <th style={TH}>Kosten/Tag</th>
                     <th style={TH}>Gewinn/Tag</th>
@@ -564,16 +579,24 @@ export default function CompanyDashboard({ theme }) {
                       const compId = comp._id;
                       const ws = workers[compId] || [];
                       const bonus = getRegionBonus(comp);
-                      const ppDay = calcCompanyPPDay(comp);
+                      const enginePP = calcEnginePPDay(comp);
+                      const workerPPTotal = ws.reduce((sum, w) => sum + calcWorkerPPH(w, bonus) * 24, 0);
+                      const ppDay = enginePP + workerPPTotal;
                       const revenue = calcDailyRevenue(comp);
                       const cost = calcDailyCost(comp);
                       const profit = calcDailyProfit(comp);
                       const isEnemy = enemyWarnings.some(w => w.company._id === compId);
                       const hasWageLoss = wageWarnings.some(w => w.company._id === compId);
+                      const isExpanded = expandedCompany === compId;
 
-                      return (
-                        <tr key={compId} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
-                          <td style={TD(false)}>{comp.name || "Fabrik " + (i+1)}</td>
+                      return [
+                        <tr key={compId} onClick={() => setExpandedCompany(isExpanded ? null : compId)}
+                          style={{ background: i % 2 ? C.rowAlt : "transparent", cursor: ws.length > 0 ? "pointer" : "default",
+                            outline: isExpanded ? "1px solid " + C.accent + "44" : "none" }}>
+                          <td style={TD(false)}>
+                            {ws.length > 0 && <span style={{ marginRight: 6, fontSize: 10, color: C.accent }}>{isExpanded ? "\u25BC" : "\u25B6"}</span>}
+                            {comp.name || "Fabrik " + (i+1)}
+                          </td>
                           <td style={TD(false)}>{comp.itemCode}</td>
                           <td style={TD(true)}>Lv {comp.activeUpgradeLevels?.automatedEngine || 1}</td>
                           <td style={TD(false)}>Lv {comp.activeUpgradeLevels?.storage || 1}</td>
@@ -585,7 +608,11 @@ export default function CompanyDashboard({ theme }) {
                             {bonus > 0 ? "+" + fmt(bonus, 1) + "%" : "-"}
                           </td>
                           <td style={TD(false)}>{ws.length}</td>
-                          <td style={TD(false)}>{fmt(ppDay, 1)}</td>
+                          <td style={{ ...TD(false), color: C.blue }}>{fmt(enginePP, 1)}</td>
+                          <td style={{ ...TD(false), color: workerPPTotal > 0 ? C.purple : C.textMuted }}>
+                            {workerPPTotal > 0 ? fmt(workerPPTotal, 1) : "-"}
+                          </td>
+                          <td style={{ ...TD(false), fontWeight: 700 }}>{fmt(ppDay, 1)}</td>
                           <td style={{ ...TD(false), color: C.accent }}>{fmt(revenue, 2)} G</td>
                           <td style={{ ...TD(false), color: cost > 0 ? C.red : C.textMuted }}>
                             {cost > 0 ? fmt(cost, 2) + " G" : "-"}
@@ -598,8 +625,85 @@ export default function CompanyDashboard({ theme }) {
                             {hasWageLoss && <Bdg color="#ff9900">LOHNVERLUST</Bdg>}
                             {!isEnemy && !hasWageLoss && <Bdg color={C.green}>OK</Bdg>}
                           </td>
-                        </tr>
-                      );
+                        </tr>,
+                        // Expanded worker details
+                        isExpanded && ws.length > 0 && (
+                          <tr key={compId + "-workers"}>
+                            <td colSpan={14} style={{ padding: 0, background: "rgba(0,0,0,0.2)" }}>
+                              <div style={{ padding: "12px 20px 12px 36px" }}>
+                                <div style={{ fontFamily: F.h, fontSize: 13, fontWeight: 700, color: C.accent, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8 }}>
+                                  Arbeiter-Details &middot; Bonus: +{fmt(bonus, 2)}%
+                                </div>
+                                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                                  <thead><tr>
+                                    <th style={{ ...TH, fontSize: 11 }}>Name</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>Energie</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>Produktion</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>Treue</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>Lohn/PP</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>Formel</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>PP/h (max)</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>PP/Tag (max)</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>Kosten/Tag</th>
+                                  </tr></thead>
+                                  <tbody>
+                                    {ws.map((w, wi) => {
+                                      const wPPH = calcWorkerPPH(w, bonus);
+                                      const wPPDay = wPPH * 24;
+                                      const wBasePPH = calcWorkerBasePPH(w);
+                                      const wCostDay = calcWorkerCostPerH(w) * 24;
+                                      const fidelity = w.fidelity || 0;
+                                      return (
+                                        <tr key={wi} style={{ background: wi % 2 ? "rgba(255,255,255,0.02)" : "transparent" }}>
+                                          <td style={{ ...TD(false), fontSize: 13 }}>{w.username || "Arbeiter " + (wi+1)}</td>
+                                          <td style={{ ...TD(false), fontSize: 13 }}>
+                                            <span style={{ color: C.accent }}>{w.energy}</span>
+                                            <span style={{ color: C.textMuted, fontSize: 10 }}> (aktuell: {fmt(w.energyCurrent || 0, 1)})</span>
+                                          </td>
+                                          <td style={{ ...TD(false), fontSize: 13, color: C.blue }}>{w.productivity}</td>
+                                          <td style={{ ...TD(false), fontSize: 13, color: fidelity > 0 ? C.green : C.textMuted }}>
+                                            {fidelity > 0 ? "+" + fmt(fidelity, 0) + "%" : "-"}
+                                          </td>
+                                          <td style={{ ...TD(false), fontSize: 13 }}>
+                                            {fmt(w.wage || 0, 3)} G
+                                            <div style={{ fontSize: 9, color: C.textMuted }}>Basis: {fmt(wBasePPH, 2)} PP/h</div>
+                                          </td>
+                                          <td style={{ ...TD(false), fontSize: 10, color: C.textMuted, fontFamily: F.m, whiteSpace: "nowrap" }}>
+                                            {w.energy}/100*{w.productivity}*(1+{fmt(bonus,1)}%)*(1+{fmt(fidelity,0)}%)
+                                          </td>
+                                          <td style={{ ...TD(false), fontSize: 13, color: C.purple, fontWeight: 700 }}>{fmt(wPPH, 2)}</td>
+                                          <td style={{ ...TD(false), fontSize: 13, color: C.purple }}>{fmt(wPPDay, 1)}</td>
+                                          <td style={{ ...TD(false), fontSize: 13, color: wCostDay > 0 ? C.red : C.textMuted }}>
+                                            {wCostDay > 0 ? fmt(wCostDay, 2) + " G" : "-"}
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
+                                    <tr style={{ borderTop: "1px solid rgba(255,255,255,0.1)" }}>
+                                      <td colSpan={6} style={{ ...TD(false), fontSize: 12, fontWeight: 700, color: C.textDim, textAlign: "right" }}>Summe Arbeiter:</td>
+                                      <td style={{ ...TD(false), fontSize: 13, color: C.purple, fontWeight: 700 }}>{fmt(ws.reduce((s, w) => s + calcWorkerPPH(w, bonus), 0), 2)}</td>
+                                      <td style={{ ...TD(false), fontSize: 13, color: C.purple, fontWeight: 700 }}>{fmt(workerPPTotal, 1)}</td>
+                                      <td style={{ ...TD(false), fontSize: 13, color: C.red, fontWeight: 700 }}>{fmt(cost, 2)} G</td>
+                                    </tr>
+                                    <tr>
+                                      <td colSpan={6} style={{ ...TD(false), fontSize: 12, fontWeight: 700, color: C.textDim, textAlign: "right" }}>+ Motor (Lv {comp.activeUpgradeLevels?.automatedEngine || 1}):</td>
+                                      <td style={{ ...TD(false), fontSize: 13, color: C.blue, fontWeight: 700 }}>{fmt(enginePP / 24, 2)}</td>
+                                      <td style={{ ...TD(false), fontSize: 13, color: C.blue, fontWeight: 700 }}>{fmt(enginePP, 1)}</td>
+                                      <td style={{ ...TD(false), fontSize: 13, color: C.textMuted }}>-</td>
+                                    </tr>
+                                    <tr style={{ borderTop: "1px solid " + C.accent + "44" }}>
+                                      <td colSpan={6} style={{ ...TD(false), fontSize: 13, fontWeight: 700, color: C.accent, textAlign: "right" }}>GESAMT:</td>
+                                      <td style={{ ...TD(false), fontSize: 14, color: C.accent, fontWeight: 700 }}>{fmt(ppDay / 24, 2)}</td>
+                                      <td style={{ ...TD(false), fontSize: 14, color: C.accent, fontWeight: 700 }}>{fmt(ppDay, 1)}</td>
+                                      <td style={{ ...TD(false), fontSize: 13, color: C.red, fontWeight: 700 }}>{fmt(cost, 2)} G</td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              </div>
+                            </td>
+                          </tr>
+                        ),
+                      ];
                     })}
                   </tbody>
                 </table>
