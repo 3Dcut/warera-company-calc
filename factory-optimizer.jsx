@@ -504,7 +504,7 @@ export default function App({ theme, setTheme, optData }) {
               </div>
             ))}
             <Tip text="Neue Fabrik (L1) zur Planung hinzufügen">
-              <button aria-label="Neue Fabrik hinzufügen" onClick={() => { const nf = [...facs, { level: 1 }]; setFacs(nf); compute(nf); }} style={{ ...glass(0.05), borderRadius: 12, border: "2px dashed rgba(255,255,255,0.2)", color: C.textMuted, cursor: "pointer", fontSize: 24, padding: "12px", width: "100%", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s" }} onMouseOver={e => { e.currentTarget.style.background = "rgba(255,255,255,0.1)"; e.currentTarget.style.borderColor = C.accent; e.currentTarget.style.color = C.accent; }} onMouseOut={e => { e.currentTarget.style.background = glass(0.05).background; e.currentTarget.style.borderColor = "rgba(255,255,255,0.2)"; e.currentTarget.style.color = C.textMuted; }}>
+              <button aria-label="Neue Fabrik hinzufügen" onClick={() => { const nf = [...facs, { level: 1, item: optData?.bestProduct?.itemCode || "Neu", goldPerLevelPerDay: optData?.bestProduct ? (24 * optData.bestProduct.maxGoldPerPP) : 2.5, workerGoldPerDay: 0 }]; setFacs(nf); compute(nf); }} style={{ ...glass(0.05), borderRadius: 12, border: "2px dashed rgba(255,255,255,0.2)", color: C.textMuted, cursor: "pointer", fontSize: 24, padding: "12px", width: "100%", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s" }} onMouseOver={e => { e.currentTarget.style.background = "rgba(255,255,255,0.1)"; e.currentTarget.style.borderColor = C.accent; e.currentTarget.style.color = C.accent; }} onMouseOut={e => { e.currentTarget.style.background = glass(0.05).background; e.currentTarget.style.borderColor = "rgba(255,255,255,0.2)"; e.currentTarget.style.color = C.textMuted; }}>
                 +
               </button>
             </Tip>
@@ -522,7 +522,7 @@ export default function App({ theme, setTheme, optData }) {
                       <th style={TH}><Tip text="Schrittnummer im Bauplan">Schritt</Tip></th>
                       <th style={TH}><Tip text="Die auszuführende Aktion">Aktion</Tip></th>
                       <th style={TH}><Tip text="Zeitpunkt (kumuliert) ab jetzt">Zeit</Tip></th>
-                      <th style={TH}><Tip text="Gewinn an Produktionsrate durch diesen Schritt">PP/d Gewinn</Tip></th>
+                      <th style={TH}><Tip text="Gewinn an täglicher Goldproduktion durch diesen Schritt">G/d Gewinn</Tip></th>
                     </tr></thead>
                     <tbody>
                       {res.paths.dijkstra.map((s, i) => (
@@ -530,10 +530,10 @@ export default function App({ theme, setTheme, optData }) {
                           <td style={TD(false)}>{i+1}</td>
                           <td style={TD(false)}>
                             <div style={{ fontSize: 11, fontWeight: 700, color: s.type === "buy" ? C.blue : C.green }}>{s.action}</div>
-                            <div style={{ fontSize: 9, color: C.textMuted }}>{fmtN(s.ppCost)} PP ({fmt(s.resCost, 0)} Einh.)</div>
+                            <div style={{ fontSize: 9, color: C.textMuted }}>{fmt(s.goldCost, 0)} G ({fmt(s.resCost, 0)} Einh.)</div>
                           </td>
                           <td style={TD(true)}>{fmtT(s.time)}</td>
-                          <td style={{ ...TD(false), color: C.green }}>+{fmt(s.ppGain * 24, 1)}</td>
+                          <td style={{ ...TD(false), color: C.green }}>+{fmt(s.goldGainDay, 1)} G</td>
                         </tr>
                       ))}
                     </tbody>
