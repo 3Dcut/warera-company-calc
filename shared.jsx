@@ -157,6 +157,7 @@ export async function apiCall(endpoint, body, maxRetries = 3) {
       if (r.status === 429 && attempt < maxRetries) {
         attempt++;
         const delay = Math.pow(2, attempt) * 1000 + Math.random() * 500;
+        window.dispatchEvent(new CustomEvent('warera-rate-limit', { detail: { delay, attempt, endpoint } }));
         await new Promise(res => setTimeout(res, delay));
         continue;
       }

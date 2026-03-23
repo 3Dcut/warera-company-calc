@@ -90,6 +90,8 @@ function calcTotalBonus(region, itemCode, country, gameConfig, countryEthics) {
   return bonus;
 }
 
+let currentBgFetch = 0;
+
 export default function CompanyDashboard({ theme, setTheme }) {
   setThemeVars(theme);
   const T = THEMES[theme];
@@ -128,16 +130,38 @@ export default function CompanyDashboard({ theme, setTheme }) {
   const [expandedCompany, setExpandedCompany] = useState(null);
 
   useEffect(() => {
-    if (userInput.trim()) {
-      loadData();
-    }
-  }, []); // Run once on mount
+    try {
+      localStorage.setItem("warera_user_input", userInput.trim());
+    } catch {}
+  }, [userInput]);
 
   useEffect(() => {
     try {
       localStorage.setItem("warera_api_key", apiKey.trim());
     } catch {}
   }, [apiKey]);
+
+  useEffect(() => {
+    let interval;
+    const handleRL = (e) => {
+      let remaining = Math.ceil(e.detail.delay / 1000);
+      setLoadingMsg(`Rate Limit aktiv, warte ${remaining}s...`);
+      clearInterval(interval);
+      interval = setInterval(() => {
+        remaining -= 1;
+        if (remaining > 0) {
+          setLoadingMsg(`Rate Limit aktiv, warte ${remaining}s...`);
+        } else {
+          clearInterval(interval);
+        }
+      }, 1000);
+    };
+    window.addEventListener('warera-rate-limit', handleRL);
+    return () => {
+      window.removeEventListener('warera-rate-limit', handleRL);
+      clearInterval(interval);
+    };
+  }, []);
 
   async function loadData() {
     if (!userInput.trim()) return;
@@ -179,22 +203,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
       }
       setCountries(cntMap);
 
-      // Phase 1b: Load ruling party ethics for all countries with a rulingParty
-      setLoadingMsg("Partei-Ethiken laden...");
-      const ethicsMap = {};
-      const countriesToFetch = Object.values(cntMap).filter(c => c.rulingParty);
-      if (countriesToFetch.length > 0) {
-        const partyResults = await batchParallel(countriesToFetch, async (c) => {
-          try {
-            const p = await apiCall("party.getById", { partyId: c.rulingParty });
-            return { countryId: c._id, ethics: p?.ethics || null };
-          } catch { return { countryId: c._id, ethics: null }; }
-        });
-        for (const { countryId, ethics } of partyResults) {
-          if (ethics) ethicsMap[countryId] = ethics;
-        }
-      }
-      setPartyEthics(ethicsMap);
+
 
       // Phase 2: Load companies
       setLoadingMsg("Fabriken laden...");
@@ -253,7 +262,47 @@ export default function CompanyDashboard({ theme, setTheme }) {
       setCompanies(comps);
       setWorkers(workersMap);
 
-      // Phase 4: Load owner's country for enemy check
+      // Phase 4: Load Party Ethics for factories' countries
+      setLoadingMsg("Relevante Partei-Ethiken laden...");
+      const relevantCountryIds = new Set();
+      for (const comp of comps) {
+        const reg = regMap[comp.region];
+        if (reg?.country) relevantCountryIds.add(reg.country);
+      }
+      const ethicsMap = {};
+      const relevantCountriesToFetch = Object.values(cntMap).filter(c => c.rulingParty && relevantCountryIds.has(c._id));
+      if (relevantCountriesToFetch.length > 0) {
+        const partyResults = await batchParallel(relevantCountriesToFetch, async (c) => {
+          try {
+            const p = await apiCall("party.getById", { partyId: c.rulingParty });
+            return { countryId: c._id, ethics: p?.ethics || null };
+          } catch { return { countryId: c._id, ethics: null }; }
+        });
+        for (const { countryId, ethics } of partyResults) {
+          if (ethics) ethicsMap[countryId] = ethics;
+        }
+      }
+      setPartyEthics(ethicsMap);
+
+      // Background Phase: Load remaining party ethics
+      const thisBgFetch = ++currentBgFetch;
+      const remainingCountriesToFetch = Object.values(cntMap).filter(c => c.rulingParty && !relevantCountryIds.has(c._id));
+      if (remainingCountriesToFetch.length > 0) {
+        (async () => {
+          for (const c of remainingCountriesToFetch) {
+            if (thisBgFetch !== currentBgFetch) break; // aborted
+            try {
+              const p = await apiCall("party.getById", { partyId: c.rulingParty });
+              if (p?.ethics && thisBgFetch === currentBgFetch) {
+                setPartyEthics(prev => ({ ...prev, [c._id]: p.ethics }));
+              }
+            } catch (e) {}
+            await new Promise(res => setTimeout(res, 500));
+          }
+        })();
+      }
+
+      // Phase 5: Load owner's country for enemy check
       setLoadingMsg("Diplomatie prüfen...");
       const ownerCountryId = user.country; // field is "country" on user object
       if (ownerCountryId && cntMap[ownerCountryId]) {
@@ -267,9 +316,6 @@ export default function CompanyDashboard({ theme, setTheme }) {
       }
 
       setLoadingMsg("");
-      try {
-        localStorage.setItem("warera_user_input", userInput.trim());
-      } catch {}
     } catch (e) {
       setError(e.message);
     }
