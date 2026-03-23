@@ -14,7 +14,8 @@ function getStrats() {
 // ── Encode / Decode ──
 function encodeState(params, facs, theme) {
   const p = [params.maxFactories, params.maxLevel, params.upgradeBase, params.factoryBase,
-    params.includeWorkers?1:0, params.includeMissions?1:0, params.includeCases?1:0, params.includeDonations?1:0, params.startBalance].join(",");
+    params.includeWorkers?1:0, params.includeMissions?1:0, params.includeCases?1:0, params.includeDonations?1:0, 
+    params.startBalance, params.startStahl, params.startBeton].join(",");
   const f = facs.map(x => x.level + ":" + (x.item||"")).join(",");
   try { return btoa(p + "|" + f + "|" + theme); } catch { return ""; }
 }
@@ -31,7 +32,8 @@ function decodeState(str) {
     });
     return {
       params: { maxFactories: p[0], maxLevel: p[1], upgradeBase: p[2], factoryBase: p[3],
-        includeWorkers: !!p[4], includeMissions: !!p[5], includeCases: !!p[6], includeDonations: !!p[7], startBalance: p[8] },
+        includeWorkers: !!p[4], includeMissions: !!p[5], includeCases: !!p[6], includeDonations: !!p[7], 
+        startBalance: p[8] || 0, startStahl: p[9] || 0, startBeton: p[10] || 0 },
       facs, theme: thm === "pink" ? "pink" : "grau"
     };
   } catch { return null; }
@@ -77,12 +79,12 @@ function runDijkstra(startFacs, params) {
   if (facKey(startFacs) === gk) return { path: [], complete: true, iter: 0 };
 
   const sk = (fs) => facKey(fs);
-  heap.push(0, { facs: startFacs.map(f => ({ ...f })), path: [], savings: params.startBalance || 0 });
+  heap.push(0, { facs: startFacs.map(f => ({ ...f })), path: [], savings: params.startBalance || 0, invStahl: params.startStahl || 0, invBeton: params.startBeton || 0 });
   let iter = 0;
 
   while (heap.size > 0 && iter < 500000) {
     iter++;
-    const { p: time, v: { facs, path, savings } } = heap.pop();
+    const { p: time, v: { facs, path, savings, invStahl, invBeton } } = heap.pop();
     const key = sk(facs);
     if (visited.has(key)) continue; visited.add(key);
     if (facKey(facs) === gk) return { path, complete: true, iter };
@@ -90,13 +92,16 @@ function runDijkstra(startFacs, params) {
     const rateDay = totalGoldPerDay(facs, params);
     const rateHour = rateDay / 24;
     // If we are losing money and have no savings, we are stuck
-    if (rateHour <= 0 && savings <= 0) continue; 
+    if (rateHour <= 0 && savings <= 0 && invStahl <= 0 && invBeton <= 0) continue; 
 
     for (let i = 0; i < facs.length; i++) {
       if (facs[i].level >= maxLevel) continue;
       const lvl = facs[i].level;
       const stahl = upgStahl(lvl, upgradeBase);
-      const goldCost = stahl * priceStahl;
+      
+      const usedStahl = Math.min(invStahl, stahl);
+      const remainingStahl = stahl - usedStahl;
+      const goldCost = remainingStahl * priceStahl;
       
       let dt = 0;
       if (savings < goldCost) {
@@ -111,17 +116,20 @@ function runDijkstra(startFacs, params) {
       if (!visited.has(nk)) {
         heap.push(time + dt, { facs: nf, path: [...path, {
           action: "Upgrade F" + (i+1) + " (" + (facs[i].name || facs[i].item || "Neu") + ") L" + lvl + " -> L" + (lvl+1),
-          type: "upgrade", resType: "stahl", resCost: stahl,
+          type: "upgrade", resType: "stahl", resCost: stahl, usedInv: usedStahl,
           goldCost, goldGainDay: facs[i].goldPerLevelPerDay, dt, time: time + dt, 
           rateDay: totalGoldPerDay(nf, params), savings: newSavings,
-        }], savings: newSavings });
+        }], savings: newSavings, invStahl: invStahl - usedStahl, invBeton });
       }
     }
     
     if (facs.length < maxFactories) {
       const n = facs.length + 1;
       const beton = facBeton(n, factoryBase);
-      const goldCost = beton * priceBeton;
+      
+      const usedBeton = Math.min(invBeton, beton);
+      const remainingBeton = beton - usedBeton;
+      const goldCost = remainingBeton * priceBeton;
       
       let dt = 0;
       if (savings < goldCost) {
@@ -140,10 +148,10 @@ function runDijkstra(startFacs, params) {
       
       if (!visited.has(nk)) {
         heap.push(time + dt, { facs: nf, path: [...path, {
-          action: "Neue Fabrik #" + n + " (" + (optData?.bestProduct?.itemCode || "Neu") + ")", type: "buy", resType: "beton", resCost: beton,
+          action: "Neue Fabrik #" + n + " (" + (optData?.bestProduct?.itemCode || "Neu") + ")", type: "buy", resType: "beton", resCost: beton, usedInv: usedBeton,
           goldCost, goldGainDay: newFacGoldPerLevelDay, dt, time: time + dt, 
           rateDay: totalGoldPerDay(nf, params), savings: newSavings,
-        }], savings: newSavings });
+        }], savings: newSavings, invStahl, invBeton: invBeton - usedBeton });
       }
     }
   }
@@ -159,6 +167,8 @@ function simulate(startFacs, params, strategy) {
   let st = startFacs.map(f => ({ ...f }));
   let t = 0;
   let savings = params.startBalance || 0;
+  let invStahl = params.startStahl || 0;
+  let invBeton = params.startBeton || 0;
   
   const path = []; let safe = 0;
   while (safe < 300) {
@@ -167,24 +177,26 @@ function simulate(startFacs, params, strategy) {
     
     const rateDay = totalGoldPerDay(st, params);
     const rateHour = rateDay / 24;
-    if (rateHour <= 0 && savings <= 0) break;
+    if (rateHour <= 0 && savings <= 0 && invStahl <= 0 && invBeton <= 0) break;
 
     const acts = [];
     st.forEach((f, i) => {
       if (f.level >= maxLevel) return;
       const stahl = upgStahl(f.level, upgradeBase);
-      const goldCost = stahl * priceStahl;
+      const usedStahl = Math.min(invStahl, stahl);
+      const goldCost = (stahl - usedStahl) * priceStahl;
       let dt = savings < goldCost ? (rateHour > 0 ? ((goldCost - savings) / rateHour) : Infinity) : 0;
-      acts.push({ type: "upgrade", idx: i, resCost: stahl, resType: "stahl",
+      acts.push({ type: "upgrade", idx: i, resCost: stahl, resType: "stahl", usedInv: usedStahl,
         goldCost, goldGainDay: f.goldPerLevelPerDay, dt, label: "Upgrade F" + (i+1) + " (" + (f.name || f.item || "Neu") + ") L" + f.level + " -> L" + (f.level+1) });
     });
     
     if (st.length < maxFactories) {
       const n = st.length + 1;
       const beton = facBeton(n, factoryBase);
-      const goldCost = beton * priceBeton;
+      const usedBeton = Math.min(invBeton, beton);
+      const goldCost = (beton - usedBeton) * priceBeton;
       let dt = savings < goldCost ? (rateHour > 0 ? ((goldCost - savings) / rateHour) : Infinity) : 0;
-      acts.push({ type: "buy", resCost: beton, resType: "beton",
+      acts.push({ type: "buy", resCost: beton, resType: "beton", usedInv: usedBeton,
         goldCost, goldGainDay: newFacGoldPerLevelDay, dt, label: "Neue Fabrik #" + n + " (" + (optData?.bestProduct?.itemCode || "Neu") + ")" });
     }
     
@@ -193,7 +205,7 @@ function simulate(startFacs, params, strategy) {
     let pick;
     if (strategy === "cheapest") pick = acts.sort((a, b) => a.goldCost - b.goldCost)[0];
     else if (strategy === "upgrade_first") { 
-      const u = acts.filter(a => a.type === "upgrade").sort((a,b) => (b.goldGainDay/b.goldCost) - (a.goldGainDay/a.goldCost)); 
+      const u = acts.filter(a => a.type === "upgrade").sort((a,b) => (b.goldGainDay/(b.goldCost||1)) - (a.goldGainDay/(a.goldCost||1))); 
       pick = u.length ? u[0] : acts.find(a => a.type === "buy"); 
     }
     else { 
@@ -206,6 +218,8 @@ function simulate(startFacs, params, strategy) {
     
     t += pick.dt;
     savings = savings + (pick.dt * rateHour) - pick.goldCost;
+    if (pick.type === "upgrade") invStahl -= pick.usedInv;
+    if (pick.type === "buy") invBeton -= pick.usedInv;
     
     if (pick.type === "upgrade") { 
       st = st.map((f, j) => j === pick.idx ? { ...f, level: f.level + 1 } : f); 
@@ -218,7 +232,7 @@ function simulate(startFacs, params, strategy) {
       }]; 
     }
     
-    path.push({ action: pick.label, type: pick.type, resType: pick.resType, resCost: pick.resCost,
+    path.push({ action: pick.label, type: pick.type, resType: pick.resType, resCost: pick.resCost, usedInv: pick.usedInv,
       goldCost: pick.goldCost, goldGainDay: pick.goldGainDay, dt: pick.dt, time: t, 
       rateDay: totalGoldPerDay(st, params), savings });
   }
@@ -260,6 +274,8 @@ export default function App({ theme, setTheme, optData }) {
   const [inclC, setInclC] = useState(true);
   const [inclD, setInclD] = useState(true);
   const [stB, setStB] = useState(0);
+  const [stStahl, setStStahl] = useState(0);
+  const [stBeton, setStBeton] = useState(0);
 
   const [actv, setActv] = useState(["dijkstra", "cheapest"]);
   const [tab, setTab] = useState("chart");
@@ -275,7 +291,19 @@ export default function App({ theme, setTheme, optData }) {
   useEffect(() => {
     if (optData?.facs && optData.facs.length > 0) {
       setFacs(optData.facs);
-      compute(optData.facs, null);
+      
+      let nextStB = stB;
+      if (optData.liquidAssets !== undefined) {
+         nextStB = optData.liquidAssets;
+         setStB(nextStB);
+      }
+
+      compute(optData.facs, {
+        maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB,
+        includeWorkers: inclW, includeMissions: inclM, includeCases: inclC, includeDonations: inclD, 
+        startBalance: nextStB, startStahl: stStahl, startBeton: stBeton,
+        optData
+      });
     }
   }, [optData]);
 
@@ -284,7 +312,8 @@ export default function App({ theme, setTheme, optData }) {
     const fData = customFacs || facs;
     const pData = customParams || { 
       maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB,
-      includeWorkers: inclW, includeMissions: inclM, includeCases: inclC, includeDonations: inclD, startBalance: stB,
+      includeWorkers: inclW, includeMissions: inclM, includeCases: inclC, includeDonations: inclD, 
+      startBalance: stB, startStahl: stStahl, startBeton: stBeton,
       optData
     };
 
@@ -305,7 +334,8 @@ export default function App({ theme, setTheme, optData }) {
 
   const params = { 
     maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB,
-    includeWorkers: inclW, includeMissions: inclM, includeCases: inclC, includeDonations: inclD, startBalance: stB,
+    includeWorkers: inclW, includeMissions: inclM, includeCases: inclC, includeDonations: inclD, 
+    startBalance: stB, startStahl: stStahl, startBeton: stBeton,
     optData
   };
   const pph = totalGoldPerDay(facs, params);
@@ -317,7 +347,8 @@ export default function App({ theme, setTheme, optData }) {
     if (!d) return;
     const p = d.params;
     setMxF(p.maxFactories); setMxL(p.maxLevel); setUB(p.upgradeBase); setFB(p.factoryBase);
-    setInclW(p.includeWorkers); setInclM(p.includeMissions); setInclC(p.includeCases); setInclD(p.includeDonations); setStB(p.startBalance || 0);
+    setInclW(p.includeWorkers); setInclM(p.includeMissions); setInclC(p.includeCases); setInclD(p.includeDonations); 
+    setStB(p.startBalance || 0); setStStahl(p.startStahl || 0); setStBeton(p.startBeton || 0);
     setFacs(d.facs);
     if (d.theme) setTheme(d.theme);
     setShowImp(false); setImpStr(""); setRes(null);
@@ -378,7 +409,17 @@ export default function App({ theme, setTheme, optData }) {
                   </label>
                 </div>
               </div>
-              <Inp label="Startkapital" value={stB} onChange={v => { setStB(v); compute(); }} suffix="G" tip="Dein berechnetes Startkapital (Gold)." />
+              <div style={{...glass(0.05, 8), padding: 8, marginTop: 4, marginBottom: 4, display: "flex", flexDirection: "column", gap: 4, gridColumn: "1 / -1"}}>
+                <div style={{fontSize: 12, fontWeight: "bold", color: C.textDim, textTransform: "uppercase", letterSpacing: "0.05em"}}>Reichtum Profil (API)</div>
+                <div style={{fontSize: 14, color: C.text, display: "flex", flexWrap: "wrap", gap: 15, fontFamily: F.m}}>
+                  <span>Gesamt: <b style={{color: C.green}}>{fmtN(optData?.totalWealth || 0)}</b></span>
+                  <span>Firmenwert: <b style={{color: C.accent}}>{fmtN(optData?.totalCompaniesValue || 0)}</b></span>
+                  <span>Liquide (Geld+Items): <b style={{color: C.gold || "#eab308"}}>{fmtN(optData?.liquidAssets || 0)}</b></span>
+                </div>
+              </div>
+              <Inp label="Startkapital" value={stB} onChange={v => { setStB(v); compute(); }} suffix="G" tip="Dein derzeitiger Kontostand (Gold)." />
+              <Inp label="Stahl im Lager" value={stStahl} onChange={v => { setStStahl(v); compute(); }} suffix="Stk" tip="Vorrätiger Stahl im Inventar (Reduziert Goldkosten beim Upgrade)." />
+              <Inp label="Beton im Lager" value={stBeton} onChange={v => { setStBeton(v); compute(); }} suffix="Stk" tip="Vorrätiger Beton im Inventar (Reduziert Goldkosten beim Fabrikkauf)." />
               <Inp label="Max. Fabriken" value={mxF} onChange={v => { setMxF(v); compute(); }} suffix="Stk" tip="Die maximale Anzahl an Fabriken, die du bauen möchtest." />
               <Inp label="Max. Level" value={mxL} onChange={v => { setMxL(v); compute(); }} suffix="Lvl" tip="Das maximale Level, das jede Fabrik erreichen soll." />
               <Inp label="Basis Upg-Kosten" value={uB} onChange={v => { setUB(v); compute(); }} suffix="Stk" tip="Basiskosten an Stahl für ein Upgrade von Level 1 auf 2." />
@@ -532,7 +573,10 @@ export default function App({ theme, setTheme, optData }) {
                           <td style={TD(false)}>{i+1}</td>
                           <td style={TD(false)}>
                             <div style={{ fontSize: 11, fontWeight: 700, color: s.type === "buy" ? C.blue : C.green }}>{s.action}</div>
-                            <div style={{ fontSize: 9, color: C.textMuted }}>{fmt(s.goldCost, 0)} G ({fmt(s.resCost, 0)} Einh.)</div>
+                            <div style={{ fontSize: 9, color: C.textMuted }}>
+                              {fmt(s.goldCost, 0)} G 
+                              {s.usedInv > 0 ? ` (+ ${fmt(s.usedInv, 0)} aus Lager)` : ` (${fmt(s.resCost, 0)} Einh.)`}
+                            </div>
                           </td>
                           <td style={TD(true)}>{fmtT(s.time)}</td>
                           <td style={{ ...TD(false), color: C.green }}>+{fmt(s.goldGainDay, 1)} G</td>

@@ -226,9 +226,11 @@ export default function CompanyDashboard({ theme, setTheme }) {
       const comps = [];
       const workersMap = {};
       const allWorkerUserIds = new Set();
+      let totalCompaniesValue = 0;
       for (const { comp, workers: w } of companyDetails) {
         const id = comp._id;
         comps.push(comp);
+        totalCompaniesValue += (comp.estimatedValue || 0);
         const wArr = Array.isArray(w) ? w : [];
         workersMap[id] = wArr;
         for (const wr of wArr) if (wr.user) allWorkerUserIds.add(wr.user);
@@ -262,6 +264,17 @@ export default function CompanyDashboard({ theme, setTheme }) {
 
       setCompanies(comps);
       setWorkers(workersMap);
+
+      // Phase 3c: Calculate Liquid Assets (Geld + Items + Waffen) based on liquid_assets.py
+      setLoadingMsg("Liquide Mittel ermitteln...");
+      const wealthRanking = await apiCall("ranking.getRanking", { rankingType: "userWealth", limit: 100, skip: 0 }).catch(() => null);
+      let totalWealth = 0;
+      if (wealthRanking?.items) {
+        const me = wealthRanking.items.find(i => (i.user?._id || i.user) === userId);
+        if (me) totalWealth = me.value || 0;
+      }
+      const liquidAssets = totalWealth > 0 ? Math.max(0, totalWealth - totalCompaniesValue) : 0;
+      setUserData(prev => ({ ...prev, liquidAssets, totalWealth, totalCompaniesValue }));
 
       // Phase 4: Load Party Ethics for factories' countries
       setLoadingMsg("Relevante Partei-Ethiken laden...");
@@ -744,6 +757,9 @@ export default function CompanyDashboard({ theme, setTheme }) {
   const totalWarnings = enemyWarnings.length + wageWarnings.length;
 
   const optimizerProps = hasData ? {
+    liquidAssets: userData?.liquidAssets || 0,
+    totalWealth: userData?.totalWealth || 0,
+    totalCompaniesValue: userData?.totalCompaniesValue || 0,
     prices: prices,
     bestProduct: allProducts[0],
     facs: companies.map(c => {
