@@ -296,18 +296,21 @@ export default function CompanyDashboard({ theme, setTheme }) {
           const worker = async () => {
             while (queue.length > 0) {
               if (thisBgFetch !== currentBgFetch) break; // aborted
-              const c = queue.shift();
+              const c = queue[0];
+              let retryDelay = 0;
               try {
                 const p = await apiCall("party.getById", { partyId: c.rulingParty });
                 if (p?.ethics && thisBgFetch === currentBgFetch) {
                   setPartyEthics(prev => ({ ...prev, [c._id]: p.ethics }));
                 }
-              } catch (e) {}
-              if (thisBgFetch === currentBgFetch) {
+                queue.shift();
                 loaded++;
-                setBgProgress({ loaded, total: remainingCountriesToFetch.length });
+                if (thisBgFetch === currentBgFetch) setBgProgress({ loaded, total: remainingCountriesToFetch.length, status: "loading" });
+              } catch (e) {
+                retryDelay = 5000;
+                if (thisBgFetch === currentBgFetch) setBgProgress(prev => prev ? { ...prev, status: "waiting" } : prev);
               }
-              await new Promise(res => setTimeout(res, 250));
+              await new Promise(res => setTimeout(res, retryDelay || 0));
             }
           };
           await Promise.all([worker(), worker()]);
@@ -868,19 +871,20 @@ export default function CompanyDashboard({ theme, setTheme }) {
             ))}
             {bgProgress && (
               <div style={{ flex: 1, minWidth: 280, display: "flex", flexDirection: "column", gap: 4, justifyContent: "center", ...glass(0.05, 8), padding: "8px 14px", borderRadius: 12 }}>
+                <style>{`@keyframes slowOrangeBlink { 0% { opacity: 1; background: #f97316; } 50% { opacity: 0.4; background: #f97316; } 100% { opacity: 1; background: #f97316; } }`}</style>
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                   <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700, whiteSpace: "nowrap" }}>
                     Hintergrund-Daten
                   </div>
                   <div style={{ flex: 1, height: 6, background: "rgba(255,255,255,0.1)", borderRadius: 3, overflow: "hidden" }}>
-                    <div style={{ width: `${(bgProgress.loaded / Math.max(1, bgProgress.total)) * 100}%`, height: "100%", background: C.green, transition: "width 0.3s" }} />
+                    <div style={{ width: `${(bgProgress.loaded / Math.max(1, bgProgress.total)) * 100}%`, height: "100%", background: bgProgress.status === "waiting" ? "#f97316" : C.green, transition: "width 0.3s", animation: bgProgress.status === "waiting" ? "slowOrangeBlink 2s infinite" : "none" }} />
                   </div>
-                  <div style={{ fontSize: 11, color: C.green, fontWeight: 700, minWidth: 25, textAlign: "right" }}>
+                  <div style={{ fontSize: 11, color: bgProgress.status === "waiting" ? "#f97316" : C.green, fontWeight: 700, minWidth: 25, textAlign: "right" }}>
                     {Math.round((bgProgress.loaded / Math.max(1, bgProgress.total)) * 100)}%
                   </div>
                 </div>
-                <div style={{ fontSize: 10, color: C.textMuted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  Dauer: 1-2 Min. mit API-Key (sonst länger). Währenddessen ändern sich die profitabelsten Produkte noch!
+                <div style={{ fontSize: 10, color: bgProgress.status === "waiting" ? "#f97316" : C.textMuted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {bgProgress.status === "waiting" ? "Warte auf API (Rate Limit erreicht)..." : "Dauer: < 1 Min. mit API-Key (sonst länger). Währenddessen ändern sich die profitabelsten Produkte noch!"}
                 </div>
               </div>
             )}
