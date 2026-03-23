@@ -281,13 +281,36 @@ export default function CompanyDashboard({ theme }) {
     return p.price || p.buyPrice || p.sellPrice || 0;
   }
 
+  // Material cost per unit produced (from productionNeeds)
+  function calcMaterialCostPerUnit(itemCode) {
+    const itemConfig = gameConfig?.items?.[itemCode];
+    if (!itemConfig?.productionNeeds) return 0;
+    let cost = 0;
+    for (const [matCode, matQty] of Object.entries(itemConfig.productionNeeds)) {
+      cost += getItemPrice(matCode) * matQty;
+    }
+    return cost;
+  }
+
+  // Net margin per unit = sell price - material cost
+  function calcNetMarginPerUnit(itemCode) {
+    return getItemPrice(itemCode) - calcMaterialCostPerUnit(itemCode);
+  }
+
+  // Gold per PP after material costs
+  function calcGoldPerPP(itemCode) {
+    const itemConfig = gameConfig?.items?.[itemCode];
+    const ppPerUnit = itemConfig?.productionPoints || 1;
+    return calcNetMarginPerUnit(itemCode) / ppPerUnit;
+  }
+
   function calcDailyRevenue(comp) {
     const ppDay = calcCompanyPPDay(comp);
     const itemConfig = gameConfig?.items?.[comp.itemCode];
     const ppPerUnit = itemConfig?.productionPoints || 1;
     const unitsPerDay = ppDay / ppPerUnit;
-    const price = getItemPrice(comp.itemCode);
-    return unitsPerDay * price;
+    const margin = calcNetMarginPerUnit(comp.itemCode);
+    return unitsPerDay * margin;
   }
 
   function calcDailyProfit(comp) {
@@ -303,11 +326,11 @@ export default function CompanyDashboard({ theme }) {
       const bonus = getRegionBonus(comp);
       const itemConfig = gameConfig?.items?.[comp.itemCode];
       const ppPerUnit = itemConfig?.productionPoints || 1;
-      const price = getItemPrice(comp.itemCode);
+      const margin = calcNetMarginPerUnit(comp.itemCode);
       for (const w of ws) {
         const workerPPDay = calcWorkerPPH(w, bonus) * 24;
         const unitsPerDay = workerPPDay / ppPerUnit;
-        const dailyContribution = unitsPerDay * price;
+        const dailyContribution = unitsPerDay * margin;
         const dailyWage = calcWorkerCostPerH(w) * 24;
         if (dailyWage > dailyContribution && dailyWage > 0) {
           warnings.push({
@@ -410,11 +433,14 @@ export default function CompanyDashboard({ theme }) {
       if (item.type !== "raw" && item.type !== "product") continue;
       const price = getItemPrice(code);
       const pp = item.productionPoints;
-      const goldPerPP = price / pp;
+      const materialCost = calcMaterialCostPerUnit(code);
+      const netMargin = price - materialCost;
+      const goldPerPP = netMargin / pp;
+      const needs = item.productionNeeds || null;
       // Check if user produces this
       const userComps = companies.filter(c => c.itemCode === code);
       products.push({
-        itemCode: code, type: item.type, price, pp, goldPerPP,
+        itemCode: code, type: item.type, price, pp, materialCost, netMargin, goldPerPP, needs,
         userCompanyCount: userComps.length,
         userTotalProfit: userComps.reduce((s, c) => s + calcDailyProfit(c), 0),
         userTotalRevenue: userComps.reduce((s, c) => s + calcDailyRevenue(c), 0),
@@ -453,7 +479,7 @@ export default function CompanyDashboard({ theme }) {
           return sum + basePPH * (1 + newBonus / 100) * (1 + (w.fidelity || 0) / 100) * 24;
         }, 0);
         const newTotalPP = newEnginePP + newWorkerPP;
-        const newRevenue = (newTotalPP / prod.pp) * prod.price;
+        const newRevenue = (newTotalPP / prod.pp) * prod.netMargin;
         const newCost = ws.reduce((sum, w) => sum + calcWorkerCostPerH(w) * 24, 0); // wage unchanged
         const newProfit = newRevenue - newCost;
         const dailyGain = newProfit - currentProfit;
@@ -509,7 +535,8 @@ export default function CompanyDashboard({ theme }) {
       const fidelity = worker.fidelity || 0;
 
       const currentPPH = basePPH * (1 + currentBonus / 100) * (1 + fidelity / 100);
-      const currentRevPerH = (currentPPH / currentPPPerUnit) * currentPrice;
+      const currentMargin = calcNetMarginPerUnit(currentCompany.itemCode);
+      const currentRevPerH = (currentPPH / currentPPPerUnit) * currentMargin;
       const costPerH = basePPH * (worker.wage || 0); // same everywhere
       const currentNetPerH = currentRevPerH - costPerH;
 
@@ -521,10 +548,10 @@ export default function CompanyDashboard({ theme }) {
         const bonus = getRegionBonus(comp);
         const itemConfig = gameConfig?.items?.[comp.itemCode];
         const ppPerUnit = itemConfig?.productionPoints || 1;
-        const price = getItemPrice(comp.itemCode);
+        const margin = calcNetMarginPerUnit(comp.itemCode);
 
         const pph = basePPH * (1 + bonus / 100) * (1 + fidelity / 100);
-        const revPerH = (pph / ppPerUnit) * price;
+        const revPerH = (pph / ppPerUnit) * margin;
         const netPerH = revPerH - costPerH;
 
         if (netPerH > bestNetPerH) {
@@ -1002,20 +1029,23 @@ export default function CompanyDashboard({ theme }) {
                 </div>
               </div>
               <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 700 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
                   <thead><tr>
                     <th style={TH}>#</th>
                     <th style={TH}>Produkt</th>
                     <th style={TH}>Typ</th>
-                    <th style={TH}>Preis/Stk</th>
+                    <th style={TH}>Verkauf/Stk</th>
+                    <th style={TH}>Material/Stk</th>
+                    <th style={TH}>Marge/Stk</th>
                     <th style={TH}>PP/Stk</th>
-                    <th style={TH}>Gold/PP</th>
+                    <th style={TH}>Marge/PP</th>
                     <th style={TH}>Deine Fabriken</th>
                     <th style={TH}>Dein Gewinn/Tag</th>
                   </tr></thead>
                   <tbody>
                     {allProducts.map((p, i) => {
                       const isProducing = p.userCompanyCount > 0;
+                      const needsStr = p.needs ? Object.entries(p.needs).map(([k, v]) => v + "× " + k).join(", ") : null;
                       return (
                         <tr key={p.itemCode} style={{
                           background: isProducing ? C.accent + "0a" : i % 2 ? C.rowAlt : "transparent",
@@ -1031,8 +1061,20 @@ export default function CompanyDashboard({ theme }) {
                             <Bdg color={p.type === "raw" ? C.blue : C.purple}>{p.type === "raw" ? "Rohstoff" : "Produkt"}</Bdg>
                           </td>
                           <td style={{ ...TD(false), color: C.accent }}>{fmt(p.price, 4)} G</td>
+                          <td style={TD(false)}>
+                            {p.materialCost > 0
+                              ? <div>
+                                  <span style={{ color: C.red }}>{fmt(p.materialCost, 4)} G</span>
+                                  <div style={{ fontSize: 9, color: C.textMuted }}>{needsStr}</div>
+                                </div>
+                              : <span style={{ color: C.textMuted }}>-</span>
+                            }
+                          </td>
+                          <td style={{ ...TD(false), color: p.netMargin > 0 ? C.green : C.red, fontWeight: 700 }}>
+                            {fmt(p.netMargin, 4)} G
+                          </td>
                           <td style={TD(false)}>{p.pp}</td>
-                          <td style={{ ...TD(false), fontWeight: 700, color: i === 0 ? C.green : C.text, fontSize: 15 }}>
+                          <td style={{ ...TD(false), fontWeight: 700, color: i === 0 ? C.green : p.goldPerPP > 0 ? C.text : C.red, fontSize: 15 }}>
                             {fmt(p.goldPerPP, 4)} G
                           </td>
                           <td style={TD(false)}>
