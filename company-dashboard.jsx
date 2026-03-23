@@ -33,7 +33,7 @@ function calcTotalBonus(region, itemCode, country, gameConfig, countryEthics) {
   if (!gameConfig) return 0;
   let bonus = 0;
 
-  const isIndustrialTarget = ['steel', 'concrete', 'oil', 'lightAmmo', 'ammo', 'heavyAmmo'].includes(itemCode);
+  const isIndustrialTarget = ['steel', 'concrete', 'oil', 'lightAmmo', 'ammo', 'heavyAmmo', 'lead', 'petroleum', 'iron', 'limestone'].includes(itemCode);
   const isAgrarianTarget = ['coca', 'grain', 'livestock', 'fish'].includes(itemCode);
   const indVal = countryEthics?.industrialism || 0;
 
@@ -62,20 +62,7 @@ function calcTotalBonus(region, itemCode, country, gameConfig, countryEthics) {
 
   if (!region) return bonus;
 
-  // 3. Climate-based rank bonus (only for raw items)
-  const items = gameConfig.items || {};
-  const itemConfig = items[itemCode];
-  if (itemConfig?.type === "raw" && region.climate) {
-    const climateItems = Object.entries(items)
-      .filter(([, item]) => item.type === "raw" && item.climates?.includes(region.climate))
-      .map(([code]) => code);
-    const rank = climateItems.indexOf(itemCode);
 
-    if (rank >= 0) {
-      const resourcesBonus = gameConfig.region?.resourcesBonus || { 1: 5, 2: 0.5, 3: 0.25 };
-      bonus += resourcesBonus[rank + 1] || 0;
-    }
-  }
 
   // 4. Actual Deposit Bonus
   if (region.deposit === itemCode) {
