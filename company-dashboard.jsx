@@ -932,6 +932,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
                       <th style={TH}>Globale Empfehlung</th>
                       <th style={TH}>Gewinn alt</th>
                       <th style={TH}>Gewinn neu</th>
+                      <th style={TH}>Mehrgewinn</th>
                       <th style={TH}>Beton</th>
                       <th style={TH}>Amortisation</th>
                     </tr></thead>
@@ -950,6 +951,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
                           </td>
                           <td style={{ ...TD(false), color: C.textDim }}>{fmt(s.currentProfit, 2)} G</td>
                           <td style={{ ...TD(false), color: C.green }}>{fmt(s.newProfit, 2)} G</td>
+                          <td style={{ ...TD(false), color: C.green, fontWeight: 700 }}>+{fmt(s.dailyGain, 2)} G</td>
                           <td style={{ ...TD(false), color: C.red }}>{s.concreteNeeded} <span style={{fontSize:10}}>({fmt(s.totalCost, 1)} G)</span></td>
                           <td style={{ ...TD(false), fontWeight: 700, color: s.paybackDays <= 2 ? C.green : s.paybackDays <= 7 ? C.accent : C.red }}>
                             {fmt(s.paybackDays, 1)} Tage
