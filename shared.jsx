@@ -145,7 +145,16 @@ export async function apiCall(endpoint, body) {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  const d = await r.json();
-  if (d.error) throw new Error(d.error.data?.code || d.error.message || "API Error");
-  return d.result.data;
+  if (!r.ok) {
+    let d;
+    try { d = await r.json(); } catch (e) { throw new Error(`HTTP Error ${r.status}`); }
+    if (Array.isArray(d)) d = d[0];
+    if (d && d.error) throw new Error(d.error.data?.code || d.error.message || `API Error HTTP ${r.status}`);
+    throw new Error(`API Error HTTP ${r.status}`);
+  }
+  let d;
+  try { d = await r.json(); } catch (e) { throw new Error("Invalid JSON response"); }
+  if (Array.isArray(d)) d = d[0];
+  if (d && d.error) throw new Error(d.error.data?.code || d.error.message || "API Error");
+  return d?.result?.data;
 }

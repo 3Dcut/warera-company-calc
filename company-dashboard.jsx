@@ -43,28 +43,15 @@ function calcTotalBonus(region, itemCode, country, gameConfig) {
     bonus += country.strategicResources.bonuses.productionPercent;
   }
 
-  // 2. Country specialization bonus (+30% "industrielle Ethik")
-  if (country?.specializedItem === itemCode) {
+  const itemConfig = gameConfig.items?.[itemCode];
+  // 2. Country specialization bonus (+30% "industrielle Ethik") - generally doesn't apply to consumables like food.
+  if (country?.specializedItem === itemCode && !itemConfig?.isConsumable) {
     bonus += gameConfig.company?.depositResourceBonus || 30;
   }
 
   if (!region) return bonus;
 
-  // 3. Climate-based rank bonus (for raw items)
-  const items = gameConfig.items || {};
-  const regionClimate = region.climate;
-  if (regionClimate) {
-    const climateItems = Object.entries(items)
-      .filter(([, item]) => item.type === "raw" && item.climates?.includes(regionClimate))
-      .map(([code]) => code);
-    const rank = climateItems.indexOf(itemCode);
-    if (rank >= 0) {
-      const resourcesBonus = gameConfig.region?.resourcesBonus || { 1: 5, 2: 0.5, 3: 0.25 };
-      bonus += resourcesBonus[rank + 1] || 0;
-    }
-  }
-
-  // 4. Region deposit bonus (if region has a strategicResource matching the item)
+  // 3. Region deposit bonus (if region has a strategicResource matching the item)
   if (region.strategicResource === itemCode) {
     bonus += gameConfig.company?.depositResourceBonus || 30;
   }
@@ -100,6 +87,12 @@ export default function CompanyDashboard({ theme, setTheme }) {
 
   const [subTab, setSubTab] = useState("overview");
   const [expandedCompany, setExpandedCompany] = useState(null);
+
+  useEffect(() => {
+    if (userInput.trim()) {
+      loadData();
+    }
+  }, []); // Run once on mount
 
   async function loadData() {
     if (!userInput.trim()) return;
@@ -729,7 +722,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
                             <div style={{ fontSize: 10, color: C.textMuted }}>{getCountryName(comp.region)}</div>
                           </td>
                           <td style={{ ...TD(false), color: bonus > 0 ? C.green : C.textMuted }}>
-                            {bonus > 0 ? "+" + fmt(bonus, 1) + "%" : "-"}
+                            {bonus > 0 ? "+" + fmt(bonus, 2) + "%" : "-"}
                           </td>
                           <td style={TD(false)}>{ws.length}</td>
                           <td style={{ ...TD(false), color: C.blue }}>{fmt(enginePP, 1)}</td>
@@ -1113,7 +1106,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
 
           {/* ── OPTIMIZER BUILD TAB ── */}
           {subTab === "optimizer_build" && (
-            <FactoryOptimizer theme={theme} setTheme={setTheme} />
+            <FactoryOptimizer theme={theme} setTheme={setTheme} preloadedFacs={companies.map(c => ({ level: c.activeUpgradeLevels?.automatedEngine || 1, name: c.name, item: c.itemCode }))} />
           )}
         </>
       )}

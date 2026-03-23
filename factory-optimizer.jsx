@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { THEMES, C, F, setThemeVars, glass, fmt, fmtT, fmtN, GlassCard, Sec, Inp, Bdg, Tip, Btn, getTH, getTD, apiCall } from "./shared.jsx";
 
@@ -162,7 +162,7 @@ function buildChart(paths, startPPH, keys) {
 }
 
 // ── Main ──
-export default function App({ theme, setTheme }) {
+export default function App({ theme, setTheme, preloadedFacs }) {
   setThemeVars(theme);
   const T = THEMES[theme];
   const STRATS = getStrats();
@@ -186,10 +186,13 @@ export default function App({ theme, setTheme }) {
   const [impStr, setImpStr] = useState("");
   const [showImp, setShowImp] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [apiUser, setApiUser] = useState("");
-  const [apiLoading, setApiLoading] = useState(false);
-  const [apiError, setApiError] = useState("");
-  const [apiInfo, setApiInfo] = useState("");
+
+  useEffect(() => {
+    if (preloadedFacs && preloadedFacs.length > 0) {
+      setFacs(preloadedFacs);
+      compute(preloadedFacs);
+    }
+  }, [preloadedFacs]);
 
   function compute(customFacs = null, customParams = null) {
     setBusy(true);
@@ -205,69 +208,6 @@ export default function App({ theme, setTheme }) {
       setRes({ paths, finals, ok: d.complete, iter: d.iter });
       setBusy(false);
     }, 50);
-  }
-
-  async function loadFromAPI() {
-    if (!apiUser.trim()) return;
-    setApiLoading(true); setApiError(""); setApiInfo("");
-    try {
-      let userId;
-      let username;
-      const input = apiUser.trim();
-
-      try {
-        const u = await apiCall("user.getUserLite", { userId: input });
-        if (u && u.username) {
-          userId = input;
-          username = u.username;
-        }
-      } catch (e) {}
-
-      if (!userId) {
-        const search = await apiCall("search.searchAnything", { searchText: input });
-        if (!search.userIds?.length) throw new Error("Spieler oder ID nicht gefunden");
-
-        let foundExactUid = null;
-        let foundExactName = null;
-
-        for (const uid of search.userIds) {
-          try {
-            const u = await apiCall("user.getUserLite", { userId: uid });
-            if (u.username.toLowerCase() === input.toLowerCase()) {
-              foundExactUid = uid;
-              foundExactName = u.username;
-              break;
-            }
-          } catch (e) {}
-        }
-
-        if (foundExactUid) {
-          userId = foundExactUid;
-          username = foundExactName;
-        } else {
-          throw new Error(`Keine exakte Übereinstimmung für "${input}" gefunden. Bitte verwende die direkte User-ID.`);
-        }
-      }
-
-      const companies = await apiCall("company.getCompanies", { userId, perPage: 100 });
-      const companyIds = companies.items || [];
-      if (!companyIds.length) throw new Error("Keine Fabriken gefunden");
-
-      const newFacs = [];
-      for (const cid of companyIds) {
-        const comp = await apiCall("company.getById", { companyId: cid });
-        newFacs.push({ level: comp.activeUpgradeLevels?.automatedEngine || 1, name: comp.name, item: comp.itemCode });
-      }
-
-      setFacs(newFacs);
-      setApiInfo(username + ": " + newFacs.length + " Fabriken geladen.");
-
-      const newParams = { ppPerStahl: ppS, ppPerBeton: ppB, maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB };
-      compute(newFacs, newParams);
-    } catch (e) {
-      setApiError(e.message);
-    }
-    setApiLoading(false);
   }
 
   const updF = useCallback((i, k, v) => setFacs(p => p.map((f, j) => j === i ? { ...f, [k]: v } : f)), []);
@@ -317,35 +257,6 @@ export default function App({ theme, setTheme }) {
 
   return (
     <div>
-      <GlassCard style={{ padding: "20px 24px" }}>
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ width: "100%", maxWidth: "500px" }}>
-            <div style={{ display: "flex", justifyContent: "center" }}>
-              <Sec icon="&#128100;">WarEra Spieler</Sec>
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <Tip text="Gib den Namen eines Spielers ein, um seine Fabriken und Daten direkt von der WarEra-API zu laden.">
-                <input
-                  aria-label="WarEra Username"
-                  value={apiUser} onChange={e => setApiUser(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && loadFromAPI()}
-                  placeholder="Username..."
-                  style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 8, color: C.text, padding: "10px 14px", fontSize: 14, fontFamily: F.m, outline: "none", flex: 1 }}
-                />
-              </Tip>
-              <Btn on big color={C.accent} onClick={loadFromAPI} disabled={apiLoading || !apiUser.trim()}>
-                {apiLoading ? "Lädt..." : "Import & Optimieren"}
-              </Btn>
-            </div>
-          </div>
-        </div>
-        {(apiError || apiInfo) && (
-          <div style={{ marginTop: 12, fontSize: 12, fontFamily: F.m, color: apiError ? C.red : C.green, textAlign: "center" }}>
-            {apiError || apiInfo}
-          </div>
-        )}
-      </GlassCard>
-
       <div style={{ marginBottom: 14 }}>
         <Btn on={showAdvanced} onClick={() => setShowAdvanced(!showAdvanced)}>
           {showAdvanced ? "Optionen ausblenden \u25B4" : "Fortgeschrittene Optionen \u25BE"}
