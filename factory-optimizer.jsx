@@ -392,13 +392,27 @@ export default function App({ theme, setTheme, optData }) {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 14, marginBottom: 20 }}>
           <GlassCard>
             <Sec icon="&#9881;">Parameter & Einheiten</Sec>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "0 12px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "0 12px" }}>
               <Inp label="Stahl im Lager" value={stStahl} onChange={v => { setStStahl(v); compute(); }} suffix="Stk" tip="Vorrätiger Stahl im Inventar (Reduziert Goldkosten beim Upgrade)." />
               <Inp label="Beton im Lager" value={stBeton} onChange={v => { setStBeton(v); compute(); }} suffix="Stk" tip="Vorrätiger Beton im Inventar (Reduziert Goldkosten beim Fabrikkauf)." />
               <Inp label="Max. Fabriken" value={mxF} onChange={v => { setMxF(v); compute(); }} suffix="Stk" tip="Die maximale Anzahl an Fabriken, die du bauen möchtest." />
               <Inp label="Max. Level" value={mxL} onChange={v => { setMxL(v); compute(); }} suffix="Lvl" tip="Das maximale Level, das jede Fabrik erreichen soll." />
               <Inp label="Basis Upg-Kosten" value={uB} onChange={v => { setUB(v); compute(); }} suffix="Stk" tip="Basiskosten an Stahl für ein Upgrade von Level 1 auf 2." />
               <Inp label="Basis Fab-Kosten" value={fB} onChange={v => { setFB(v); compute(); }} suffix="Bt" tip="Basiskosten an Beton für die allererste Fabrik." />
+            </div>
+            
+            <div style={{...glass(0.05, 8), padding: 8, marginTop: 16, display: "flex", flexDirection: "column", gap: 4}}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{fontSize: 11, fontWeight: "bold", color: C.textDim, textTransform: "uppercase", letterSpacing: "0.05em"}}>Reichtum Profil (API)</div>
+                <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 10, color: C.textMuted}}>
+                  <input type="checkbox" checked={useApiWealth} onChange={e => setUseApiWealth(e.target.checked)} /> API Auto-Sync Startkapital
+                </label>
+              </div>
+              <div style={{fontSize: 12, color: C.text, display: "flex", flexWrap: "wrap", gap: 10, fontFamily: F.m}}>
+                <span>Gesamt: <b style={{color: C.green}}>{fmtN(optData?.totalWealth || 0)}</b></span>
+                <span>Firmenwert: <b style={{color: C.accent}}>{fmtN(optData?.totalCompaniesValue || 0)}</b></span>
+                <span>Liquide: <b style={{color: C.gold || "#eab308"}}>{fmtN(Math.round((optData?.liquidAssets || 0) * 100) / 100)}</b></span>
+              </div>
             </div>
           </GlassCard>
           <GlassCard>
@@ -473,27 +487,14 @@ export default function App({ theme, setTheme, optData }) {
               );
             })}
 
-            <div style={{ ...glass(0.03, 16), borderRadius: 12, padding: "16px", minWidth: 260, flex: 1, display: "flex", flexDirection: "column", gap: 16 }}>
-              <div>
+            <div style={{ ...glass(0.03, 16), borderRadius: 12, padding: "16px", minWidth: 260, flex: 1, display: "flex", gap: 24, flexWrap: "wrap", alignItems: "flex-start" }}>
+              <div style={{ flex: 1, minWidth: 150 }}>
                 <Inp label="Startkapital" value={stB} onChange={v => { setStB(v); compute(); }} suffix="G" tip="Geld + Items + Ausrüstung" />
-                <div style={{...glass(0.05, 8), padding: 8, marginTop: 8, display: "flex", flexDirection: "column", gap: 4}}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div style={{fontSize: 11, fontWeight: "bold", color: C.textDim, textTransform: "uppercase", letterSpacing: "0.05em"}}>Reichtum Profil (API)</div>
-                    <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 10, color: C.textMuted}}>
-                      <input type="checkbox" checked={useApiWealth} onChange={e => setUseApiWealth(e.target.checked)} /> API Auto-Sync
-                    </label>
-                  </div>
-                  <div style={{fontSize: 12, color: C.text, display: "flex", flexWrap: "wrap", gap: 10, fontFamily: F.m}}>
-                    <span>Gesamt: <b style={{color: C.green}}>{fmtN(optData?.totalWealth || 0)}</b></span>
-                    <span>Firmenwert: <b style={{color: C.accent}}>{fmtN(optData?.totalCompaniesValue || 0)}</b></span>
-                    <span>Liquide: <b style={{color: C.gold || "#eab308"}}>{fmtN(Math.round((optData?.liquidAssets || 0) * 100) / 100)}</b></span>
-                  </div>
-                </div>
               </div>
+              
+              <div style={{ width: "1px", minHeight: 120, background: "rgba(255,255,255,0.05)", display: "block" }}></div>
 
-              <div style={{ height: "1px", background: "rgba(255,255,255,0.05)", width: "100%" }}></div>
-
-              <div>
+              <div style={{ flex: 1, minWidth: 200 }}>
                 <div style={{ fontFamily: F.h, fontSize: 12, color: C.textDim, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 10 }}>Einnahmequellen & Simulation</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13}}>
