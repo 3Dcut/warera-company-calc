@@ -140,21 +140,30 @@ export const getTD = (hl) => ({ padding: "8px 14px", borderBottom: "1px solid rg
 // ── API ──
 const API_BASE = "https://api2.warera.io/trpc/";
 
-export async function apiCall(endpoint, body) {
-  const r = await fetch(API_BASE + endpoint, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) {
+export async function apiCall(endpoint, body, maxRetries = 3) {
+  let attempt = 0;
+  while (true) {
+    const r = await fetch(API_BASE + endpoint, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      if (r.status === 429 && attempt < maxRetries) {
+        attempt++;
+        const delay = Math.pow(2, attempt) * 1000 + Math.random() * 500;
+        await new Promise(res => setTimeout(res, delay));
+        continue;
+      }
+      let d;
+      try { d = await r.json(); } catch (e) { throw new Error(`HTTP Error ${r.status}`); }
+      if (Array.isArray(d)) d = d[0];
+      if (d && d.error) throw new Error(d.error.data?.code || d.error.message || `API Error HTTP ${r.status}`);
+      throw new Error(`API Error HTTP ${r.status}`);
+    }
     let d;
-    try { d = await r.json(); } catch (e) { throw new Error(`HTTP Error ${r.status}`); }
+    try { d = await r.json(); } catch (e) { throw new Error("Invalid JSON response"); }
     if (Array.isArray(d)) d = d[0];
-    if (d && d.error) throw new Error(d.error.data?.code || d.error.message || `API Error HTTP ${r.status}`);
-    throw new Error(`API Error HTTP ${r.status}`);
+    if (d && d.error) throw new Error(d.error.data?.code || d.error.message || "API Error");
+    return d?.result?.data;
   }
-  let d;
-  try { d = await r.json(); } catch (e) { throw new Error("Invalid JSON response"); }
-  if (Array.isArray(d)) d = d[0];
-  if (d && d.error) throw new Error(d.error.data?.code || d.error.message || "API Error");
-  return d?.result?.data;
 }
