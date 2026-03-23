@@ -143,8 +143,14 @@ const API_BASE = "https://api2.warera.io/trpc/";
 export async function apiCall(endpoint, body, maxRetries = 3) {
   let attempt = 0;
   while (true) {
+    const headers = { "Content-Type": "application/json" };
+    try {
+      const apiKey = localStorage.getItem("warera_api_key");
+      if (apiKey) headers["Authorization"] = `Bearer ${apiKey.trim()}`;
+    } catch {}
+
     const r = await fetch(API_BASE + endpoint, {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers,
       body: JSON.stringify(body),
     });
     if (!r.ok) {

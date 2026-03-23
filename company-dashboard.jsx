@@ -93,6 +93,13 @@ export default function CompanyDashboard({ theme, setTheme }) {
       return "";
     }
   });
+  const [apiKey, setApiKey] = useState(() => {
+    try {
+      return localStorage.getItem("warera_api_key") || "";
+    } catch {
+      return "";
+    }
+  });
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
   const [error, setError] = useState("");
@@ -117,6 +124,12 @@ export default function CompanyDashboard({ theme, setTheme }) {
       loadData();
     }
   }, []); // Run once on mount
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("warera_api_key", apiKey.trim());
+    } catch {}
+  }, [apiKey]);
 
   async function loadData() {
     if (!userInput.trim()) return;
@@ -671,19 +684,36 @@ export default function CompanyDashboard({ theme, setTheme }) {
       {/* User Input */}
       <GlassCard style={{ padding: "20px 24px" }}>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-          <div style={{ width: "100%", maxWidth: "500px" }}>
-            <div style={{ display: "flex", justifyContent: "center" }}>
-              <Sec icon="&#128100;">WarEra Spieler</Sec>
+          <div style={{ width: "100%", maxWidth: "600px" }}>
+            <div style={{ display: "flex", gap: 16, marginBottom: 12 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
+                  <Sec icon="&#128100;">WarEra Spieler</Sec>
+                </div>
+                <Tip text="Spielername oder User-ID eingeben">
+                  <input
+                    value={userInput} onChange={e => setUserInput(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && loadData()}
+                    placeholder="Username oder ID..."
+                    style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 8, color: C.text, padding: "10px 14px", fontSize: 14, fontFamily: F.m, outline: "none", width: "100%", boxSizing: "border-box" }}
+                  />
+                </Tip>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
+                  <Sec icon="&#128273;">API Key (Optional)</Sec>
+                </div>
+                <Tip text="Persönlicher API Key">
+                  <input
+                    type="password"
+                    value={apiKey} onChange={e => setApiKey(e.target.value)}
+                    placeholder="wae_..."
+                    style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 8, color: C.text, padding: "10px 14px", fontSize: 14, fontFamily: F.m, outline: "none", width: "100%", boxSizing: "border-box" }}
+                  />
+                </Tip>
+              </div>
             </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <Tip text="Spielername oder User-ID eingeben">
-                <input
-                  value={userInput} onChange={e => setUserInput(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && loadData()}
-                  placeholder="Username oder ID..."
-                  style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 8, color: C.text, padding: "10px 14px", fontSize: 14, fontFamily: F.m, outline: "none", flex: 1 }}
-                />
-              </Tip>
+            <div style={{ display: "flex", justifyContent: "center" }}>
               <Btn on big color={C.accent} onClick={loadData} disabled={loading || !userInput.trim()}>
                 {loading ? loadingMsg || "Lädt..." : "Daten laden"}
               </Btn>
