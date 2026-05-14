@@ -190,6 +190,8 @@ export default function CompanyDashboard({ theme, setTheme }) {
         if (c?._id) cntMap[c._id] = c;
       }
       setCountries(cntMap);
+      // TEMP: inspect country shape to find wage-tax field
+      if (cntArr.length > 0) console.log("[tax-inspect] sample country:", cntArr[0]);
 
 
 
@@ -346,6 +348,15 @@ export default function CompanyDashboard({ theme, setTheme }) {
     const country = getCountryForRegion(comp.region);
     const ethics = country?._id ? partyEthics[country._id] : null;
     return calcTotalBonus(region, comp.itemCode, country, gameConfig, ethics);
+  }
+
+  function getWorkTaxRate(comp) {
+    const country = getCountryForRegion(comp.region);
+    // Field name to be confirmed via console inspection of the country payload.
+    // Returned as a fraction in [0,1]. If API delivers percent (e.g. 12), divide by 100 below.
+    const raw = country?.taxes?.workIncome ?? country?.taxes?.work ?? country?.workTax ?? country?.tax ?? 0;
+    const num = Number(raw) || 0;
+    return num > 1 ? num / 100 : num;
   }
 
   function getRegionName(comp) {
