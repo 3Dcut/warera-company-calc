@@ -190,8 +190,6 @@ export default function CompanyDashboard({ theme, setTheme }) {
         if (c?._id) cntMap[c._id] = c;
       }
       setCountries(cntMap);
-      // TEMP: inspect country shape to find wage-tax field
-      if (cntArr.length > 0) console.log("[tax-inspect] sample country:", cntArr[0]);
 
 
 
@@ -351,12 +349,10 @@ export default function CompanyDashboard({ theme, setTheme }) {
   }
 
   function getWorkTaxRate(comp) {
+    // WarEra delivers income tax as a percent (e.g. 1 = 1%); normalize to fraction.
     const country = getCountryForRegion(comp.region);
-    // Field name to be confirmed via console inspection of the country payload.
-    // Returned as a fraction in [0,1]. If API delivers percent (e.g. 12), divide by 100 below.
-    const raw = country?.taxes?.workIncome ?? country?.taxes?.work ?? country?.workTax ?? country?.tax ?? 0;
-    const num = Number(raw) || 0;
-    return num > 1 ? num / 100 : num;
+    const pct = Number(country?.taxes?.income) || 0;
+    return pct / 100;
   }
 
   function getRegionName(comp) {
@@ -739,6 +735,12 @@ export default function CompanyDashboard({ theme, setTheme }) {
 
       if (bestFactory) {
         const dailyGain = (bestNetPerH - currentNetPerH) * 24;
+        const fromTax = getWorkTaxRate(currentCompany);
+        const toTax = getWorkTaxRate(bestFactory);
+        const grossWagePerH = costPerH; // basePPH * wage, factory-independent
+        const workerNetWageFromPerDay = grossWagePerH * (1 - fromTax) * 24;
+        const workerNetWageToPerDay = grossWagePerH * (1 - toTax) * 24;
+        const workerWageGainPerDay = workerNetWageToPerDay - workerNetWageFromPerDay;
         suggestions.push({
           worker,
           fromCompany: currentCompany,
@@ -746,6 +748,11 @@ export default function CompanyDashboard({ theme, setTheme }) {
           currentNetPerDay: currentNetPerH * 24,
           newNetPerDay: bestNetPerH * 24,
           dailyGain,
+          fromTax,
+          toTax,
+          workerNetWageFromPerDay,
+          workerNetWageToPerDay,
+          workerWageGainPerDay,
         });
       }
     }
@@ -1188,7 +1195,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
                 <GlassCard glow={C.blueGlow}>
                   <Sec icon="&#128101;">Arbeiter-Optimierung ({workerOptimization.length})</Sec>
                   <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
-                    Arbeiter, die in einer anderen Fabrik mehr Netto-Gewinn bringen würden. Lohn und Treue bleiben erhalten.
+                    Arbeiter, die in einer anderen Fabrik mehr Netto-Gewinn bringen würden. Lohn und Treue bleiben erhalten — zusätzlich wird gezeigt, wie sich die Lohnsteuer für den Arbeiter ändert.
                   </div>
                   {workerOptimization.map((s, i) => (
                     <div key={i} style={{ ...glass(0.08, 10), borderRadius: 8, padding: "12px 16px", marginBottom: 8 }}>
@@ -1203,6 +1210,20 @@ export default function CompanyDashboard({ theme, setTheme }) {
                           <span style={{ color: C.green, fontSize: 12 }}> ({s.toCompany.itemCode}, {fmt(s.newNetPerDay, 2)} G/Tag)</span>
                         </div>
                         <Bdg color={C.green}>+{fmt(s.dailyGain, 2)} G/Tag</Bdg>
+                      </div>
+                      <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(255,255,255,0.08)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 12 }}>
+                        <div style={{ color: C.textDim }}>
+                          Lohnsteuer Arbeiter:{" "}
+                          <span style={{ color: C.text }}>{fmt(s.fromTax * 100, 1)}%</span>
+                          <span style={{ margin: "0 6px" }}>&rarr;</span>
+                          <span style={{ color: s.toTax <= s.fromTax ? C.green : C.red }}>{fmt(s.toTax * 100, 1)}%</span>
+                          <span style={{ marginLeft: 8, color: C.textDim }}>
+                            (Netto-Lohn: {fmt(s.workerNetWageFromPerDay, 2)} &rarr; {fmt(s.workerNetWageToPerDay, 2)} G/Tag)
+                          </span>
+                        </div>
+                        <Bdg color={s.workerWageGainPerDay >= 0 ? C.green : C.red}>
+                          {s.workerWageGainPerDay >= 0 ? "+" : ""}{fmt(s.workerWageGainPerDay, 2)} G/Tag für Arbeiter
+                        </Bdg>
                       </div>
                     </div>
                   ))}
