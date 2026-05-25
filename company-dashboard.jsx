@@ -167,6 +167,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
       setUserData(user);
       setPrices(pricesData || {});
       setGameConfig(configData);
+      console.log("GAMECONFIG", JSON.stringify(configData));
 
       // Build region lookup (object keyed by _id)
       const regMap = {};
@@ -434,20 +435,25 @@ export default function CompanyDashboard({ theme, setTheme }) {
     return getItemPrice(itemCode) - calcMaterialCostPerUnit(itemCode);
   }
 
+  function getPPPerUnit(itemCode) {
+    return gameConfig?.items?.[itemCode]?.productionPoints || null;
+  }
+
   // Gold per PP after material costs
   function calcGoldPerPP(itemCode) {
-    const itemConfig = gameConfig?.items?.[itemCode];
-    const ppPerUnit = itemConfig?.productionPoints || 1;
+    const ppPerUnit = getPPPerUnit(itemCode);
+    if (!ppPerUnit) return 0;
     return calcNetMarginPerUnit(itemCode) / ppPerUnit;
   }
 
   function calcDailyRevenue(comp) {
+    const ppPerUnit = getPPPerUnit(comp.itemCode);
+    if (!ppPerUnit) return 0;
     const ppDay = calcCompanyPPDay(comp);
-    const itemConfig = gameConfig?.items?.[comp.itemCode];
-    const ppPerUnit = itemConfig?.productionPoints || 1;
-    const unitsPerDay = ppDay / ppPerUnit;
     const margin = calcNetMarginPerUnit(comp.itemCode);
-    return unitsPerDay * margin;
+    const revenue = (ppDay / ppPerUnit) * margin;
+    console.log(`[Revenue] ${comp.itemCode} | ppDay=${ppDay.toFixed(1)} | ppPerUnit=${ppPerUnit} | margin=${margin.toFixed(3)} | revenue=${revenue.toFixed(2)}`);
+    return revenue;
   }
 
   function calcDailyProfit(comp) {
@@ -461,12 +467,11 @@ export default function CompanyDashboard({ theme, setTheme }) {
       const compId = comp._id;
       const ws = workers[compId] || [];
       const bonus = getRegionBonus(comp);
-      const itemConfig = gameConfig?.items?.[comp.itemCode];
-      const ppPerUnit = itemConfig?.productionPoints || 1;
+      const ppPerUnit = getPPPerUnit(comp.itemCode);
       const margin = calcNetMarginPerUnit(comp.itemCode);
       for (const w of ws) {
         const workerPPDay = calcWorkerPPH(w, bonus) * 24;
-        const unitsPerDay = workerPPDay / ppPerUnit;
+        const unitsPerDay = ppPerUnit ? workerPPDay / ppPerUnit : 0;
         const dailyContribution = unitsPerDay * margin;
         const dailyWage = calcWorkerCostPerH(w) * 24;
         if (dailyWage > dailyContribution && dailyWage > 0) {
@@ -494,8 +499,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
     for (const comp of companies) {
       const currentBonus = getRegionBonus(comp);
       const itemCode = comp.itemCode;
-      const itemConfig = gameConfig?.items?.[itemCode];
-      const ppPerUnit = itemConfig?.productionPoints || 1;
+      const ppPerUnit = getPPPerUnit(itemCode);
       const price = getItemPrice(itemCode);
       const currentPPDay = calcCompanyPPDay(comp);
 
@@ -701,15 +705,14 @@ export default function CompanyDashboard({ theme, setTheme }) {
 
     for (const { worker, currentCompany } of allWorkers) {
       const currentBonus = getRegionBonus(currentCompany);
-      const currentItemConfig = gameConfig?.items?.[currentCompany.itemCode];
-      const currentPPPerUnit = currentItemConfig?.productionPoints || 1;
+      const currentPPPerUnit = getPPPerUnit(currentCompany.itemCode);
       const currentPrice = getItemPrice(currentCompany.itemCode);
       const basePPH = calcWorkerBasePPH(worker);
       const fidelity = worker.fidelity || 0;
 
       const currentPPH = basePPH * (1 + currentBonus / 100) * (1 + fidelity / 100);
       const currentMargin = calcNetMarginPerUnit(currentCompany.itemCode);
-      const currentRevPerH = (currentPPH / currentPPPerUnit) * currentMargin;
+      const currentRevPerH = currentPPPerUnit ? (currentPPH / currentPPPerUnit) * currentMargin : 0;
       const costPerH = basePPH * (worker.wage || 0); // same everywhere
       const currentNetPerH = currentRevPerH - costPerH;
 
@@ -719,12 +722,11 @@ export default function CompanyDashboard({ theme, setTheme }) {
       for (const comp of companies) {
         if (comp._id === currentCompany._id) continue;
         const bonus = getRegionBonus(comp);
-        const itemConfig = gameConfig?.items?.[comp.itemCode];
-        const ppPerUnit = itemConfig?.productionPoints || 1;
+        const ppPerUnit = getPPPerUnit(comp.itemCode);
         const margin = calcNetMarginPerUnit(comp.itemCode);
 
         const pph = basePPH * (1 + bonus / 100) * (1 + fidelity / 100);
-        const revPerH = (pph / ppPerUnit) * margin;
+        const revPerH = ppPerUnit ? (pph / ppPerUnit) * margin : 0;
         const netPerH = revPerH - costPerH;
 
         if (netPerH > bestNetPerH) {
@@ -982,7 +984,8 @@ export default function CompanyDashboard({ theme, setTheme }) {
                           <td style={TD(false)}>
                             {isEnemy && <Bdg color={C.red}>FEINDLAND</Bdg>}
                             {hasWageLoss && <Bdg color="#ff9900">LOHNVERLUST</Bdg>}
-                            {!isEnemy && !hasWageLoss && <Bdg color={C.green}>OK</Bdg>}
+                            {!getPPPerUnit(comp.itemCode) && <Bdg color={C.red}>CONFIG FEHLT</Bdg>}
+                            {!isEnemy && !hasWageLoss && getPPPerUnit(comp.itemCode) && <Bdg color={C.green}>OK</Bdg>}
                           </td>
                         </tr>,
                         // Expanded worker details
