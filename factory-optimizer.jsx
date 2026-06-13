@@ -393,14 +393,14 @@ export default function App({ theme, setTheme, optData, lang }) {
       {showAdvanced && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 14, marginBottom: 20 }}>
           <GlassCard>
-            <Sec icon="&#9881;">Parameter & Einheiten</Sec>
+            <Sec icon="&#9881;">{L.sectionParams}</Sec>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "0 12px" }}>
-              <Inp label="Stahl im Lager" value={stStahl} onChange={v => { setStStahl(v); compute(); }} suffix="Stk" tip="Vorrätiger Stahl im Inventar (Reduziert Goldkosten beim Upgrade)." />
-              <Inp label="Beton im Lager" value={stBeton} onChange={v => { setStBeton(v); compute(); }} suffix="Stk" tip="Vorrätiger Beton im Inventar (Reduziert Goldkosten beim Fabrikkauf)." />
-              <Inp label="Max. Fabriken" value={mxF} onChange={v => { setMxF(v); compute(); }} suffix="Stk" tip="Die maximale Anzahl an Fabriken, die du bauen möchtest." />
-              <Inp label="Max. Level" value={mxL} onChange={v => { setMxL(v); compute(); }} suffix="Lvl" tip="Das maximale Level, das jede Fabrik erreichen soll." />
-              <Inp label="Basis Upg-Kosten" value={uB} onChange={v => { setUB(v); compute(); }} suffix="Stk" tip="Basiskosten an Stahl für ein Upgrade von Level 1 auf 2." />
-              <Inp label="Basis Fab-Kosten" value={fB} onChange={v => { setFB(v); compute(); }} suffix="Bt" tip="Basiskosten an Beton für die allererste Fabrik." />
+              <Inp label={L.labelSteelInv} value={stStahl} onChange={v => { setStStahl(v); compute(); }} suffix="Stk" tip={L.tipSteelInv} />
+              <Inp label={L.labelConcreteInv} value={stBeton} onChange={v => { setStBeton(v); compute(); }} suffix="Stk" tip={L.tipConcreteInv} />
+              <Inp label={L.labelMaxFactories} value={mxF} onChange={v => { setMxF(v); compute(); }} suffix="Stk" tip={L.tipMaxFactories} />
+              <Inp label={L.labelMaxLevel} value={mxL} onChange={v => { setMxL(v); compute(); }} suffix="Lvl" tip={L.tipMaxLevel} />
+              <Inp label={L.labelUpgCost} value={uB} onChange={v => { setUB(v); compute(); }} suffix="Stk" tip={L.tipUpgCost} />
+              <Inp label={L.labelFacCost} value={fB} onChange={v => { setFB(v); compute(); }} suffix="Bt" tip={L.tipFacCost} />
             </div>
             
             <div style={{...glass(0.05, 8), padding: 8, marginTop: 16, display: "flex", flexDirection: "column", gap: 4}}>
@@ -483,7 +483,7 @@ export default function App({ theme, setTheme, optData, lang }) {
                       boxShadow: isBest && on ? "0 0 20px " + s.glow : "none" }}>
                     <div style={{ fontFamily: F.h, fontSize: 12, color: s.color, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>{s.label}</div>
                     <div style={{ fontSize: 24, fontWeight: 700, fontFamily: F.h }}>{t != null ? fmtT(t) : "-"}</div>
-                    {isBest && <div style={{ fontSize: 10, color: s.color, fontWeight: 700, marginTop: 4 }}>{L.best}</div>}}
+                      {isBest && <div style={{ fontSize: 10, color: s.color, fontWeight: 700, marginTop: 4 }}>{L.best}</div>}
                   </div>
                 </Tip>
               );
@@ -542,11 +542,11 @@ export default function App({ theme, setTheme, optData, lang }) {
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span style={{ fontSize: 20, fontWeight: 700, fontFamily: F.h, width: "32px", textAlign: "center" }}>L{f.level}</span>
                     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                      <Tip text="Level erhöhen (Planungszustand)">
-                        <button aria-label="Level erhöhen" onClick={() => { if (f.level < mxL) { const nf = facs.map((x, j) => j === i ? { ...x, level: x.level + 1 } : x); setFacs(nf); compute(nf); } }} style={{ background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", color: C.text, fontSize: 10, cursor: "pointer", padding: "2px 6px", borderRadius: 4, transition: "background 0.2s" }} onMouseOver={e => e.currentTarget.style.background = "rgba(255,255,255,0.2)"} onMouseOut={e => e.currentTarget.style.background = "rgba(255,255,255,0.1)"}>&#9650;</button>
+                      <Tip text={L.tipIncreaseLevel}>
+                        <button aria-label={L.tipIncreaseLevel} onClick={() => { if (f.level < mxL) { const nf = facs.map((x, j) => j === i ? { ...x, level: x.level + 1 } : x); setFacs(nf); compute(nf); } }} style={{ background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", color: C.text, fontSize: 10, cursor: "pointer", padding: "2px 6px", borderRadius: 4, transition: "background 0.2s" }} onMouseOver={e => e.currentTarget.style.background = "rgba(255,255,255,0.2)"} onMouseOut={e => e.currentTarget.style.background = "rgba(255,255,255,0.1)"}>&#9650;</button>
                       </Tip>
-                      <Tip text="Level senken (Planungszustand)">
-                        <button aria-label="Level senken" onClick={() => { if (f.level > 1) { const nf = facs.map((x, j) => j === i ? { ...x, level: x.level - 1 } : x); setFacs(nf); compute(nf); } }} style={{ background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", color: C.text, fontSize: 10, cursor: "pointer", padding: "2px 6px", borderRadius: 4, transition: "background 0.2s" }} onMouseOver={e => e.currentTarget.style.background = "rgba(255,255,255,0.2)"} onMouseOut={e => e.currentTarget.style.background = "rgba(255,255,255,0.1)"}>&#9660;</button>
+                      <Tip text={L.tipDecreaseLevel}>
+                        <button aria-label={L.tipDecreaseLevel} onClick={() => { if (f.level > 1) { const nf = facs.map((x, j) => j === i ? { ...x, level: x.level - 1 } : x); setFacs(nf); compute(nf); } }} style={{ background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", color: C.text, fontSize: 10, cursor: "pointer", padding: "2px 6px", borderRadius: 4, transition: "background 0.2s" }} onMouseOver={e => e.currentTarget.style.background = "rgba(255,255,255,0.2)"} onMouseOut={e => e.currentTarget.style.background = "rgba(255,255,255,0.1)"}>&#9660;</button>
                       </Tip>
                     </div>
                   </div>
@@ -559,12 +559,12 @@ export default function App({ theme, setTheme, optData, lang }) {
                 </div>
 
                 <Tip text={L.tipRemoveFactory}>
-                  <button aria-label="Fabrik entfernen" onClick={() => { rmF(i); compute(facs.filter((_, j) => j !== i)); }} style={{ background: "rgba(255,50,50,0.1)", border: "1px solid rgba(255,50,50,0.3)", borderRadius: "50%", color: C.red, cursor: "pointer", fontSize: 14, fontWeight: 700, width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s" }} onMouseOver={e => { e.currentTarget.style.background = C.red; e.currentTarget.style.color = "#fff"; }} onMouseOut={e => { e.currentTarget.style.background = "rgba(255,50,50,0.1)"; e.currentTarget.style.color = C.red; }}>&times;</button>
+                  <button aria-label={L.tipRemoveFactory} onClick={() => { rmF(i); compute(facs.filter((_, j) => j !== i)); }} style={{ background: "rgba(255,50,50,0.1)", border: "1px solid rgba(255,50,50,0.3)", borderRadius: "50%", color: C.red, cursor: "pointer", fontSize: 14, fontWeight: 700, width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s" }} onMouseOver={e => { e.currentTarget.style.background = C.red; e.currentTarget.style.color = "#fff"; }} onMouseOut={e => { e.currentTarget.style.background = "rgba(255,50,50,0.1)"; e.currentTarget.style.color = C.red; }}>&times;</button>
                 </Tip>
               </div>
             ))}
             <Tip text={L.tipAddFactory}>
-              <button aria-label="Neue Fabrik hinzufügen" onClick={() => { const nf = [...facs, { level: 1, item: optData?.bestProduct?.itemCode || L.newFac, goldPerLevelPerDay: optData?.bestProduct ? (24 * optData.bestProduct.maxGoldPerPP) : 2.5, workerGoldPerDay: 0 }]; setFacs(nf); compute(nf); }}style={{ ...glass(0.05), borderRadius: 12, border: "2px dashed rgba(255,255,255,0.2)", color: C.textMuted, cursor: "pointer", fontSize: 24, padding: "12px", width: "100%", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s" }} onMouseOver={e => { e.currentTarget.style.background = "rgba(255,255,255,0.1)"; e.currentTarget.style.borderColor = C.accent; e.currentTarget.style.color = C.accent; }} onMouseOut={e => { e.currentTarget.style.background = glass(0.05).background; e.currentTarget.style.borderColor = "rgba(255,255,255,0.2)"; e.currentTarget.style.color = C.textMuted; }}>
+              <button aria-label={L.tipAddFactory} onClick={() => { const nf = [...facs, { level: 1, item: optData?.bestProduct?.itemCode || L.newFac, goldPerLevelPerDay: optData?.bestProduct ? (24 * optData.bestProduct.maxGoldPerPP) : 2.5, workerGoldPerDay: 0 }]; setFacs(nf); compute(nf); }}style={{ ...glass(0.05), borderRadius: 12, border: "2px dashed rgba(255,255,255,0.2)", color: C.textMuted, cursor: "pointer", fontSize: 24, padding: "12px", width: "100%", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s" }} onMouseOver={e => { e.currentTarget.style.background = "rgba(255,255,255,0.1)"; e.currentTarget.style.borderColor = C.accent; e.currentTarget.style.color = C.accent; }} onMouseOut={e => { e.currentTarget.style.background = glass(0.05).background; e.currentTarget.style.borderColor = "rgba(255,255,255,0.2)"; e.currentTarget.style.color = C.textMuted; }}>
                 +
               </button>
             </Tip>
