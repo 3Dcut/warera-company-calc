@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { THEMES, C, F, setThemeVars, glass, fmt, fmtT, fmtN, GlassCard, Sec, Bdg, Tip, Btn, getTH, getTD, apiCall } from "./shared.jsx";
 import FactoryOptimizer from "./factory-optimizer.jsx";
+import { getLang } from "./translations.jsx";
 
 // ── Helpers ──
 async function resolveUser(input) {
@@ -79,9 +80,10 @@ function calcTotalBonus(region, itemCode, country, gameConfig, countryEthics) {
 
 let currentBgFetch = 0;
 
-export default function CompanyDashboard({ theme, setTheme }) {
+export default function CompanyDashboard({ theme, setTheme, lang }) {
   setThemeVars(theme);
   const T = THEMES[theme];
+  const L = getLang(lang);
 
   const [userInput, setUserInput] = useState(() => {
     try {
@@ -133,12 +135,12 @@ export default function CompanyDashboard({ theme, setTheme }) {
     let interval;
     const handleRL = (e) => {
       let remaining = Math.ceil(e.detail.delay / 1000);
-      setLoadingMsg(`Rate Limit aktiv, warte ${remaining}s...`);
+      setLoadingMsg(L.rateLimitWait(remaining));
       clearInterval(interval);
       interval = setInterval(() => {
         remaining -= 1;
         if (remaining > 0) {
-          setLoadingMsg(`Rate Limit aktiv, warte ${remaining}s...`);
+          setLoadingMsg(L.rateLimitWait(remaining));
         } else {
           clearInterval(interval);
         }
@@ -153,7 +155,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
 
   async function loadData() {
     if (!userInput.trim()) return;
-    setLoading(true); setError(""); setLoadingMsg("Spieler suchen...");
+    setLoading(true); setError(""); setLoadingMsg(L.loadingSearchPlayer);
     try {
       // Phase 1: Resolve user + load global data in parallel
       const [user, pricesData, regionsData, countriesData, configData] = await Promise.all([
@@ -195,14 +197,14 @@ export default function CompanyDashboard({ theme, setTheme }) {
 
 
       // Phase 2: Load companies
-      setLoadingMsg("Fabriken laden...");
+      setLoadingMsg(L.loadingFactories);
       const userId = user._id || user.id || user.userId;
       const companiesResp = await apiCall("company.getCompanies", { userId, perPage: 100 });
       const companyIds = companiesResp?.items || [];
       if (!companyIds.length) throw new Error("Keine Fabriken gefunden");
 
       // Phase 3: Load company details + workers in parallel
-      setLoadingMsg(`${companyIds.length} Fabriken laden...`);
+      setLoadingMsg(L.loadingFactoriesN(companyIds.length));
       const companyDetails = await batchParallel(companyIds, async (cid) => {
         const [comp, wrk] = await Promise.all([
           apiCall("company.getById", { companyId: cid }),
@@ -226,7 +228,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
 
       // Phase 3b: Load worker user profiles to get energy/production skills
       if (allWorkerUserIds.size > 0) {
-        setLoadingMsg(`${allWorkerUserIds.size} Arbeiter-Profile laden...`);
+        setLoadingMsg(L.loadingWorkerProfiles(allWorkerUserIds.size));
         const userProfiles = await batchParallel([...allWorkerUserIds], async (uid) => {
           try {
             const u = await apiCall("user.getUserLite", { userId: uid });
@@ -254,7 +256,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
       setWorkers(workersMap);
 
       // Phase 3c: Calculate Liquid Assets (Geld + Items + Waffen) based on liquid_assets.py
-      setLoadingMsg("Liquide Mittel ermitteln...");
+      setLoadingMsg(L.loadingLiquid);
       const wealthRanking = await apiCall("ranking.getRanking", { rankingType: "userWealth", limit: 100, skip: 0 }).catch(() => null);
       let totalWealth = 0;
       if (wealthRanking?.items) {
@@ -265,7 +267,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
       setUserData(prev => ({ ...prev, liquidAssets, totalWealth, totalCompaniesValue }));
 
       // Phase 4: Load Party Ethics for factories' countries
-      setLoadingMsg("Relevante Partei-Ethiken laden...");
+      setLoadingMsg(L.loadingPartyEthics);
       const relevantCountryIds = new Set();
       for (const comp of comps) {
         const reg = regMap[comp.region];
@@ -322,7 +324,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
       }
 
       // Phase 5: Load owner's country for enemy check
-      setLoadingMsg("Diplomatie prüfen...");
+      setLoadingMsg(L.loadingDiplomacy);
       const ownerCountryId = user.country; // field is "country" on user object
       if (ownerCountryId && cntMap[ownerCountryId]) {
         setOwnerCountry(cntMap[ownerCountryId]);
@@ -358,7 +360,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
 
   function getRegionName(comp) {
     const region = regions[comp.region];
-    return region?.name || "Unbekannt";
+    return region?.name || L.unknown;
   }
 
   function getCountryForRegion(regionId) {
@@ -808,22 +810,22 @@ export default function CompanyDashboard({ theme, setTheme }) {
             <div style={{ display: "flex", gap: 16, marginBottom: 12 }}>
               <div style={{ flex: 1 }}>
                 <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
-                  <Sec icon="&#128100;">WarEra Spieler</Sec>
+                  <Sec icon="&#128100;">{L.sectionPlayer}</Sec>
                 </div>
-                <Tip text="Spielername oder User-ID eingeben">
+                <Tip text={L.tipPlayerInput}>
                   <input
                     value={userInput} onChange={e => setUserInput(e.target.value)}
                     onKeyDown={e => e.key === "Enter" && loadData()}
-                    placeholder="Username oder ID..."
+                    placeholder={L.placeholderPlayer}
                     style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 8, color: C.text, padding: "10px 14px", fontSize: 14, fontFamily: F.m, outline: "none", width: "100%", boxSizing: "border-box" }}
                   />
                 </Tip>
               </div>
               <div style={{ flex: 1 }}>
                 <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
-                  <Sec icon="&#128273;">API Key (Optional)</Sec>
+                  <Sec icon="&#128273;">{L.sectionApiKey}</Sec>
                 </div>
-                <Tip text="Persönlicher API Key">
+                <Tip text={L.tipApiKey}>
                   <input
                     type="password"
                     value={apiKey} onChange={e => setApiKey(e.target.value)}
@@ -835,7 +837,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
             </div>
             <div style={{ display: "flex", justifyContent: "center" }}>
               <Btn on big color={C.accent} onClick={loadData} disabled={loading || !userInput.trim()}>
-                {loading ? loadingMsg || "Lädt..." : "Daten laden"}
+                {loading ? loadingMsg || L.loadingGeneric : L.btnLoadData}
               </Btn>
             </div>
           </div>
@@ -843,8 +845,8 @@ export default function CompanyDashboard({ theme, setTheme }) {
         {error && <div style={{ marginTop: 12, fontSize: 12, fontFamily: F.m, color: C.red, textAlign: "center" }}>{error}</div>}
         {userData && !loading && (
           <div style={{ marginTop: 12, fontSize: 12, fontFamily: F.m, color: C.green, textAlign: "center" }}>
-            {userData.username}: {companies.length} Fabriken geladen
-            {ownerCountry && <span> &middot; Land: {ownerCountry.name}</span>}
+            {L.successLoaded(userData.username, companies.length)}
+            {ownerCountry && <span>{L.successCountry(ownerCountry.name)}</span>}
           </div>
         )}
       </GlassCard>
@@ -856,11 +858,11 @@ export default function CompanyDashboard({ theme, setTheme }) {
             <span style={{ fontSize: 24 }}>&#9888;</span>
             <div>
               <div style={{ fontFamily: F.h, fontSize: 15, fontWeight: 700, color: C.red, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-                {totalWarnings} Warnung{totalWarnings > 1 ? "en" : ""}
+                {L.warningsTitle(totalWarnings)}
               </div>
               <div style={{ fontSize: 12, color: C.textDim }}>
-                {enemyWarnings.length > 0 && <span>{enemyWarnings.length}x Feindland &middot; </span>}
-                {wageWarnings.length > 0 && <span>{wageWarnings.length}x Lohnverlust</span>}
+                {enemyWarnings.length > 0 && <span>{L.warningEnemy(enemyWarnings.length)} &middot; </span>}
+                {wageWarnings.length > 0 && <span>{L.warningWage(wageWarnings.length)}</span>}
               </div>
             </div>
           </div>
@@ -870,7 +872,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
       {!hasData && !loading && (
         <GlassCard>
           <div style={{ textAlign: "center", color: C.textMuted, padding: "40px 0" }}>
-            Gib einen Spielernamen ein, um das Dashboard zu laden.
+            {L.emptyState}
           </div>
         </GlassCard>
       )}
@@ -880,10 +882,10 @@ export default function CompanyDashboard({ theme, setTheme }) {
           {/* Sub-Tab Navigation */}
           <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
             {[
-              { key: "overview", label: "Übersicht", icon: "&#127981;" },
-              { key: "optimize", label: "Optimierung", icon: "&#128161;" },
-              { key: "market", label: "Profitabelste Produkte", icon: "&#128176;" },
-              { key: "optimizer_build", label: "Fabrikausbau", icon: "&#127976;" },
+              { key: "overview", label: L.tabOverview, icon: "&#127981;" },
+              { key: "optimize", label: L.tabOptimize, icon: "&#128161;" },
+              { key: "market", label: L.tabMarket, icon: "&#128176;" },
+              { key: "optimizer_build", label: L.tabOptimizerBuild, icon: "&#127976;" },
             ].map(t => (
               <Btn key={t.key} on={subTab === t.key} onClick={() => setSubTab(t.key)} color={C.accent}>
                 <span dangerouslySetInnerHTML={{ __html: t.icon }} /> {t.label}
@@ -894,7 +896,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
                 <style>{`@keyframes slowOrangeBlink { 0% { opacity: 1; background: #f97316; } 50% { opacity: 0.4; background: #f97316; } 100% { opacity: 1; background: #f97316; } }`}</style>
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                   <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700, whiteSpace: "nowrap" }}>
-                    Hintergrund-Daten
+                    {L.bgDataLabel}
                   </div>
                   <div style={{ flex: 1, height: 6, background: "rgba(255,255,255,0.1)", borderRadius: 3, overflow: "hidden" }}>
                     <div style={{ width: `${(bgProgress.loaded / Math.max(1, bgProgress.total)) * 100}%`, height: "100%", background: bgProgress.status === "waiting" ? "#f97316" : C.green, transition: "width 0.3s", animation: bgProgress.status === "waiting" ? "slowOrangeBlink 2s infinite" : "none" }} />
@@ -904,7 +906,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
                   </div>
                 </div>
                 <div style={{ fontSize: 10, color: bgProgress.status === "waiting" ? "#f97316" : C.textMuted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {bgProgress.status === "waiting" ? "Warte auf API (Rate Limit erreicht)..." : "Dauer: < 1 Min. mit API-Key (sonst länger). Währenddessen ändern sich die profitabelsten Produkte noch!"}
+                  {bgProgress.status === "waiting" ? L.bgWaiting : L.bgLoading}
                 </div>
               </div>
             )}
@@ -914,26 +916,26 @@ export default function CompanyDashboard({ theme, setTheme }) {
           {subTab === "overview" && (
             <GlassCard style={{ padding: 0, overflow: "hidden" }}>
               <div style={{ padding: "16px 20px 8px" }}>
-                <Sec icon="&#127981;">Fabrik-Übersicht ({companies.length})</Sec>
-                <div style={{ fontSize: 11, color: C.textMuted, marginTop: -10, marginBottom: 8 }}>Klicke auf eine Fabrik um Arbeiter-Details zu sehen</div>
+                <Sec icon="&#127981;">{L.sectionFactoryOverview(companies.length)}</Sec>
+                <div style={{ fontSize: 11, color: C.textMuted, marginTop: -10, marginBottom: 8 }}>{L.tipClickWorkerDetails}</div>
               </div>
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1000 }}>
                   <thead><tr>
-                    <th style={TH}>Name</th>
-                    <th style={TH}>Produkt</th>
-                    <th style={TH}>Motor</th>
-                    <th style={TH}>Lager</th>
-                    <th style={TH}>Region</th>
-                    <th style={TH}>Bonus</th>
-                    <th style={TH}>Arbeiter</th>
-                    <th style={TH}>Motor PP/Tag</th>
-                    <th style={TH}>Arbeiter PP/Tag</th>
-                    <th style={TH}>Gesamt PP/Tag</th>
-                    <th style={TH}>Umsatz/Tag</th>
-                    <th style={TH}>Kosten/Tag</th>
-                    <th style={TH}>Gewinn/Tag</th>
-                    <th style={TH}>Status</th>
+                    <th style={TH}>{L.colName}</th>
+                    <th style={TH}>{L.colProduct}</th>
+                    <th style={TH}>{L.colEngine}</th>
+                    <th style={TH}>{L.colStorage}</th>
+                    <th style={TH}>{L.colRegion}</th>
+                    <th style={TH}>{L.colBonus}</th>
+                    <th style={TH}>{L.colWorkers}</th>
+                    <th style={TH}>{L.colEnginePP}</th>
+                    <th style={TH}>{L.colWorkerPP}</th>
+                    <th style={TH}>{L.colTotalPP}</th>
+                    <th style={TH}>{L.colRevenue}</th>
+                    <th style={TH}>{L.colCost}</th>
+                    <th style={TH}>{L.colProfit}</th>
+                    <th style={TH}>{L.colStatus}</th>
                   </tr></thead>
                   <tbody>
                     {companies.map((comp, i) => {
@@ -956,7 +958,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
                             outline: isExpanded ? "1px solid " + C.accent + "44" : "none" }}>
                           <td style={TD(false)}>
                             {ws.length > 0 && <span style={{ marginRight: 6, fontSize: 10, color: C.accent }}>{isExpanded ? "\u25BC" : "\u25B6"}</span>}
-                            {comp.name || "Fabrik " + (i+1)}
+                            {comp.name || L.factoryFallback(i)}
                           </td>
                           <td style={TD(false)}>{comp.itemCode}</td>
                           <td style={TD(true)}>Lv {comp.activeUpgradeLevels?.automatedEngine || 1}</td>
@@ -982,10 +984,10 @@ export default function CompanyDashboard({ theme, setTheme }) {
                             {fmt(profit, 2)} G
                           </td>
                           <td style={TD(false)}>
-                            {isEnemy && <Bdg color={C.red}>FEINDLAND</Bdg>}
-                            {hasWageLoss && <Bdg color="#ff9900">LOHNVERLUST</Bdg>}
-                            {!getPPPerUnit(comp.itemCode) && <Bdg color={C.red}>CONFIG FEHLT</Bdg>}
-                            {!isEnemy && !hasWageLoss && getPPPerUnit(comp.itemCode) && <Bdg color={C.green}>OK</Bdg>}
+                            {isEnemy && <Bdg color={C.red}>{L.badgeEnemy}</Bdg>}
+                            {hasWageLoss && <Bdg color="#ff9900">{L.badgeWageLoss}</Bdg>}
+                            {!getPPPerUnit(comp.itemCode) && <Bdg color={C.red}>{L.badgeConfigMissing}</Bdg>}
+                            {!isEnemy && !hasWageLoss && getPPPerUnit(comp.itemCode) && <Bdg color={C.green}>{L.badgeOk}</Bdg>}
                           </td>
                         </tr>,
                         // Expanded worker details
@@ -994,19 +996,19 @@ export default function CompanyDashboard({ theme, setTheme }) {
                             <td colSpan={14} style={{ padding: 0, background: "rgba(0,0,0,0.2)" }}>
                               <div style={{ padding: "12px 20px 12px 36px" }}>
                                 <div style={{ fontFamily: F.h, fontSize: 13, fontWeight: 700, color: C.accent, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8 }}>
-                                  Arbeiter-Details &middot; Bonus: +{fmt(bonus, 2)}%
+                                  {L.workerDetailsTitle(fmt(bonus, 2))}
                                 </div>
                                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                                   <thead><tr>
-                                    <th style={{ ...TH, fontSize: 11 }}>Name</th>
-                                    <th style={{ ...TH, fontSize: 11 }}>Energie</th>
-                                    <th style={{ ...TH, fontSize: 11 }}>Produktion</th>
-                                    <th style={{ ...TH, fontSize: 11 }}>Treue</th>
-                                    <th style={{ ...TH, fontSize: 11 }}>Lohn/PP</th>
-                                    <th style={{ ...TH, fontSize: 11 }}>Formel</th>
-                                    <th style={{ ...TH, fontSize: 11 }}>PP/h (max)</th>
-                                    <th style={{ ...TH, fontSize: 11 }}>PP/Tag (max)</th>
-                                    <th style={{ ...TH, fontSize: 11 }}>Kosten/Tag</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>{L.colName}</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>{L.colEnergy}</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>{L.colProduction}</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>{L.colFidelity}</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>{L.colWage}</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>{L.colFormula}</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>{L.colPPH}</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>{L.colPPDay}</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>{L.colCostDay}</th>
                                   </tr></thead>
                                   <tbody>
                                     {ws.map((w, wi) => {
@@ -1042,19 +1044,19 @@ export default function CompanyDashboard({ theme, setTheme }) {
                                       );
                                     })}
                                     <tr style={{ borderTop: "1px solid rgba(255,255,255,0.1)" }}>
-                                      <td colSpan={6} style={{ ...TD(false), fontSize: 12, fontWeight: 700, color: C.textDim, textAlign: "right" }}>Summe Arbeiter:</td>
+                                      <td colSpan={6} style={{ ...TD(false), fontSize: 12, fontWeight: 700, color: C.textDim, textAlign: "right" }}>{L.sumWorkers}</td>
                                       <td style={{ ...TD(false), fontSize: 13, color: C.purple, fontWeight: 700 }}>{fmt(ws.reduce((s, w) => s + calcWorkerPPH(w, bonus), 0), 2)}</td>
                                       <td style={{ ...TD(false), fontSize: 13, color: C.purple, fontWeight: 700 }}>{fmt(workerPPTotal, 1)}</td>
                                       <td style={{ ...TD(false), fontSize: 13, color: C.red, fontWeight: 700 }}>{fmt(cost, 2)} G</td>
                                     </tr>
                                     <tr>
-                                      <td colSpan={6} style={{ ...TD(false), fontSize: 12, fontWeight: 700, color: C.textDim, textAlign: "right" }}>+ Motor (Lv {comp.activeUpgradeLevels?.automatedEngine || 1}):</td>
+                                      <td colSpan={6} style={{ ...TD(false), fontSize: 12, fontWeight: 700, color: C.textDim, textAlign: "right" }}>{L.engineRow(comp.activeUpgradeLevels?.automatedEngine || 1)}</td>
                                       <td style={{ ...TD(false), fontSize: 13, color: C.blue, fontWeight: 700 }}>{fmt(enginePP / 24, 2)}</td>
                                       <td style={{ ...TD(false), fontSize: 13, color: C.blue, fontWeight: 700 }}>{fmt(enginePP, 1)}</td>
                                       <td style={{ ...TD(false), fontSize: 13, color: C.textMuted }}>-</td>
                                     </tr>
                                     <tr style={{ borderTop: "1px solid " + C.accent + "44" }}>
-                                      <td colSpan={6} style={{ ...TD(false), fontSize: 13, fontWeight: 700, color: C.accent, textAlign: "right" }}>GESAMT:</td>
+                                      <td colSpan={6} style={{ ...TD(false), fontSize: 13, fontWeight: 700, color: C.accent, textAlign: "right" }}>{L.totalRow}</td>
                                       <td style={{ ...TD(false), fontSize: 14, color: C.accent, fontWeight: 700 }}>{fmt(ppDay / 24, 2)}</td>
                                       <td style={{ ...TD(false), fontSize: 14, color: C.accent, fontWeight: 700 }}>{fmt(ppDay, 1)}</td>
                                       <td style={{ ...TD(false), fontSize: 13, color: C.red, fontWeight: 700 }}>{fmt(cost, 2)} G</td>
@@ -1072,10 +1074,10 @@ export default function CompanyDashboard({ theme, setTheme }) {
               </div>
               {/* Totals */}
               <div style={{ padding: "12px 20px", borderTop: "1px solid rgba(255,255,255,0.08)", display: "flex", gap: 24, flexWrap: "wrap" }}>
-                <div><span style={{ color: C.textMuted, fontSize: 12 }}>Gesamt PP/Tag:</span> <span style={{ color: C.accent, fontWeight: 700, fontFamily: F.h, fontSize: 18 }}>{fmt(companies.reduce((s, c) => s + calcCompanyPPDay(c), 0), 1)}</span></div>
-                <div><span style={{ color: C.textMuted, fontSize: 12 }}>Gesamt Umsatz/Tag:</span> <span style={{ color: C.accent, fontWeight: 700, fontFamily: F.h, fontSize: 18 }}>{fmt(companies.reduce((s, c) => s + calcDailyRevenue(c), 0), 2)} G</span></div>
-                <div><span style={{ color: C.textMuted, fontSize: 12 }}>Gesamt Kosten/Tag:</span> <span style={{ color: C.red, fontWeight: 700, fontFamily: F.h, fontSize: 18 }}>{fmt(companies.reduce((s, c) => s + calcDailyCost(c), 0), 2)} G</span></div>
-                <div><span style={{ color: C.textMuted, fontSize: 12 }}>Gesamt Gewinn/Tag:</span> <span style={{ color: C.green, fontWeight: 700, fontFamily: F.h, fontSize: 18 }}>{fmt(companies.reduce((s, c) => s + calcDailyProfit(c), 0), 2)} G</span></div>
+                <div><span style={{ color: C.textMuted, fontSize: 12 }}>{L.totalPPDay}</span> <span style={{ color: C.accent, fontWeight: 700, fontFamily: F.h, fontSize: 18 }}>{fmt(companies.reduce((s, c) => s + calcCompanyPPDay(c), 0), 1)}</span></div>
+                <div><span style={{ color: C.textMuted, fontSize: 12 }}>{L.totalRevenue}</span> <span style={{ color: C.accent, fontWeight: 700, fontFamily: F.h, fontSize: 18 }}>{fmt(companies.reduce((s, c) => s + calcDailyRevenue(c), 0), 2)} G</span></div>
+                <div><span style={{ color: C.textMuted, fontSize: 12 }}>{L.totalCost}</span> <span style={{ color: C.red, fontWeight: 700, fontFamily: F.h, fontSize: 18 }}>{fmt(companies.reduce((s, c) => s + calcDailyCost(c), 0), 2)} G</span></div>
+                <div><span style={{ color: C.textMuted, fontSize: 12 }}>{L.totalProfit}</span> <span style={{ color: C.green, fontWeight: 700, fontFamily: F.h, fontSize: 18 }}>{fmt(companies.reduce((s, c) => s + calcDailyProfit(c), 0), 2)} G</span></div>
               </div>
             </GlassCard>
           )}
@@ -1086,9 +1088,9 @@ export default function CompanyDashboard({ theme, setTheme }) {
               {/* Enemy Warnings */}
               {enemyWarnings.length > 0 && (
                 <GlassCard glow="rgba(248,113,113,0.2)" style={{ borderColor: C.red + "33" }}>
-                  <Sec icon="&#9876;">Feindland-Warnungen ({enemyWarnings.length})</Sec>
+                  <Sec icon="&#9876;">{L.sectionEnemyWarnings(enemyWarnings.length)}</Sec>
                   <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
-                    Fabriken mit Arbeitern in Ländern, die mit deinem Land ({ownerCountry?.name}) im Krieg sind.
+                    {L.enemyWarningDesc(ownerCountry?.name)}
                   </div>
                   {enemyWarnings.map((w, i) => (
                     <div key={i} style={{ ...glass(0.08, 10), borderRadius: 8, padding: "12px 16px", marginBottom: 8, borderColor: C.red + "33" }}>
@@ -1100,7 +1102,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
                         <Bdg color={C.red}>{w.factoryCountry.name}</Bdg>
                       </div>
                       <div style={{ fontSize: 12, color: C.red, marginTop: 4 }}>
-                        {w.workerCount} Arbeiter in Feindgebiet! Produktion kann gestört werden.
+                        {L.enemyWorkerWarning(w.workerCount)}
                       </div>
                     </div>
                   ))}
@@ -1110,26 +1112,26 @@ export default function CompanyDashboard({ theme, setTheme }) {
               {/* Wage Loss Warnings */}
               {wageWarnings.length > 0 && (
                 <GlassCard glow="rgba(255,153,0,0.15)" style={{ borderColor: "#ff990033" }}>
-                  <Sec icon="&#128184;">Lohnverlust-Warnungen ({wageWarnings.length})</Sec>
+                  <Sec icon="&#128184;">{L.sectionWageWarnings(wageWarnings.length)}</Sec>
                   <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
-                    Arbeiter, deren Lohn höher ist als ihr Produktionsbeitrag.
+                    {L.wageWarningDesc}
                   </div>
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead><tr>
-                      <th style={TH}>Fabrik</th>
-                      <th style={TH}>Arbeiter</th>
-                      <th style={TH}>Lohn (PP)</th>
-                      <th style={TH}>Max Lohn (PP)</th>
-                      <th style={TH}>Lohn/Tag</th>
-                      <th style={TH}>Beitrag/Tag</th>
-                      <th style={TH}>Verlust/Tag</th>
+                      <th style={TH}>{L.colName}</th>
+                      <th style={TH}>{L.colWorkers}</th>
+                      <th style={TH}>{L.colWage}</th>
+                      <th style={TH}>{L.colMaxWage}</th>
+                      <th style={TH}>{L.colCost}</th>
+                      <th style={TH}>{L.colRevenue}</th>
+                      <th style={TH}>{L.colProfit}</th>
                     </tr></thead>
                     <tbody>
                       {wageWarnings.map((w, i) => (
                         <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
                           <td style={TD(false)}>{w.company.name || w.company.itemCode}</td>
                           <td style={TD(false)}>
-                            <div>{w.worker.username || w.worker.userId?.slice(0, 8) || "Arbeiter"}</div>
+                            <div>{w.worker.username || w.worker.userId?.slice(0, 8) || L.workerFallback(0).replace(" 1","")}</div>
                             <div style={{ fontSize: 10, color: C.textMuted }}>E:{w.worker.energy} P:{w.worker.productivity}</div>
                           </td>
                           <td style={{ ...TD(false), color: C.red }}>{fmt(w.worker.wage || 0, 3)} G</td>
@@ -1146,24 +1148,24 @@ export default function CompanyDashboard({ theme, setTheme }) {
 
               {/* Better Regions */}
               <GlassCard glow={betterRegions.length > 0 ? C.greenGlow : undefined}>
-                <Sec icon="&#127758;">Bessere Regionen verfügbar ({betterRegions.length})</Sec>
+                <Sec icon="&#127758;">{L.sectionBetterRegions(betterRegions.length)}</Sec>
                 <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
-                  Prüft, ob aktuelle Fabriken für 5 Beton in ein besseres Land umziehen sollten, ohne das Produkt zu ändern.
+                  {L.betterRegionsDesc}
                 </div>
                 {betterRegions.length === 0 ? (
                   <div style={{ padding: "16px", textAlign: "center", color: C.green, background: "rgba(0,255,0,0.05)", borderRadius: 8, border: "1px solid " + C.green + "44" }}>
-                    &#10004; Alle Fabriken befinden sich bereits in der absolut optimalen Region für ihr jeweiliges Produkt. Es gibt keinen berechtigten Umzug.
+                    {L.allOptimalRegions}
                   </div>
                 ) : (
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead><tr>
-                      <th style={TH}>Fabrik</th>
-                      <th style={TH}>Aktuell</th>
+                      <th style={TH}>{L.colName}</th>
+                      <th style={TH}>{L.colCurrent}</th>
                       <th style={TH}></th>
-                      <th style={TH}>Beste Region</th>
-                      <th style={TH}>Mehrgewinn/Tag</th>
-                      <th style={TH}>Umzugskosten</th>
-                      <th style={TH}>Amortisation</th>
+                      <th style={TH}>{L.colBestRegion}</th>
+                      <th style={TH}>{L.colExtraGain}</th>
+                      <th style={TH}>{L.colMoveCost}</th>
+                      <th style={TH}>{L.colPayback}</th>
                     </tr></thead>
                     <tbody>
                       {betterRegions.map((s, i) => (
@@ -1184,7 +1186,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
                           <td style={{ ...TD(false), color: C.green, fontWeight: 700 }}>+{fmt(s.dailyGain, 2)} G</td>
                           <td style={{ ...TD(false), color: C.textDim }}>{fmt(s.relocCost, 2)} G</td>
                           <td style={{ ...TD(false), fontWeight: 700, color: s.paybackDays <= 7 ? C.green : s.paybackDays <= 30 ? C.accent : C.red }}>
-                            {s.paybackDays === Infinity ? "nie" : fmt(s.paybackDays, 1) + " Tage"}
+                            {s.paybackDays === Infinity ? L.never : L.days(fmt(s.paybackDays, 1))}
                           </td>
                         </tr>
                       ))}
@@ -1196,16 +1198,16 @@ export default function CompanyDashboard({ theme, setTheme }) {
               {/* Worker Optimization */}
               {workerOptimization.length > 0 && (
                 <GlassCard glow={C.blueGlow}>
-                  <Sec icon="&#128101;">Arbeiter-Optimierung ({workerOptimization.length})</Sec>
+                  <Sec icon="&#128101;">{L.sectionWorkerOpt(workerOptimization.length)}</Sec>
                   <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
-                    Arbeiter, die in einer anderen Fabrik mehr Netto-Gewinn bringen würden. Lohn und Treue bleiben erhalten — zusätzlich wird gezeigt, wie sich die Lohnsteuer für den Arbeiter ändert.
+                    {L.workerOptDesc}
                   </div>
                   {workerOptimization.map((s, i) => (
                     <div key={i} style={{ ...glass(0.08, 10), borderRadius: 8, padding: "12px 16px", marginBottom: 8 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                         <div>
-                          <span style={{ color: C.accent, fontWeight: 700 }}>{s.worker.username || "Arbeiter"}</span>
-                          <span style={{ color: C.textDim, margin: "0 8px" }}>von</span>
+                          <span style={{ color: C.accent, fontWeight: 700 }}>{s.worker.username || L.workerFallback(0).replace(" 1","")}</span>
+                          <span style={{ color: C.textDim, margin: "0 8px" }}>{L.wordFrom}</span>
                           <span style={{ color: C.text, fontWeight: 600 }}>{s.fromCompany.name || s.fromCompany.itemCode}</span>
                           <span style={{ color: C.textDim, fontSize: 12 }}> ({s.fromCompany.itemCode}, {fmt(s.currentNetPerDay, 2)} G/Tag)</span>
                           <span style={{ color: C.accent, margin: "0 10px", fontSize: 16 }}>&rarr;</span>
@@ -1216,16 +1218,16 @@ export default function CompanyDashboard({ theme, setTheme }) {
                       </div>
                       <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(255,255,255,0.08)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 12 }}>
                         <div style={{ color: C.textDim }}>
-                          Lohnsteuer Arbeiter:{" "}
+                          {L.laborTax}{" "}
                           <span style={{ color: C.text }}>{fmt(s.fromTax * 100, 1)}%</span>
                           <span style={{ margin: "0 6px" }}>&rarr;</span>
                           <span style={{ color: s.toTax <= s.fromTax ? C.green : C.red }}>{fmt(s.toTax * 100, 1)}%</span>
                           <span style={{ marginLeft: 8, color: C.textDim }}>
-                            (Netto-Lohn: {fmt(s.workerNetWageFromPerDay, 2)} &rarr; {fmt(s.workerNetWageToPerDay, 2)} G/Tag)
+                            {L.netWageLine(fmt(s.workerNetWageFromPerDay, 2), fmt(s.workerNetWageToPerDay, 2))}
                           </span>
                         </div>
                         <Bdg color={s.workerWageGainPerDay >= 0 ? C.green : C.red}>
-                          {s.workerWageGainPerDay >= 0 ? "+" : ""}{fmt(s.workerWageGainPerDay, 2)} G/Tag für Arbeiter
+                          {L.workerGainBadge((s.workerWageGainPerDay >= 0 ? "+" : "") + fmt(s.workerWageGainPerDay, 2))}
                         </Bdg>
                       </div>
                     </div>
@@ -1235,26 +1237,26 @@ export default function CompanyDashboard({ theme, setTheme }) {
 
               {/* Global Optimization */}
               <GlassCard glow={globalOptimization.length > 0 ? C.accentGlow : undefined}>
-                <Sec icon="&#128260;">Globale Fabrik-Optimierung ({globalOptimization.length})</Sec>
+                <Sec icon="&#128260;">{L.sectionGlobalOpt(globalOptimization.length)}</Sec>
                 <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
-                  Prüft standortübergreifend, ob eine Fabrik ein anderes Produkt bauen sollte (+5 Beton) oder zusätzlich in ein anderes Land ziehen sollte (+10 Beton insgesamt).
+                  {L.globalOptDesc}
                 </div>
                 {globalOptimization.length === 0 ? (
                   <div style={{ padding: "16px", textAlign: "center", color: C.green, background: "rgba(0,255,0,0.05)", borderRadius: 8, border: "1px solid " + C.green + "44" }}>
-                    &#10004; Alle deine Fabriken produzieren bereits das absolut profitabelste Produkt! Es gibt keine bessere Kombination aus Produkt und Region.
+                    {L.allOptimalGlobal}
                   </div>
                 ) : (
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead><tr>
-                      <th style={TH}>Fabrik</th>
-                      <th style={TH}>Aktuell</th>
+                      <th style={TH}>{L.colName}</th>
+                      <th style={TH}>{L.colCurrent}</th>
                       <th style={TH}></th>
-                      <th style={TH}>Globale Empfehlung</th>
-                      <th style={TH}>Gewinn alt</th>
-                      <th style={TH}>Gewinn neu</th>
-                      <th style={TH}>Mehrgewinn</th>
-                      <th style={TH}>Beton</th>
-                      <th style={TH}>Amortisation</th>
+                      <th style={TH}>{L.colGlobalRec}</th>
+                      <th style={TH}>{L.colOldProfit}</th>
+                      <th style={TH}>{L.colNewProfit}</th>
+                      <th style={TH}>{L.colExtraProfit}</th>
+                      <th style={TH}>{L.colConcrete}</th>
+                      <th style={TH}>{L.colPayback}</th>
                     </tr></thead>
                     <tbody>
                       {globalOptimization.map((s, i) => (
@@ -1274,7 +1276,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
                           <td style={{ ...TD(false), color: C.green, fontWeight: 700 }}>+{fmt(s.dailyGain, 2)} G</td>
                           <td style={{ ...TD(false), color: C.red }}>{s.concreteNeeded} <span style={{fontSize:10}}>({fmt(s.totalCost, 1)} G)</span></td>
                           <td style={{ ...TD(false), fontWeight: 700, color: s.paybackDays <= 2 ? C.green : s.paybackDays <= 7 ? C.accent : C.red }}>
-                            {fmt(s.paybackDays, 1)} Tage
+                            {L.days(fmt(s.paybackDays, 1))}
                           </td>
                         </tr>
                       ))}
@@ -1289,25 +1291,25 @@ export default function CompanyDashboard({ theme, setTheme }) {
           {subTab === "market" && (
             <GlassCard style={{ padding: 0, overflow: "hidden" }}>
               <div style={{ padding: "16px 20px 8px" }}>
-                <Sec icon="&#128176;">Alle Produkte nach Effizienz</Sec>
+                <Sec icon="&#128176;">{L.sectionMarket}</Sec>
                 <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
-                  Ranking aller produzierbaren Güter nach Gold pro Production Point (basierend auf aktuellen Marktpreisen).
+                  {L.marketDesc}
                 </div>
               </div>
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
                   <thead><tr>
                     <th style={TH}>#</th>
-                    <th style={TH}>Produkt</th>
-                    <th style={TH}>Typ</th>
-                    <th style={TH}>Verkauf/Stk</th>
-                    <th style={TH}>Material/Stk</th>
-                    <th style={TH}>Marge/Stk</th>
-                    <th style={TH}>PP/Stk</th>
-                    <th style={TH}>Basis-Marge/PP</th>
-                    <th style={TH}>Max. Marge/PP</th>
-                    <th style={TH}>Deine Fabriken</th>
-                    <th style={TH}>Dein Gewinn/Tag</th>
+                    <th style={TH}>{L.colName}</th>
+                    <th style={TH}>{L.colType}</th>
+                    <th style={TH}>{L.colSellPerUnit}</th>
+                    <th style={TH}>{L.colMatCost}</th>
+                    <th style={TH}>{L.colMargin}</th>
+                    <th style={TH}>{L.colPPUnit}</th>
+                    <th style={TH}>{L.colBaseMarginPP}</th>
+                    <th style={TH}>{L.colMaxMarginPP}</th>
+                    <th style={TH}>{L.colYourFactories}</th>
+                    <th style={TH}>{L.colYourProfit}</th>
                   </tr></thead>
                   <tbody>
                     {allProducts.map((p, i) => {
@@ -1325,7 +1327,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
                             {p.itemCode}
                           </td>
                           <td style={{ ...TD(false), fontSize: 12 }}>
-                            <Bdg color={p.type === "raw" ? C.blue : C.purple}>{p.type === "raw" ? "Rohstoff" : "Produkt"}</Bdg>
+                            <Bdg color={p.type === "raw" ? C.blue : C.purple}>{p.type === "raw" ? L.badgeRaw : L.badgeProduct}</Bdg>
                           </td>
                           <td style={{ ...TD(false), color: C.accent }}>{fmt(p.price, 4)} G</td>
                           <td style={TD(false)}>
@@ -1350,7 +1352,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
                           </td>
                           <td style={TD(false)}>
                             {isProducing
-                              ? <span style={{ color: C.accent }}>{p.userCompanyCount} Fabrik{p.userCompanyCount > 1 ? "en" : ""}</span>
+                              ? <span style={{ color: C.accent }}>{L.factoriesCount(p.userCompanyCount)}</span>
                               : <span style={{ color: C.textMuted }}>-</span>
                             }
                           </td>
@@ -1373,7 +1375,7 @@ export default function CompanyDashboard({ theme, setTheme }) {
 
           {/* ── OPTIMIZER BUILD TAB ── */}
           {subTab === "optimizer_build" && optimizerProps && (
-            <FactoryOptimizer theme={theme} setTheme={setTheme} optData={optimizerProps} />
+            <FactoryOptimizer theme={theme} setTheme={setTheme} optData={optimizerProps} lang={lang} />
           )}
         </>
       )}

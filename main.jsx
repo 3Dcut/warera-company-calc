@@ -2,14 +2,30 @@ import React, { useState } from 'react'
 import ReactDOM from 'react-dom/client'
 import CompanyDashboard from './company-dashboard.jsx'
 import { THEMES, setThemeVars, glass, Tip, GlassCard } from './shared.jsx'
+import { getLang } from './translations.jsx'
+
+const LANGS = [
+  { code: "de", label: "DE", flag: "🇩🇪" },
+  { code: "en", label: "EN", flag: "🇬🇧" },
+  { code: "sv", label: "SV", flag: "🇸🇪" },
+];
 
 function Shell() {
   const [theme, setTheme] = useState("grau");
+  const [lang, setLang] = useState(() => {
+    try { return localStorage.getItem("warera_lang") || "de"; } catch { return "de"; }
+  });
 
   setThemeVars(theme);
   const T = THEMES[theme];
   const C = T.C;
   const F = T.F;
+  const L = getLang(lang);
+
+  function switchLang(code) {
+    setLang(code);
+    try { localStorage.setItem("warera_lang", code); } catch {}
+  }
 
   return (
     <div style={{
@@ -24,14 +40,29 @@ function Shell() {
       {/* Header */}
       <div style={{ display: "flex", alignItems: "flex-end", gap: 16, marginBottom: 20, paddingBottom: 20, borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
         <div style={{ flex: 1 }}>
-          <div style={{ fontFamily: F.h, fontSize: 13, color: C.textMuted, letterSpacing: "0.2em", textTransform: "uppercase", marginBottom: 6 }}>WarEra Produktions-Planungstool</div>
+          <div style={{ fontFamily: F.h, fontSize: 13, color: C.textMuted, letterSpacing: "0.2em", textTransform: "uppercase", marginBottom: 6 }}>{L.appSubtitle}</div>
           <h1 style={{ fontFamily: F.h, fontSize: 32, fontWeight: 700, color: C.accent, margin: 0, letterSpacing: "0.04em", textShadow: "0 0 30px " + C.accentGlow, lineHeight: 1.2 }}>
-            Firmen-Dashboard<br />
-            <span style={{ fontSize: 18, fontWeight: 600, color: C.textDim, letterSpacing: "0.08em" }}>des Hebelministeriums Deutschland</span>
+            {L.appTitle}<br />
+            <span style={{ fontSize: 18, fontWeight: 600, color: C.textDim, letterSpacing: "0.08em" }}>{L.appByline}</span>
           </h1>
         </div>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 10 }}>
-          <Tip text={"Theme wechseln: " + (theme === "grau" ? "Pink" : "Grau")}>
+          {/* Language switcher */}
+          <div style={{ display: "flex", gap: 4 }}>
+            {LANGS.map(l => (
+              <button key={l.code} onClick={() => switchLang(l.code)} style={{
+                padding: "5px 10px", borderRadius: 16,
+                border: "1px solid " + (lang === l.code ? C.accent + "88" : "rgba(255,255,255,0.1)"),
+                background: lang === l.code ? C.accent + "22" : "rgba(255,255,255,0.03)",
+                color: lang === l.code ? C.accent : C.textDim,
+                cursor: "pointer", fontSize: 12, fontFamily: F.h, fontWeight: 700,
+                letterSpacing: "0.06em", transition: "all 0.2s",
+              }}>
+                {l.flag} {l.label}
+              </button>
+            ))}
+          </div>
+          <Tip text={L.themeSwitchTo(theme === "grau" ? "Pink" : "Grau")}>
             <button onClick={() => setTheme(t => t === "grau" ? "pink" : "grau")} style={{
               padding: "8px 18px", borderRadius: 20,
               border: "1px solid " + (theme === "pink" ? "rgba(255,107,157,0.5)" : "rgba(255,255,255,0.1)"),
@@ -52,7 +83,7 @@ function Shell() {
       {/* Banner */}
 
       {/* Page Content */}
-      <CompanyDashboard theme={theme} setTheme={setTheme} />
+      <CompanyDashboard theme={theme} setTheme={setTheme} lang={lang} />
     </div>
   );
 }

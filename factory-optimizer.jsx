@@ -1,13 +1,14 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { THEMES, C, F, setThemeVars, glass, fmt, fmtT, fmtN, GlassCard, Sec, Inp, Bdg, Tip, Btn, getTH, getTD, apiCall } from "./shared.jsx";
+import { getLang } from "./translations.jsx";
 
-function getStrats() {
+function getStrats(L) {
   return [
-    { key: "dijkstra", label: "Optimal (Dijkstra)", color: C.accent, glow: C.accentGlow, tip: "Durchsucht alle moeglichen Pfade und findet den nachweislich schnellsten" },
-    { key: "cheapest", label: "Billigstes zuerst", color: C.green, glow: C.greenGlow, tip: "Nimmt immer die billigste naechste Aktion" },
-    { key: "buy_first", label: "Fabriken zuerst", color: C.blue, glow: C.blueGlow, tip: "Kauft erst alle Fabriken, dann Upgrades" },
-    { key: "upgrade_first", label: "Upgrades zuerst", color: C.purple, glow: "rgba(167,139,250,0.2)", tip: "Upgradet erst alles, kauft dann neue Fabriken" },
+    { key: "dijkstra", label: L.stratOptimal, color: C.accent, glow: C.accentGlow, tip: L.stratTipOptimal },
+    { key: "cheapest", label: L.stratCheapest, color: C.green, glow: C.greenGlow, tip: L.stratTipCheapest },
+    { key: "buy_first", label: L.stratBuyFirst, color: C.blue, glow: C.blueGlow, tip: L.stratTipBuyFirst },
+    { key: "upgrade_first", label: L.stratUpgradeFirst, color: C.purple, glow: "rgba(167,139,250,0.2)", tip: L.stratTipUpgradeFirst },
   ];
 }
 
@@ -66,7 +67,7 @@ class Heap {
 
 function facKey(fs) { return fs.map(f => f.level).sort().join("|"); }
 
-function runDijkstra(startFacs, params) {
+function runDijkstra(startFacs, params, L) {
   const { maxFactories, maxLevel, upgradeBase, factoryBase, optData } = params;
   const priceStahl = optData?.prices?.steel || 1.58;
   const priceBeton = optData?.prices?.concrete || 1.57;
@@ -115,7 +116,7 @@ function runDijkstra(startFacs, params) {
       
       if (!visited.has(nk)) {
         heap.push(time + dt, { facs: nf, path: [...path, {
-          action: "Upgrade F" + (i+1) + " (" + (facs[i].name || facs[i].item || "Neu") + ") L" + lvl + " -> L" + (lvl+1),
+          action: L.upgradeAction(i+1, facs[i].name || facs[i].item || L.newFac, lvl, lvl+1),
           type: "upgrade", resType: "stahl", resCost: stahl, usedInv: usedStahl,
           goldCost, goldGainDay: facs[i].goldPerLevelPerDay, dt, time: time + dt, 
           rateDay: totalGoldPerDay(nf, params), savings: newSavings,
@@ -148,7 +149,7 @@ function runDijkstra(startFacs, params) {
       
       if (!visited.has(nk)) {
         heap.push(time + dt, { facs: nf, path: [...path, {
-          action: "Neue Fabrik #" + n + " (" + (optData?.bestProduct?.itemCode || "Neu") + ")", type: "buy", resType: "beton", resCost: beton, usedInv: usedBeton,
+          action: L.newFactoryAction(n, optData?.bestProduct?.itemCode || L.newFac), type: "buy", resType: "beton", resCost: beton, usedInv: usedBeton,
           goldCost, goldGainDay: newFacGoldPerLevelDay, dt, time: time + dt, 
           rateDay: totalGoldPerDay(nf, params), savings: newSavings,
         }], savings: newSavings, invStahl, invBeton: invBeton - usedBeton });
@@ -158,7 +159,7 @@ function runDijkstra(startFacs, params) {
   return { path: [], complete: false, iter };
 }
 
-function simulate(startFacs, params, strategy) {
+function simulate(startFacs, params, strategy, L) {
   const { maxFactories, maxLevel, upgradeBase, factoryBase, optData } = params;
   const priceStahl = optData?.prices?.steel || 1.58;
   const priceBeton = optData?.prices?.concrete || 1.57;
@@ -187,7 +188,7 @@ function simulate(startFacs, params, strategy) {
       const goldCost = (stahl - usedStahl) * priceStahl;
       let dt = savings < goldCost ? (rateHour > 0 ? ((goldCost - savings) / rateHour) : Infinity) : 0;
       acts.push({ type: "upgrade", idx: i, resCost: stahl, resType: "stahl", usedInv: usedStahl,
-        goldCost, goldGainDay: f.goldPerLevelPerDay, dt, label: "Upgrade F" + (i+1) + " (" + (f.name || f.item || "Neu") + ") L" + f.level + " -> L" + (f.level+1) });
+        goldCost, goldGainDay: f.goldPerLevelPerDay, dt, label: L.upgradeAction(i+1, f.name || f.item || L.newFac, f.level, f.level+1) });
     });
     
     if (st.length < maxFactories) {
@@ -197,7 +198,7 @@ function simulate(startFacs, params, strategy) {
       const goldCost = (beton - usedBeton) * priceBeton;
       let dt = savings < goldCost ? (rateHour > 0 ? ((goldCost - savings) / rateHour) : Infinity) : 0;
       acts.push({ type: "buy", resCost: beton, resType: "beton", usedInv: usedBeton,
-        goldCost, goldGainDay: newFacGoldPerLevelDay, dt, label: "Neue Fabrik #" + n + " (" + (optData?.bestProduct?.itemCode || "Neu") + ")" });
+        goldCost, goldGainDay: newFacGoldPerLevelDay, dt, label: L.newFactoryAction(n, optData?.bestProduct?.itemCode || L.newFac) });
     }
     
     if (!acts.length) break;
@@ -256,10 +257,11 @@ function buildChart(paths, startRate, keys) {
 
 
 // ── Main ──
-export default function App({ theme, setTheme, optData }) {
+export default function App({ theme, setTheme, optData, lang }) {
   setThemeVars(theme);
   const T = THEMES[theme];
-  const STRATS = getStrats();
+  const L = getLang(lang);
+  const STRATS = getStrats(L);
   const TH = getTH();
   const TD = getTD;
 
@@ -319,9 +321,9 @@ export default function App({ theme, setTheme, optData }) {
     };
 
     setTimeout(() => {
-      const paths = {}, d = runDijkstra(fData, pData);
+      const paths = {}, d = runDijkstra(fData, pData, L);
       paths.dijkstra = d.path;
-      for (const s of STRATS) { if (s.key !== "dijkstra") try { paths[s.key] = simulate(fData, pData, s.key); } catch { paths[s.key] = []; } }
+      for (const s of STRATS) { if (s.key !== "dijkstra") try { paths[s.key] = simulate(fData, pData, s.key, L); } catch { paths[s.key] = []; } }
       const finals = {};
       for (const s of STRATS) { const p = paths[s.key]; finals[s.key] = p?.length ? p[p.length-1].time : null; }
       setRes({ paths, finals, ok: d.complete, iter: d.iter });
@@ -384,7 +386,7 @@ export default function App({ theme, setTheme, optData }) {
     <div>
       <div style={{ marginBottom: 14 }}>
         <Btn on={showAdvanced} onClick={() => setShowAdvanced(!showAdvanced)}>
-          {showAdvanced ? "Optionen ausblenden \u25B4" : "Fortgeschrittene Optionen \u25BE"}
+          {showAdvanced ? L.hideAdvanced : L.showAdvanced}
         </Btn>
       </div>
 
@@ -403,43 +405,43 @@ export default function App({ theme, setTheme, optData }) {
             
             <div style={{...glass(0.05, 8), padding: 8, marginTop: 16, display: "flex", flexDirection: "column", gap: 4}}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{fontSize: 11, fontWeight: "bold", color: C.textDim, textTransform: "uppercase", letterSpacing: "0.05em"}}>Reichtum Profil (API)</div>
+                <div style={{fontSize: 11, fontWeight: "bold", color: C.textDim, textTransform: "uppercase", letterSpacing: "0.05em"}}>{L.wealthProfile}</div>
                 <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 10, color: C.textMuted}}>
-                  <input type="checkbox" checked={useApiWealth} onChange={e => setUseApiWealth(e.target.checked)} /> API Auto-Sync Startkapital
+                  <input type="checkbox" checked={useApiWealth} onChange={e => setUseApiWealth(e.target.checked)} /> {L.apiAutoSync}
                 </label>
               </div>
               <div style={{fontSize: 12, color: C.text, display: "flex", flexWrap: "wrap", gap: 10, fontFamily: F.m}}>
-                <span>Gesamt: <b style={{color: C.green}}>{fmtN(optData?.totalWealth || 0)}</b></span>
-                <span>Firmenwert: <b style={{color: C.accent}}>{fmtN(optData?.totalCompaniesValue || 0)}</b></span>
-                <span>Liquide: <b style={{color: C.gold || "#eab308"}}>{fmtN(Math.round((optData?.liquidAssets || 0) * 100) / 100)}</b></span>
+                <span>{L.wordTotal}: <b style={{color: C.green}}>{fmtN(optData?.totalWealth || 0)}</b></span>
+                <span>{L.wordCompanyValue}: <b style={{color: C.accent}}>{fmtN(optData?.totalCompaniesValue || 0)}</b></span>
+                <span>{L.wordLiquid}: <b style={{color: C.gold || "#eab308"}}>{fmtN(Math.round((optData?.liquidAssets || 0) * 100) / 100)}</b></span>
               </div>
             </div>
           </GlassCard>
           <GlassCard>
-            <Sec icon="&#128203;">Konfiguration (Import/Export)</Sec>
+            <Sec icon="&#128203;">{L.sectionImportExport}</Sec>
             <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-              <Tip text="Alle Parameter + Fabriken als Code in die Zwischenablage kopieren">
-                <Btn on={copied} onClick={doCopy}>{copied ? "\u2713 Kopiert" : "Code kopieren"}</Btn>
+              <Tip text={L.tipCopyCode}>
+                <Btn on={copied} onClick={doCopy}>{copied ? L.btnCopied : L.btnCopyCode}</Btn>
               </Tip>
-              <Tip text="Einen gespeicherten Code eingeben, um Parameter und Fabriken zu laden">
-                <Btn on={showImp} onClick={() => setShowImp(!showImp)}>Import-Code</Btn>
+              <Tip text={L.tipImportCode}>
+                <Btn on={showImp} onClick={() => setShowImp(!showImp)}>{L.btnImportCode}</Btn>
               </Tip>
             </div>
             {showImp && (
               <div style={{ display: "flex", gap: 8 }}>
-                <input value={impStr} onChange={e => setImpStr(e.target.value)} placeholder="Code..."
+                <input value={impStr} onChange={e => setImpStr(e.target.value)} placeholder={L.codePlaceholder}
                   style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 6, color: C.text, padding: "6px 10px", fontSize: 14, fontFamily: F.m, outline: "none", flex: 1 }} />
-                <Btn on color={C.green} onClick={doImport}>Laden</Btn>
+                <Btn on color={C.green} onClick={doImport}>{L.btnLoad}</Btn>
               </div>
             )}
             <div style={{ fontSize: 16, color: C.textMuted, wordBreak: "break-all", marginTop: 12, lineHeight: 1.4 }}>{code}</div>
           </GlassCard>
 
           <GlassCard style={{ marginTop: 0 }}>
-            <Sec icon="&#9776;">Kostenreferenz ({fmt(optData?.prices?.steel, 2)}G/Stahl, {fmt(optData?.prices?.concrete, 2)}G/Beton)</Sec>
+            <Sec icon="&#9776;">{L.costRef(fmt(optData?.prices?.steel, 2), fmt(optData?.prices?.concrete, 2))}</Sec>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, fontSize: 16 }}>
               <div>
-                <div style={{ color: C.stahl, fontWeight: 700, fontFamily: F.h, marginBottom: 12, letterSpacing: "0.08em" }}>UPGRADES</div>
+                <div style={{ color: C.stahl, fontWeight: 700, fontFamily: F.h, marginBottom: 12, letterSpacing: "0.08em" }}>{L.upgradesHeader}</div>
                 {Array.from({ length: mxL - 1 }, (_, i) => i+1).map(l => {
                   const s = upgStahl(l, uB), goldCost = s * (optData?.prices?.steel || 1.58);
                   return <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: C.textDim }}>
@@ -450,7 +452,7 @@ export default function App({ theme, setTheme, optData }) {
                 })}
               </div>
               <div>
-                <div style={{ color: C.betonC, fontWeight: 700, fontFamily: F.h, marginBottom: 12, letterSpacing: "0.08em" }}>FABRIKEN</div>
+                <div style={{ color: C.betonC, fontWeight: 700, fontFamily: F.h, marginBottom: 12, letterSpacing: "0.08em" }}>{L.factoriesHeader}</div>
                 {Array.from({ length: mxF }, (_, i) => i+1).map(n => {
                   const b = facBeton(n, fB), goldCost = b * (optData?.prices?.concrete || 1.57);
                   return <div key={n} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: C.textDim }}>
@@ -468,7 +470,7 @@ export default function App({ theme, setTheme, optData }) {
       {/* Main Results Display */}
       {res && (
         <div style={{ marginBottom: 20 }}>
-          <Sec icon="&#128200;">Produktionskurve</Sec>
+          <Sec icon="&#128200;">{L.sectionProductionCurve}</Sec>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 20 }}>
             {STRATS.map(s => {
               const t = res.finals[s.key], on = actv.includes(s.key);
@@ -481,7 +483,7 @@ export default function App({ theme, setTheme, optData }) {
                       boxShadow: isBest && on ? "0 0 20px " + s.glow : "none" }}>
                     <div style={{ fontFamily: F.h, fontSize: 12, color: s.color, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>{s.label}</div>
                     <div style={{ fontSize: 24, fontWeight: 700, fontFamily: F.h }}>{t != null ? fmtT(t) : "-"}</div>
-                    {isBest && <div style={{ fontSize: 10, color: s.color, fontWeight: 700, marginTop: 4 }}>BESTE</div>}
+                    {isBest && <div style={{ fontSize: 10, color: s.color, fontWeight: 700, marginTop: 4 }}>{L.best}</div>}}
                   </div>
                 </Tip>
               );
@@ -489,25 +491,25 @@ export default function App({ theme, setTheme, optData }) {
 
             <div style={{ ...glass(0.03, 16), borderRadius: 12, padding: "16px", minWidth: 260, flex: 1, display: "flex", gap: 24, flexWrap: "wrap", alignItems: "flex-start" }}>
               <div style={{ flex: 1, minWidth: 150 }}>
-                <Inp label="Startkapital" value={stB} onChange={v => { setStB(v); compute(); }} suffix="G" tip="Geld + Items + Ausrüstung" />
+                <Inp label={L.labelStartBalance} value={stB} onChange={v => { setStB(v); compute(); }} suffix="G" tip={L.tipStartBalance} />
               </div>
               
               <div style={{ width: "1px", minHeight: 120, background: "rgba(255,255,255,0.05)", display: "block" }}></div>
 
               <div style={{ flex: 1, minWidth: 200 }}>
-                <div style={{ fontFamily: F.h, fontSize: 12, color: C.textDim, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 10 }}>Einnahmequellen & Simulation</div>
+                <div style={{ fontFamily: F.h, fontSize: 12, color: C.textDim, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 10 }}>{L.incomeSources}</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13}}>
-                    <input type="checkbox" checked={inclW} onChange={e => { setInclW(e.target.checked); compute(null, { ...params, includeWorkers: e.target.checked }); }} /> Mitarbeiter-Gewinn
+                    <input type="checkbox" checked={inclW} onChange={e => { setInclW(e.target.checked); compute(null, { ...params, includeWorkers: e.target.checked }); }} /> {L.inclWorkers}
                   </label>
                   <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13}}>
-                    <input type="checkbox" checked={inclM} onChange={e => { setInclM(e.target.checked); compute(null, { ...params, includeMissions: e.target.checked }); }} /> + Missionen (10G/Tag, 30G/W)
+                    <input type="checkbox" checked={inclM} onChange={e => { setInclM(e.target.checked); compute(null, { ...params, includeMissions: e.target.checked }); }} /> {L.inclMissions}
                   </label>
                   <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13}}>
-                    <input type="checkbox" checked={inclC} onChange={e => { setInclC(e.target.checked); compute(null, { ...params, includeCases: e.target.checked }); }} /> + Kistenverkauf (1/Tag, 3/W)
+                    <input type="checkbox" checked={inclC} onChange={e => { setInclC(e.target.checked); compute(null, { ...params, includeCases: e.target.checked }); }} /> {L.inclCases}
                   </label>
                   <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13}}>
-                    <input type="checkbox" checked={inclD} onChange={e => { setInclD(e.target.checked); compute(null, { ...params, includeDonations: e.target.checked }); }} /> - Spenden (5G/Tag)
+                    <input type="checkbox" checked={inclD} onChange={e => { setInclD(e.target.checked); compute(null, { ...params, includeDonations: e.target.checked }); }} /> {L.inclDonations}
                   </label>
                 </div>
               </div>
@@ -531,7 +533,7 @@ export default function App({ theme, setTheme, optData }) {
       {/* Side by Side */}
       <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "flex-start" }}>
         <div style={{ flex: "1 1 500px", minWidth: 0 }}>
-          <Sec icon="&#127981;">Deine Fabriken ({facs.length}/{mxF})</Sec>
+          <Sec icon="&#127981;">{L.sectionYourFactories(facs.length, mxF)}</Sec>
           <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 20 }}>
             {facs.map((f, i) => (
               <div key={i} style={{ ...glass(0.08, 10), borderRadius: 12, padding: "12px 16px", border: "1px solid rgba(255,255,255,0.08)", display: "flex", justifyContent: "space-between", alignItems: "center", transition: "transform 0.2s, box-shadow 0.2s" }} onMouseOver={e => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 6px 20px rgba(0,0,0,0.4)"; }} onMouseOut={e => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = glass(0.08, 10).boxShadow; }}>
@@ -552,17 +554,17 @@ export default function App({ theme, setTheme, optData }) {
 
                 <div style={{ flex: 1, padding: "0 20px" }}>
                   <div style={{ fontSize: 12, color: C.textDim, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", background: "rgba(0,0,0,0.2)", padding: "4px 12px", borderRadius: 6, display: "inline-block" }}>
-                    {f.name && f.name !== f.item ? <span style={{ color: C.text }}>{f.name} <span style={{color: C.textMuted}}>({f.item})</span></span> : <span>{f.item || "Neu"}</span>}
+                    {f.name && f.name !== f.item ? <span style={{ color: C.text }}>{f.name} <span style={{color: C.textMuted}}>({f.item})</span></span> : <span>{f.item || L.newFac}</span>}
                   </div>
                 </div>
 
-                <Tip text="Fabrik aus der Planung entfernen">
+                <Tip text={L.tipRemoveFactory}>
                   <button aria-label="Fabrik entfernen" onClick={() => { rmF(i); compute(facs.filter((_, j) => j !== i)); }} style={{ background: "rgba(255,50,50,0.1)", border: "1px solid rgba(255,50,50,0.3)", borderRadius: "50%", color: C.red, cursor: "pointer", fontSize: 14, fontWeight: 700, width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s" }} onMouseOver={e => { e.currentTarget.style.background = C.red; e.currentTarget.style.color = "#fff"; }} onMouseOut={e => { e.currentTarget.style.background = "rgba(255,50,50,0.1)"; e.currentTarget.style.color = C.red; }}>&times;</button>
                 </Tip>
               </div>
             ))}
-            <Tip text="Neue Fabrik (L1) zur Planung hinzufügen">
-              <button aria-label="Neue Fabrik hinzufügen" onClick={() => { const nf = [...facs, { level: 1, item: optData?.bestProduct?.itemCode || "Neu", goldPerLevelPerDay: optData?.bestProduct ? (24 * optData.bestProduct.maxGoldPerPP) : 2.5, workerGoldPerDay: 0 }]; setFacs(nf); compute(nf); }} style={{ ...glass(0.05), borderRadius: 12, border: "2px dashed rgba(255,255,255,0.2)", color: C.textMuted, cursor: "pointer", fontSize: 24, padding: "12px", width: "100%", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s" }} onMouseOver={e => { e.currentTarget.style.background = "rgba(255,255,255,0.1)"; e.currentTarget.style.borderColor = C.accent; e.currentTarget.style.color = C.accent; }} onMouseOut={e => { e.currentTarget.style.background = glass(0.05).background; e.currentTarget.style.borderColor = "rgba(255,255,255,0.2)"; e.currentTarget.style.color = C.textMuted; }}>
+            <Tip text={L.tipAddFactory}>
+              <button aria-label="Neue Fabrik hinzufügen" onClick={() => { const nf = [...facs, { level: 1, item: optData?.bestProduct?.itemCode || L.newFac, goldPerLevelPerDay: optData?.bestProduct ? (24 * optData.bestProduct.maxGoldPerPP) : 2.5, workerGoldPerDay: 0 }]; setFacs(nf); compute(nf); }}style={{ ...glass(0.05), borderRadius: 12, border: "2px dashed rgba(255,255,255,0.2)", color: C.textMuted, cursor: "pointer", fontSize: 24, padding: "12px", width: "100%", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s" }} onMouseOver={e => { e.currentTarget.style.background = "rgba(255,255,255,0.1)"; e.currentTarget.style.borderColor = C.accent; e.currentTarget.style.color = C.accent; }} onMouseOut={e => { e.currentTarget.style.background = glass(0.05).background; e.currentTarget.style.borderColor = "rgba(255,255,255,0.2)"; e.currentTarget.style.color = C.textMuted; }}>
                 +
               </button>
             </Tip>
@@ -572,15 +574,15 @@ export default function App({ theme, setTheme, optData }) {
         <div style={{ flex: "1 1 400px", minWidth: 0 }}>
           {res && (
             <>
-              <Sec icon="&#128220;">Bester Bauplan (Dijkstra)</Sec>
+              <Sec icon="&#128220;">{L.sectionBestPlan}</Sec>
               <GlassCard style={{ padding: "0", overflow: "hidden" }}>
                 <div style={{ maxHeight: "600px", overflowY: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead><tr>
-                      <th style={TH}><Tip text="Schrittnummer im Bauplan">Schritt</Tip></th>
-                      <th style={TH}><Tip text="Die auszuführende Aktion">Aktion</Tip></th>
-                      <th style={TH}><Tip text="Zeitpunkt (kumuliert) ab jetzt">Zeit</Tip></th>
-                      <th style={TH}><Tip text="Gewinn an täglicher Goldproduktion durch diesen Schritt">G/d Gewinn</Tip></th>
+                      <th style={TH}><Tip text={L.tipStep}>{L.colStep}</Tip></th>
+                      <th style={TH}><Tip text={L.tipAction}>{L.colAction}</Tip></th>
+                      <th style={TH}><Tip text={L.tipTime}>{L.colTime}</Tip></th>
+                      <th style={TH}><Tip text={L.tipGainPerDay}>{L.colGainPerDay}</Tip></th>
                     </tr></thead>
                     <tbody>
                       {res.paths.dijkstra.map((s, i) => (
@@ -590,7 +592,7 @@ export default function App({ theme, setTheme, optData }) {
                             <div style={{ fontSize: 11, fontWeight: 700, color: s.type === "buy" ? C.blue : C.green }}>{s.action}</div>
                             <div style={{ fontSize: 9, color: C.textMuted }}>
                               {fmt(s.goldCost, 0)} G 
-                              {s.usedInv > 0 ? ` (+ ${fmt(s.usedInv, 0)} aus Lager)` : ` (${fmt(s.resCost, 0)} Einh.)`}
+                              {s.usedInv > 0 ? L.fromInventory(fmt(s.usedInv, 0)) : L.unitsSuffix(fmt(s.resCost, 0))}
                             </div>
                           </td>
                           <td style={TD(true)}>{fmtT(s.time)}</td>
@@ -607,7 +609,7 @@ export default function App({ theme, setTheme, optData }) {
       </div>
 
       <div style={{ textAlign: "center", fontSize: 10, color: C.textMuted, marginTop: 16, paddingBottom: 24, fontFamily: F.h, letterSpacing: "0.15em" }}>
-        HEBELMINISTERIUM DEUTSCHLAND &middot; FABRIK-OPTIMIERER &middot; DIJKSTRA + MARKTHANDEL
+        {L.footerText}
       </div>
     </div>
   );
