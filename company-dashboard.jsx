@@ -34,7 +34,7 @@ function calcTotalBonus(region, itemCode, country, gameConfig, countryEthics) {
   let bonus = 0;
 
   const isIndustrialTarget = ['steel', 'concrete', 'oil', 'lightAmmo', 'ammo', 'heavyAmmo', 'lead', 'petroleum', 'iron', 'limestone'].includes(itemCode);
-  const isAgrarianTarget = ['coca', 'grain', 'livestock', 'fish'].includes(itemCode);
+  const isAgrarianTarget = ['coca', 'grain', 'livestock', 'fish', 'wood', 'paper'].includes(itemCode);
   const indVal = countryEthics?.industrialism || 0;
 
   // 1. Party Ethics Bonus
