@@ -3,6 +3,30 @@ import { THEMES, C, F, setThemeVars, glass, fmt, fmtT, fmtN, GlassCard, Sec, Bdg
 import FactoryOptimizer from "./factory-optimizer.jsx";
 import { getLang } from "./translations.jsx";
 
+// ── URL params ──
+function getUrlParam(...names) {
+  try {
+    const p = new URLSearchParams(window.location.search);
+    for (const n of names) {
+      const v = p.get(n);
+      if (v != null && v.trim() !== "") return v.trim();
+    }
+  } catch {}
+  return "";
+}
+
+function getInitialUserInput() {
+  return getUrlParam("user", "username", "id") || (() => {
+    try { return localStorage.getItem("warera_user_input") || ""; } catch { return ""; }
+  })();
+}
+
+function getInitialApiKey() {
+  const fromUrl = getUrlParam("apikey", "apiKey");
+  if (fromUrl) return fromUrl;
+  try { return localStorage.getItem("warera_api_key") || ""; } catch { return ""; }
+}
+
 // ── Helpers ──
 async function resolveUser(input) {
   try {
@@ -80,25 +104,13 @@ function calcTotalBonus(region, itemCode, country, gameConfig, countryEthics) {
 
 let currentBgFetch = 0;
 
-export default function CompanyDashboard({ theme, setTheme, lang }) {
+export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   setThemeVars(theme);
   const T = THEMES[theme];
   const L = getLang(lang);
 
-  const [userInput, setUserInput] = useState(() => {
-    try {
-      return localStorage.getItem("warera_user_input") || "";
-    } catch {
-      return "";
-    }
-  });
-  const [apiKey, setApiKey] = useState(() => {
-    try {
-      return localStorage.getItem("warera_api_key") || "";
-    } catch {
-      return "";
-    }
-  });
+  const [userInput, setUserInput] = useState(getInitialUserInput);
+  const [apiKey, setApiKey] = useState(getInitialApiKey);
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
   const [error, setError] = useState("");
@@ -130,6 +142,27 @@ export default function CompanyDashboard({ theme, setTheme, lang }) {
       localStorage.setItem("warera_api_key", apiKey.trim());
     } catch {}
   }, [apiKey]);
+
+  // Accept config (apiKey/user/lang) from a parent page via postMessage when embedded as iframe.
+  useEffect(() => {
+    if (window.parent === window) return; // not embedded
+    let allowedOrigin = "";
+    try { allowedOrigin = new URLSearchParams(window.location.search).get("allowedOrigin") || ""; } catch {}
+
+    const onMessage = (e) => {
+      if (allowedOrigin && e.origin !== allowedOrigin) return;
+      const data = e.data;
+      if (!data || data.type !== "warera:config") return;
+      if (typeof data.apiKey === "string") setApiKey(data.apiKey.trim());
+      if (typeof data.user === "string") setUserInput(data.user.trim());
+      if (typeof data.lang === "string" && setLang) setLang(data.lang.trim());
+    };
+
+    window.addEventListener("message", onMessage);
+    // Tell the parent we are ready to receive config.
+    try { window.parent.postMessage({ type: "warera:ready" }, allowedOrigin || "*"); } catch {}
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
 
   useEffect(() => {
     let interval;

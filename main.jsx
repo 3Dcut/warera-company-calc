@@ -10,11 +10,23 @@ const LANGS = [
   { code: "sv", label: "SV", flag: "🇸🇪" },
 ];
 
+const VALID_LANGS = LANGS.map(l => l.code);
+
+function getInitialLang() {
+  try {
+    const urlLang = new URLSearchParams(window.location.search).get("lang");
+    if (urlLang && VALID_LANGS.includes(urlLang)) return urlLang;
+  } catch {}
+  try {
+    const stored = localStorage.getItem("warera_lang");
+    if (stored && VALID_LANGS.includes(stored)) return stored;
+  } catch {}
+  return "de";
+}
+
 function Shell() {
   const [theme, setTheme] = useState("grau");
-  const [lang, setLang] = useState(() => {
-    try { return localStorage.getItem("warera_lang") || "de"; } catch { return "de"; }
-  });
+  const [lang, setLang] = useState(getInitialLang);
 
   setThemeVars(theme);
   const T = THEMES[theme];
@@ -25,6 +37,11 @@ function Shell() {
   function switchLang(code) {
     setLang(code);
     try { localStorage.setItem("warera_lang", code); } catch {}
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("lang", code);
+      window.history.replaceState({}, "", url);
+    } catch {}
   }
 
   return (
@@ -83,7 +100,7 @@ function Shell() {
       {/* Banner */}
 
       {/* Page Content */}
-      <CompanyDashboard theme={theme} setTheme={setTheme} lang={lang} />
+      <CompanyDashboard theme={theme} setTheme={setTheme} lang={lang} setLang={switchLang} />
     </div>
   );
 }
