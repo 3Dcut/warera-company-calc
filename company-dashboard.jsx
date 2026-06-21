@@ -243,7 +243,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
           apiCall("company.getById", { companyId: cid }),
           apiCall("worker.getWorkers", { companyId: cid }).catch(() => ({ workers: [] })),
         ]);
-        return { comp, workers: wrk?.workers || wrk?.items || [] };
+        return { comp, workers: Array.isArray(wrk) ? wrk : (wrk?.workers || wrk?.items || []) };
       });
 
       const comps = [];
