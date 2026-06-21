@@ -58,7 +58,7 @@ function calcTotalBonus(region, itemCode, country, gameConfig, countryEthics) {
   if (!gameConfig) return 0;
   let bonus = 0;
 
-  const isIndustrialTarget = ['steel', 'concrete', 'oil', 'lightAmmo', 'ammo', 'heavyAmmo', 'lead', 'petroleum', 'iron', 'limestone', 'wood', 'paper'].includes(itemCode);
+  const isIndustrialTarget = ['steel', 'concrete', 'oil', 'lightAmmo', 'ammo', 'heavyAmmo', 'lead', 'petroleum', 'iron', 'limestone', 'wood'].includes(itemCode);
   const isAgrarianTarget = ['coca', 'grain', 'livestock', 'fish'].includes(itemCode);
   const indVal = countryEthics?.industrialism || 0;
 
