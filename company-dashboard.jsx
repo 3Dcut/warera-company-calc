@@ -58,8 +58,10 @@ function calcTotalBonus(region, itemCode, country, gameConfig, countryEthics) {
   if (!gameConfig) return 0;
   let bonus = 0;
 
-  const isIndustrialTarget = ['steel', 'concrete', 'oil', 'lightAmmo', 'ammo', 'heavyAmmo', 'lead', 'petroleum', 'iron', 'limestone'].includes(itemCode);
-  const isAgrarianTarget = ['coca', 'grain', 'livestock', 'fish', 'wood', 'paper'].includes(itemCode);
+  // Industrialismus -> Produkte: Beton, Stahl, Papier
+  const isIndustrialTarget = ['concrete', 'steel', 'paper'].includes(itemCode);
+  // Agrarismus -> Rohstoffe: Kalkstein, Eisen, Holz
+  const isAgrarianTarget = ['limestone', 'iron', 'wood'].includes(itemCode);
   const indVal = countryEthics?.industrialism || 0;
 
   // 1. Party Ethics Bonus
