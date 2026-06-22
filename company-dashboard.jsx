@@ -866,6 +866,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                     style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 8, color: C.text, padding: "10px 14px", fontSize: 14, fontFamily: F.m, outline: "none", width: "100%", boxSizing: "border-box" }}
                   />
                 </Tip>
+                {!apiKey && <div style={{ fontSize: 11, color: C.accent, marginTop: 6, textAlign: "center" }}>{L.apiKeyRequiredForWorkers}</div>}
               </div>
             </div>
             <div style={{ display: "flex", justifyContent: "center" }}>
