@@ -81,11 +81,12 @@ function maxBuyableFactories(baseCap, rungs, points, hardCap = 40) {
   return n;
 }
 function planLimits(params) {
-  const { maxFactories, optData, ignorePrestige } = params;
+  const { maxFactories, optData, respectPrestige } = params;
   const baseCap = Number(optData?.baseCompanyCap) || 12;
   const rungs = Number(optData?.companyRungs) || 0;
   const points = Number(optData?.prestigePoints) || 0;
-  const buyable = ignorePrestige ? 40 : maxBuyableFactories(baseCap, rungs, points);
+  // By default the planner builds up to the target and only annotates prestige costs; strict mode stops at what the points allow.
+  const buyable = respectPrestige ? maxBuyableFactories(baseCap, rungs, points) : 40;
   return { baseCap, rungs, points, buyable, buyLimit: Math.min(maxFactories, buyable), capLimited: maxFactories > buyable };
 }
 
@@ -354,7 +355,7 @@ export default function App({ theme, setTheme, optData, lang }) {
   const [showImp, setShowImp] = useState(false);
   const [copied, setCopied] = useState(false);
   const [useApiWealth, setUseApiWealth] = useState(true);
-  const [ignorePrestige, setIgnorePrestige] = useState(false);
+  const [respectPrestige, setRespectPrestige] = useState(false);
 
   const engineMaxLevel = Number(optData?.engineMaxLevel) || 7;
   const engineLevels = optData?.engineLevels || null;
@@ -388,7 +389,7 @@ export default function App({ theme, setTheme, optData, lang }) {
     maxFactories: Math.max(1, Math.round(mxF) || 0), maxLevel: Math.min(Math.max(1, Math.round(mxL) || 1), engineMaxLevel), upgradeBase: uB, factoryBase: fB,
     includeWorkers: inclW, includeMissions: inclM, includeCases: inclC, includeDonations: inclD,
     startBalance: stB, startStahl: stStahl, startBeton: stBeton,
-    ignorePrestige,
+    respectPrestige,
     optData
   };
 
@@ -418,7 +419,7 @@ export default function App({ theme, setTheme, optData, lang }) {
     if (!facs.length) { setRes(null); return; }
     const id = setTimeout(() => compute(), 200);
     return () => clearTimeout(id);
-  }, [facs, mxF, mxL, uB, fB, inclW, inclM, inclC, inclD, stB, stStahl, stBeton, ignorePrestige, optData?.loadId, lang]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [facs, mxF, mxL, uB, fB, inclW, inclM, inclC, inclD, stB, stStahl, stBeton, respectPrestige, optData?.loadId, lang]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const newFac = () => newFactoryTemplate(params, L);
   const addF = useCallback(() => setFacs(p => [...p, newFac()]), [optData, lang]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -430,6 +431,9 @@ export default function App({ theme, setTheme, optData, lang }) {
   }));
 
   const pph = totalGoldPerDay(facs, params);
+  const currentCap = baseCap + rungs;
+  let pointsForTarget = 0;
+  for (let n = currentCap + 1; n <= params.maxFactories; n++) pointsForTarget += rungCost(n, baseCap);
   const code = encodeState(params, facs, theme);
 
   function doImport() {
@@ -483,7 +487,6 @@ export default function App({ theme, setTheme, optData, lang }) {
             <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "0 12px" }}>
               <Inp label={L.labelSteelInv} value={stStahl} onChange={setStStahl} min={0} suffix="Stk" tip={L.tipSteelInv} />
               <Inp label={L.labelConcreteInv} value={stBeton} onChange={setStBeton} min={0} suffix="Stk" tip={L.tipConcreteInv} />
-              <Inp label={L.labelMaxFactories} value={mxF} onChange={setMxF} min={facs.length} max={40} suffix="Stk" tip={L.tipMaxFactoriesPrestige} />
               <Inp label={L.labelMaxLevel} value={mxL} onChange={setMxL} min={1} max={engineMaxLevel} suffix="Lvl" tip={L.tipMaxLevelCfg(engineMaxLevel)} />
               <Inp label={L.labelUpgCost} value={uB} onChange={setUB} min={0} suffix="Stk" tip={L.tipUpgCost} />
               <Inp label={L.labelFacCost} value={fB} onChange={setFB} min={0} suffix="Bt" tip={L.tipFacCost} />
@@ -493,9 +496,7 @@ export default function App({ theme, setTheme, optData, lang }) {
                 {L.capLine(optData.maxCompanies, baseCap, rungs)} · {L.prestigeStats(prestigeLevel, prestigePoints)}
               </div>
             )}
-            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 11, color: C.textMuted, marginTop: 6 }}>
-              <input type="checkbox" checked={ignorePrestige} onChange={e => setIgnorePrestige(e.target.checked)} /> {L.ignorePrestigeCap}
-            </label>
+
 
             <div style={{...glass(0.05, 8), padding: 8, marginTop: 16, display: "flex", flexDirection: "column", gap: 4}}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -640,6 +641,18 @@ export default function App({ theme, setTheme, optData, lang }) {
       <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "flex-start" }}>
         <div style={{ flex: "1 1 500px", minWidth: 0 }}>
           <Sec icon="&#127981;">{L.sectionYourFactories(facs.length, mxF)}</Sec>
+          <div style={{ ...glass(0.04, 10), borderRadius: 12, padding: "12px 16px 4px", marginBottom: 12, display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
+            <div style={{ flex: "1 1 180px", maxWidth: 260 }}>
+              <Inp label={L.labelTargetFactories} value={mxF} onChange={setMxF} min={facs.length} max={40} suffix="Stk" tip={L.tipTargetFactories} />
+            </div>
+            <div style={{ flex: "2 1 260px", fontSize: 11, color: C.textDim, fontFamily: F.m, paddingTop: 4, display: "flex", flexDirection: "column", gap: 6 }}>
+              {optData?.maxCompanies && <div>{L.capLine(optData.maxCompanies, baseCap, rungs)} · {L.prestigeStats(prestigeLevel, prestigePoints)}</div>}
+              {pointsForTarget > 0 && <div style={{ color: pointsForTarget > prestigePoints ? C.purple : C.green }}>{L.prestigeNeededForTarget(pointsForTarget, prestigePoints)}</div>}
+              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", color: C.textMuted }}>
+                <input type="checkbox" checked={respectPrestige} onChange={e => setRespectPrestige(e.target.checked)} /> {L.respectPrestigeCap}
+              </label>
+            </div>
+          </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 20 }}>
             {facs.map((f, i) => (
               <div key={f.id || i} style={{ ...glass(0.08, 10), borderRadius: 12, padding: "12px 16px", border: "1px solid rgba(255,255,255,0.08)", display: "flex", justifyContent: "space-between", alignItems: "center", transition: "transform 0.2s, box-shadow 0.2s", opacity: f.disabled ? 0.55 : 1 }} onMouseOver={e => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 6px 20px rgba(0,0,0,0.4)"; }} onMouseOut={e => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = glass(0.08, 10).boxShadow; }}>
