@@ -1,11 +1,21 @@
+import { useState } from "react";
 // ═══════════════════════════════════════════════════════
 //   SHARED: Theme, Primitives, API, Formatters
 // ═══════════════════════════════════════════════════════
 
-const fl = document.createElement("link");
-fl.rel = "stylesheet";
-fl.href = "https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Source+Code+Pro:wght@400;500;600;700&family=Quicksand:wght@400;500;600;700&display=swap";
-document.head.appendChild(fl);
+// Fonts are bundled (self-hosted via @fontsource); nothing is fetched from Google at runtime.
+import "@fontsource/rajdhani/400.css";
+import "@fontsource/rajdhani/500.css";
+import "@fontsource/rajdhani/600.css";
+import "@fontsource/rajdhani/700.css";
+import "@fontsource/source-code-pro/400.css";
+import "@fontsource/source-code-pro/500.css";
+import "@fontsource/source-code-pro/600.css";
+import "@fontsource/source-code-pro/700.css";
+import "@fontsource/quicksand/400.css";
+import "@fontsource/quicksand/500.css";
+import "@fontsource/quicksand/600.css";
+import "@fontsource/quicksand/700.css";
 
 const styleEl = document.createElement("style");
 styleEl.textContent = `
@@ -16,7 +26,7 @@ styleEl.textContent = `
   .tip-wrap { position: relative; display: inline-flex; }
   .tip-wrap .tip-box {
     display: none; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
-    padding: 8px 12px; border-radius: 6px; font-size: 13px; line-height: 1.4; white-space: nowrap; z-index: 100; pointer-events: none;
+    padding: 8px 12px; border-radius: 6px; font-size: 13px; line-height: 1.4; white-space: normal; width: max-content; max-width: min(320px, 90vw); text-align: left; z-index: 100; pointer-events: none;
     background: rgba(15,20,35,0.92); border: 1px solid rgba(255,255,255,0.12);
     backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
     box-shadow: 0 8px 24px rgba(0,0,0,0.5); color: #d4d4cc;
@@ -26,7 +36,8 @@ styleEl.textContent = `
     content: ''; position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
     border: 5px solid transparent; border-top-color: rgba(255,255,255,0.12);
   }
-  .tip-wrap:hover .tip-box { display: block; }
+  .tip-wrap:hover .tip-box, .tip-wrap:focus-within .tip-box { display: block; }
+  .row-toggle:focus-visible { outline: 2px solid rgba(240,180,41,0.6); outline-offset: -2px; }
   .copy-flash { animation: copyFlash 0.6s ease-out; }
 `;
 document.head.appendChild(styleEl);
@@ -101,16 +112,33 @@ export function Sec({ children, icon }) {
     <span style={{ fontFamily: F.h, fontSize: 17, fontWeight: 700, color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase" }}>{children}</span>
   </div>;
 }
-export function Inp({ label, value, onChange, step = 1, suffix, tip }) {
+export function Inp({ label, value, onChange, step = 1, suffix, tip, min, max }) {
+  // While editing, the raw text is kept so that clearing the field or typing multi-digit values works;
+  // numbers are committed on every valid keystroke and clamped to [min, max] when the field is left.
+  const [text, setText] = useState(null);
+  const handle = e => {
+    const raw = e.target.value;
+    setText(raw);
+    const n = Number(raw);
+    if (raw !== "" && Number.isFinite(n)) onChange(n);
+  };
+  const clamp = e => {
+    let n = Number(e.target.value);
+    if (e.target.value === "" || !Number.isFinite(n)) n = Number(value) || 0;
+    if (min != null && n < min) n = min;
+    if (max != null && n > max) n = max;
+    setText(null);
+    if (n !== value) onChange(n);
+  };
   const inner = <div style={{ marginBottom: 12 }}>
     <label style={{ fontFamily: F.m, fontSize: 14, color: C.textDim, marginBottom: 5, display: "block", letterSpacing: "0.03em" }}>{label} {tip && <span style={{ color: C.textMuted, cursor: "help" }}>&#9432;</span>}</label>
     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-      <input type="number" step={step} value={value} onChange={e => onChange(Number(e.target.value))}
+      <input type="number" step={step} min={min} max={max} value={text ?? value} onChange={handle}
         style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 6, color: C.text,
           padding: "9px 12px", fontSize: 15, width: "100%", boxSizing: "border-box", outline: "none",
           fontFamily: F.m, transition: "border-color 0.2s, box-shadow 0.2s" }}
         onFocus={e => { e.target.style.borderColor = C.accent + "88"; e.target.style.boxShadow = "0 0 12px " + C.accentGlow; }}
-        onBlur={e => { e.target.style.borderColor = C.inputBorder; e.target.style.boxShadow = "none"; }} />
+        onBlur={e => { e.target.style.borderColor = C.inputBorder; e.target.style.boxShadow = "none"; clamp(e); }} />
       {suffix && <span style={{ fontFamily: F.m, fontSize: 14, color: C.textMuted, whiteSpace: "nowrap" }}>{suffix}</span>}
     </div>
   </div>;
@@ -140,17 +168,19 @@ export const getTD = (hl) => ({ padding: "8px 14px", borderBottom: "1px solid rg
 // ── API ──
 const API_BASE = "https://api2.warera.io/trpc/";
 
+// The API key lives in module state and is set by the dashboard; apiCall never touches storage itself.
+let currentApiKey = "";
+export function setApiKeyForCalls(key) { currentApiKey = (key || "").trim(); }
+export function hasApiKey() { return currentApiKey.length > 0; }
+
 export async function apiCall(endpoint, body, maxRetries = 3) {
   let attempt = 0;
   while (true) {
     const headers = { "Content-Type": "application/json" };
-    try {
-      const apiKey = localStorage.getItem("warera_api_key");
-      if (apiKey) {
-        headers["Authorization"] = `Bearer ${apiKey.trim()}`;
-        headers["x-api-key"] = apiKey.trim();
-      }
-    } catch {}
+    if (currentApiKey) {
+      headers["Authorization"] = `Bearer ${currentApiKey}`;
+      headers["x-api-key"] = currentApiKey;
+    }
 
     const r = await fetch(API_BASE + endpoint, {
       method: "POST", headers,

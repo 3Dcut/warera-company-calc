@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { THEMES, C, F, setThemeVars, glass, fmt, fmtT, fmtN, GlassCard, Sec, Bdg, Tip, Btn, getTH, getTD, apiCall } from "./shared.jsx";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { THEMES, C, F, setThemeVars, glass, fmt, fmtT, fmtN, GlassCard, Sec, Bdg, Tip, Btn, getTH, getTD, apiCall, setApiKeyForCalls } from "./shared.jsx";
 import FactoryOptimizer from "./factory-optimizer.jsx";
 import { getLang } from "./translations.jsx";
 
@@ -21,27 +21,35 @@ function getInitialUserInput() {
   })();
 }
 
-function getInitialApiKey() {
-  const fromUrl = getUrlParam("apikey", "apiKey");
-  if (fromUrl) return fromUrl;
+// The API key is never read from the URL: query strings end up in browser history, referrers and server logs.
+function getStoredApiKey() {
   try { return localStorage.getItem("warera_api_key") || ""; } catch { return ""; }
+}
+
+function translateError(msg, L, input) {
+  if (msg === "ERR_PLAYER_NOT_FOUND") return L.errPlayerNotFound;
+  if (msg === "ERR_NO_EXACT_MATCH") return L.errNoExactMatch(input);
+  if (msg === "ERR_NO_COMPANIES") return L.errNoCompanies;
+  return msg || L.loadingGeneric;
 }
 
 // ── Helpers ──
 async function resolveUser(input) {
-  try {
-    const u = await apiCall("user.getUserLite", { userId: input });
-    if (u && u.username) return u;
-  } catch {}
+  if (/^[0-9a-f]{24}$/i.test(input)) {
+    try {
+      const u = await apiCall("user.getUserLite", { userId: input });
+      if (u && u.username) return u;
+    } catch {}
+  }
   const search = await apiCall("search.searchAnything", { searchText: input });
-  if (!search.userIds?.length) throw new Error("Spieler nicht gefunden");
+  if (!search?.userIds?.length) throw new Error("ERR_PLAYER_NOT_FOUND");
   for (const uid of search.userIds) {
     try {
       const u = await apiCall("user.getUserLite", { userId: uid });
       if (u.username.toLowerCase() === input.toLowerCase()) return u;
     } catch {}
   }
-  throw new Error(`Keine exakte Übereinstimmung für "${input}".`);
+  throw new Error("ERR_NO_EXACT_MATCH");
 }
 
 async function batchParallel(ids, fn, concurrency = 2) {
@@ -54,52 +62,58 @@ async function batchParallel(ids, fn, concurrency = 2) {
   return results;
 }
 
-function calcTotalBonus(region, itemCode, country, gameConfig, countryEthics) {
-  if (!gameConfig) return 0;
-  let bonus = 0;
+// Deposit window: deposits are temporary (startsAt/endsAt) with a variable bonusPercent since v0.25.5.
+function depositWindow(region, now = Date.now()) {
+  const dep = region?.deposit;
+  if (!dep || typeof dep !== "object" || !dep.type) return null;
+  const starts = dep.startsAt ? Date.parse(dep.startsAt) : -Infinity;
+  const ends = dep.endsAt ? Date.parse(dep.endsAt) : Infinity;
+  const active = starts <= now && ends > now;
+  const remainingDays = ends === Infinity ? null : Math.max(0, (ends - now) / 86400000);
+  return { type: dep.type, bonusPercent: Number(dep.bonusPercent) || 0, active, remainingDays };
+}
 
-  const isIndustrialTarget = ['steel', 'concrete', 'oil', 'lightAmmo', 'ammo', 'heavyAmmo', 'lead', 'petroleum', 'iron', 'limestone', 'wood'].includes(itemCode);
-  const isAgrarianTarget = ['coca', 'grain', 'livestock', 'fish'].includes(itemCode);
-  const indVal = countryEthics?.industrialism || 0;
+// Items a country may specialize in under industrialism (game ethics config) and deposits agrarian countries get.
+const INDUSTRIAL_SPECIALIZATIONS = ["lightAmmo", "ammo", "heavyAmmo", "concrete", "steel", "iron", "limestone", "petroleum", "oil", "lead", "wood", "paper"];
+const AGRARIAN_DEPOSITS = ["coca", "grain", "livestock", "fish"];
 
-  // 1. Party Ethics Bonus
-  if (indVal === 1 && isIndustrialTarget) {
-    bonus += 10;
-  } else if (indVal >= 2 && isIndustrialTarget) {
-    bonus += 30;
-  }
+// Production bonus, verified 2026-09-20 against company.getProductionBonus for 19 real companies:
+//   strategicBonus          = country.strategicResources.bonuses.productionPercent, only if the country is specialized in the item
+//   ethicSpecializationBonus = +10 % (industrialism 1) / +30 % (industrialism 2), only on the specialized item
+//   depositBonus            = region.deposit.bonusPercent, only on an ACTIVE deposit of the same item
+//   ethicDepositBonus       = +10 % (industrialism -1) / +30 % (industrialism -2), only on that active deposit
+//   industrialism -2 disables the specialization benefit entirely.
+function calcBonusParts(region, itemCode, country, gameConfig, countryEthics, now = Date.now()) {
+  const parts = { strategic: 0, ethicSpecialization: 0, deposit: 0, ethicDeposit: 0, depositRemainingDays: null, permanent: 0, total: 0 };
+  if (!gameConfig) return parts;
+  const indVal = Number(countryEthics?.industrialism) || 0;
 
-  if (indVal === -1 && isAgrarianTarget) {
-    bonus += 10;
-  } else if (indVal <= -2 && isAgrarianTarget) {
-    bonus += 30;
-  }
-
-  // 2. Country specialization bonus
-  // Agrar 2 (industrialism <= -2) deactivates the country specialization completely
-  if (indVal > -2) {
-    if (country?.specializedItem === itemCode) {
-      if (country?.strategicResources?.bonuses?.productionPercent) {
-        bonus += country.strategicResources.bonuses.productionPercent;
-      }
+  if (country?.specializedItem === itemCode && indVal > -2) {
+    parts.strategic = Number(country?.strategicResources?.bonuses?.productionPercent) || 0;
+    if (INDUSTRIAL_SPECIALIZATIONS.includes(itemCode)) {
+      if (indVal === 1) parts.ethicSpecialization = 10;
+      else if (indVal >= 2) parts.ethicSpecialization = 30;
     }
   }
 
-  if (!region) return bonus;
-
-
-
-  // 4. Actual Deposit Bonus
-  const depositItem = region.deposit?.type || region.deposit;
-  if (depositItem === itemCode) {
-    const depositBonus = region.deposit?.bonusPercent || gameConfig.company?.depositResourceBonus || 30;
-    // "Fanatischer Industrieller" (>= 2) deactivates natural deposits
-    if (indVal < 2) {
-      bonus += depositBonus;
+  const dep = depositWindow(region, now);
+  if (dep && dep.type === itemCode && dep.active) {
+    parts.deposit = dep.bonusPercent || Number(gameConfig.company?.depositResourceBonus) || 0;
+    if (AGRARIAN_DEPOSITS.includes(itemCode)) {
+      if (indVal === -1) parts.ethicDeposit = 10;
+      else if (indVal <= -2) parts.ethicDeposit = 30;
     }
+    parts.depositRemainingDays = dep.remainingDays;
   }
 
-  return bonus;
+  parts.permanent = parts.strategic + parts.ethicSpecialization;
+  parts.total = parts.permanent + parts.deposit + parts.ethicDeposit;
+  return parts;
+}
+
+function calcTotalBonus(region, itemCode, country, gameConfig, countryEthics, opts = {}) {
+  const parts = calcBonusParts(region, itemCode, country, gameConfig, countryEthics, opts.now);
+  return opts.permanentOnly ? parts.permanent : parts.total;
 }
 
 let currentBgFetch = 0;
@@ -110,7 +124,8 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   const L = getLang(lang);
 
   const [userInput, setUserInput] = useState(getInitialUserInput);
-  const [apiKey, setApiKey] = useState(getInitialApiKey);
+  const [apiKey, setApiKey] = useState(getStoredApiKey);
+  const [rememberKey, setRememberKey] = useState(() => getStoredApiKey().length > 0);
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
   const [error, setError] = useState("");
@@ -127,6 +142,10 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   const [gameConfig, setGameConfig] = useState(null);
   const [partyEthics, setPartyEthics] = useState({}); // countryId -> { industrialism, ... }
   const [bgProgress, setBgProgress] = useState(null);
+  const [workerIssues, setWorkerIssues] = useState(null); // { failed, total, reason }
+  const [skippedCompanies, setSkippedCompanies] = useState(0);
+  const [loadId, setLoadId] = useState(0);
+  const LRef = useRef(L); LRef.current = L;
 
   const [subTab, setSubTab] = useState("overview");
   const [expandedCompany, setExpandedCompany] = useState(null);
@@ -138,29 +157,34 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   }, [userInput]);
 
   useEffect(() => {
+    setApiKeyForCalls(apiKey);
     try {
-      localStorage.setItem("warera_api_key", apiKey.trim());
+      if (rememberKey && apiKey.trim()) localStorage.setItem("warera_api_key", apiKey.trim());
+      else localStorage.removeItem("warera_api_key");
     } catch {}
-  }, [apiKey]);
+  }, [apiKey, rememberKey]);
 
   // Accept config (apiKey/user/lang) from a parent page via postMessage when embedded as iframe.
   useEffect(() => {
     if (window.parent === window) return; // not embedded
     let allowedOrigin = "";
     try { allowedOrigin = new URLSearchParams(window.location.search).get("allowedOrigin") || ""; } catch {}
+    // Fail closed: without an explicit, well-formed allowedOrigin no message is accepted and no handshake is sent.
+    if (!/^https?:\/\/[^/?#]+$/.test(allowedOrigin)) return;
 
     const onMessage = (e) => {
-      if (allowedOrigin && e.origin !== allowedOrigin) return;
+      if (e.origin !== allowedOrigin) return;
       const data = e.data;
       if (!data || data.type !== "warera:config") return;
-      if (typeof data.apiKey === "string") setApiKey(data.apiKey.trim());
+      // Keys handed over by an embedder stay in memory only.
+      if (typeof data.apiKey === "string") { setRememberKey(false); setApiKey(data.apiKey.trim()); }
       if (typeof data.user === "string") setUserInput(data.user.trim());
       if (typeof data.lang === "string" && setLang) setLang(data.lang.trim());
     };
 
     window.addEventListener("message", onMessage);
     // Tell the parent we are ready to receive config.
-    try { window.parent.postMessage({ type: "warera:ready" }, allowedOrigin || "*"); } catch {}
+    try { window.parent.postMessage({ type: "warera:ready" }, allowedOrigin); } catch {}
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
@@ -168,12 +192,12 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
     let interval;
     const handleRL = (e) => {
       let remaining = Math.ceil(e.detail.delay / 1000);
-      setLoadingMsg(L.rateLimitWait(remaining));
+      setLoadingMsg(LRef.current.rateLimitWait(remaining));
       clearInterval(interval);
       interval = setInterval(() => {
         remaining -= 1;
         if (remaining > 0) {
-          setLoadingMsg(L.rateLimitWait(remaining));
+          setLoadingMsg(LRef.current.rateLimitWait(remaining));
         } else {
           clearInterval(interval);
         }
@@ -189,6 +213,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   async function loadData() {
     if (!userInput.trim()) return;
     setLoading(true); setError(""); setLoadingMsg(L.loadingSearchPlayer);
+    setWorkerIssues(null); setSkippedCompanies(0);
     try {
       // Phase 1: Resolve user + load global data in parallel
       const [user, pricesData, regionsData, countriesData, configData] = await Promise.all([
@@ -202,7 +227,6 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       setUserData(user);
       setPrices(pricesData || {});
       setGameConfig(configData);
-      console.log("GAMECONFIG", JSON.stringify(configData));
 
       // Build region lookup (object keyed by _id)
       const regMap = {};
@@ -234,17 +258,29 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       const userId = user._id || user.id || user.userId;
       const companiesResp = await apiCall("company.getCompanies", { userId, perPage: 100 });
       const companyIds = companiesResp?.items || [];
-      if (!companyIds.length) throw new Error("Keine Fabriken gefunden");
+      if (!companyIds.length) throw new Error("ERR_NO_COMPANIES");
 
-      // Phase 3: Load company details + workers in parallel
+      // Phase 3: Load company details + workers in parallel. A failing company is skipped, not fatal;
+      // worker failures (typically 401 without API key) are counted and reported instead of hidden.
       setLoadingMsg(L.loadingFactoriesN(companyIds.length));
-      const companyDetails = await batchParallel(companyIds, async (cid) => {
+      const hasKey = apiKey.trim().length > 0;
+      const companyDetailsRaw = await batchParallel(companyIds, async (cid) => {
         const [comp, wrk] = await Promise.all([
-          apiCall("company.getById", { companyId: cid }),
-          apiCall("worker.getWorkers", { companyId: cid }).catch(() => ({ workers: [] })),
+          apiCall("company.getById", { companyId: cid }).catch(() => null),
+          hasKey
+            ? apiCall("worker.getWorkers", { companyId: cid }).catch(e => ({ workers: [], error: e?.message || "error" }))
+            : Promise.resolve({ workers: [], error: "NO_KEY" }),
         ]);
-        return { comp, workers: Array.isArray(wrk) ? wrk : (wrk?.workers || wrk?.items || []) };
+        const list = Array.isArray(wrk) ? wrk : (wrk?.workers || wrk?.items || []);
+        return { comp, workers: list, workerError: Array.isArray(wrk) ? null : (wrk?.error || null) };
       });
+      const companyDetails = companyDetailsRaw.filter(d => d.comp?._id);
+      setSkippedCompanies(companyIds.length - companyDetails.length);
+      if (!companyDetails.length) throw new Error("ERR_NO_COMPANIES");
+      const workerFailures = companyDetails.filter(d => d.workerError).length;
+      setWorkerIssues(workerFailures > 0
+        ? { failed: workerFailures, total: companyDetails.length, reason: hasKey ? (companyDetails.find(d => d.workerError)?.workerError || "error") : "NO_KEY" }
+        : null);
 
       const comps = [];
       const workersMap = {};
@@ -288,13 +324,16 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       setCompanies(comps);
       setWorkers(workersMap);
 
-      // Phase 3c: Calculate Liquid Assets (Geld + Items + Waffen) based on liquid_assets.py
+      // Phase 3c: Liquid assets = total wealth minus company value. user.getUserLite already carries
+      // rankings.userWealth.value; the full ranking download (~3 MB, the API ignores `limit`) is only a fallback.
       setLoadingMsg(L.loadingLiquid);
-      const wealthRanking = await apiCall("ranking.getRanking", { rankingType: "userWealth", limit: 100, skip: 0 }).catch(() => null);
-      let totalWealth = 0;
-      if (wealthRanking?.items) {
-        const me = wealthRanking.items.find(i => (i.user?._id || i.user) === userId);
-        if (me) totalWealth = me.value || 0;
+      let totalWealth = Number(user?.rankings?.userWealth?.value) || 0;
+      if (!totalWealth) {
+        const wealthRanking = await apiCall("ranking.getRanking", { rankingType: "userWealth", limit: 100, skip: 0 }).catch(() => null);
+        if (wealthRanking?.items) {
+          const me = wealthRanking.items.find(i => (i.user?._id || i.user) === userId);
+          if (me) totalWealth = me.value || 0;
+        }
       }
       const liquidAssets = totalWealth > 0 ? Math.max(0, totalWealth - totalCompaniesValue) : 0;
       setUserData(prev => ({ ...prev, liquidAssets, totalWealth, totalCompaniesValue }));
@@ -329,22 +368,25 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
         (async () => {
           let loaded = 0;
           const queue = [...remainingCountriesToFetch];
+          const tries = new Map();
           const worker = async () => {
             while (queue.length > 0) {
               if (thisBgFetch !== currentBgFetch) break; // aborted
-              const c = queue[0];
+              const c = queue.shift(); // taken atomically, so two workers never fetch the same party
+              if (!c) break;
               let retryDelay = 0;
               try {
                 const p = await apiCall("party.getById", { partyId: c.rulingParty });
                 if (p?.ethics && thisBgFetch === currentBgFetch) {
                   setPartyEthics(prev => ({ ...prev, [c._id]: p.ethics }));
                 }
-                queue.shift();
                 loaded++;
                 if (thisBgFetch === currentBgFetch) setBgProgress({ loaded, total: remainingCountriesToFetch.length, status: "loading" });
               } catch (e) {
-                retryDelay = 5000;
-                if (thisBgFetch === currentBgFetch) setBgProgress(prev => prev ? { ...prev, status: "waiting" } : prev);
+                const n = (tries.get(c._id) || 0) + 1;
+                tries.set(c._id, n);
+                if (n <= 3) { queue.push(c); retryDelay = 5000; } else { loaded++; }
+                if (thisBgFetch === currentBgFetch) setBgProgress(prev => prev ? { ...prev, loaded, status: n <= 3 ? "waiting" : "loading" } : prev);
               }
               await new Promise(res => setTimeout(res, retryDelay || 10));
             }
@@ -370,18 +412,41 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       }
 
       setLoadingMsg("");
+      setLoadId(id => id + 1);
     } catch (e) {
-      setError(e.message);
+      setError(translateError(e?.message, L, userInput.trim()));
     }
     setLoading(false);
   }
 
   // ── Calculations ──
-  function getRegionBonus(comp) {
+  function getBonusParts(comp) {
     const region = regions[comp.region];
     const country = getCountryForRegion(comp.region);
     const ethics = country?._id ? partyEthics[country._id] : null;
-    return calcTotalBonus(region, comp.itemCode, country, gameConfig, ethics);
+    return calcBonusParts(region, comp.itemCode, country, gameConfig, ethics);
+  }
+  function getRegionBonus(comp) {
+    return getBonusParts(comp).total;
+  }
+  // Permanent part (specialization + ethic specialization) for long-horizon planning.
+  function getPermanentBonus(comp) {
+    return getBonusParts(comp).permanent;
+  }
+  const enemyIds = new Set(ownerCountry?.warsWith || []);
+  function isEnemyRegion(region) {
+    return !!region && enemyIds.has(region.country);
+  }
+  function regionBonusFor(region, itemCode, opts) {
+    const country = countries[region?.country] || null;
+    const ethics = country?._id ? partyEthics[country._id] : null;
+    return calcTotalBonus(region, itemCode, country, gameConfig, ethics, opts);
+  }
+  // Engine output per day before any bonus, from the game config when available.
+  function engineBasePPDay(comp) {
+    const engineLevel = comp.activeUpgradeLevels?.automatedEngine || 1;
+    const cfg = gameConfig?.upgradesConfig?.automatedEngine?.levels?.[engineLevel]?.stats?.dailyProd;
+    return Number.isFinite(cfg) ? cfg : engineLevel * 24;
   }
 
   function getWorkTaxRate(comp) {
@@ -408,9 +473,9 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   }
 
   function calcEnginePPDay(comp) {
-    const engineLevel = comp.activeUpgradeLevels?.automatedEngine || 1;
+    if (comp.disabledAt) return 0; // deactivated companies produce nothing
     const bonus = getRegionBonus(comp);
-    return engineLevel * 24 * (1 + bonus / 100);
+    return engineBasePPDay(comp) * (1 + bonus / 100);
   }
 
   function calcWorkerPPH(worker, bonus) {
@@ -423,6 +488,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   }
 
   function calcCompanyPPDay(comp) {
+    if (comp.disabledAt) return 0;
     const bonus = getRegionBonus(comp);
     const enginePP = calcEnginePPDay(comp);
     const compId = comp._id;
@@ -442,6 +508,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   }
 
   function calcDailyCost(comp) {
+    if (comp.disabledAt) return 0; // wages are paid per produced PP
     const compId = comp._id;
     const ws = workers[compId] || [];
     return ws.reduce((sum, w) => sum + calcWorkerCostPerH(w) * 24, 0);
@@ -482,13 +549,12 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   }
 
   function calcDailyRevenue(comp) {
+    if (comp.disabledAt) return 0;
     const ppPerUnit = getPPPerUnit(comp.itemCode);
     if (!ppPerUnit) return 0;
     const ppDay = calcCompanyPPDay(comp);
     const margin = calcNetMarginPerUnit(comp.itemCode);
-    const revenue = (ppDay / ppPerUnit) * margin;
-    console.log(`[Revenue] ${comp.itemCode} | ppDay=${ppDay.toFixed(1)} | ppPerUnit=${ppPerUnit} | margin=${margin.toFixed(3)} | revenue=${revenue.toFixed(2)}`);
-    return revenue;
+    return (ppDay / ppPerUnit) * margin;
   }
 
   function calcDailyProfit(comp) {
@@ -499,6 +565,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   function getWageLossWarnings() {
     const warnings = [];
     for (const comp of companies) {
+      if (comp.disabledAt) continue;
       const compId = comp._id;
       const ws = workers[compId] || [];
       const bonus = getRegionBonus(comp);
@@ -532,49 +599,52 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
     const moveCost = gameConfig?.company?.moveCost || 5;
 
     for (const comp of companies) {
-      const currentBonus = getRegionBonus(comp);
+      if (comp.disabledAt) continue;
       const itemCode = comp.itemCode;
       const ppPerUnit = getPPPerUnit(itemCode);
-      const price = getItemPrice(itemCode);
+      if (!ppPerUnit) continue;
+      const margin = calcNetMarginPerUnit(itemCode);
+      const currentBonus = getRegionBonus(comp);
       const currentPPDay = calcCompanyPPDay(comp);
+      const engineBase = engineBasePPDay(comp);
+      const ws = workers[comp._id] || [];
 
-      let bestRegion = null;
-      let bestBonus = currentBonus;
-
-      for (const region of Object.values(allRegions)) {
-        const regionCountry = countries[region.country] || null;
-        const regionEthics = regionCountry?._id ? partyEthics[regionCountry._id] : null;
-        const regionBonus = calcTotalBonus(region, itemCode, regionCountry, gameConfig, regionEthics);
-        if (regionBonus > bestBonus) {
-          bestBonus = regionBonus;
-          bestRegion = region;
-        }
-      }
-
-      if (bestRegion && bestBonus > currentBonus) {
-        const engineLevel = comp.activeUpgradeLevels?.automatedEngine || 1;
-        const newEnginePP = engineLevel * 24 * (1 + bestBonus / 100);
-        const compId = comp._id;
-        const ws = workers[compId] || [];
-        const newWorkerPP = ws.reduce((sum, w) => sum + calcWorkerPPH(w, bestBonus) * 24, 0);
-        const newPPDay = newEnginePP + newWorkerPP;
-        const ppDayGain = newPPDay - currentPPDay;
-        const unitsGain = ppDayGain / ppPerUnit;
-        const dailyGain = unitsGain * price;
+      const evaluate = (region, bonus, depositDays) => {
+        const newPPDay = engineBase * (1 + bonus / 100) + ws.reduce((sum, w) => sum + calcWorkerPPH(w, bonus) * 24, 0);
+        const dailyGain = ((newPPDay - currentPPDay) / ppPerUnit) * margin;
         const relocCost = moveCost * betonPrice;
-        const paybackDays = dailyGain > 0 ? relocCost / dailyGain : Infinity;
+        return { region, bonus, depositDays, dailyGain, relocCost, paybackDays: dailyGain > 0 ? relocCost / dailyGain : Infinity };
+      };
 
-        suggestions.push({
-          company: comp,
-          currentRegion: regions[comp.region],
-          currentBonus,
-          bestRegion,
-          bestBonus,
-          dailyGain,
-          relocCost,
-          paybackDays,
-        });
+      let bestTotal = null, bestPerm = null;
+      for (const region of Object.values(allRegions)) {
+        if (isEnemyRegion(region)) continue;
+        const country = countries[region.country] || null;
+        const ethics = country?._id ? partyEthics[country._id] : null;
+        const parts = calcBonusParts(region, itemCode, country, gameConfig, ethics);
+        if (parts.total > currentBonus && (!bestTotal || parts.total > bestTotal.parts.total)) bestTotal = { region, parts };
+        if (parts.permanent > currentBonus && (!bestPerm || parts.permanent > bestPerm.parts.permanent)) bestPerm = { region, parts };
       }
+      if (!bestTotal) continue;
+
+      let pick = evaluate(bestTotal.region, bestTotal.parts.total, bestTotal.parts.depositRemainingDays);
+      // A deposit-driven move only counts when it pays back before the deposit expires; otherwise fall back to the best permanent region.
+      if (pick.depositDays != null && pick.paybackDays > pick.depositDays) {
+        pick = bestPerm ? evaluate(bestPerm.region, bestPerm.parts.permanent, null) : null;
+      }
+      if (!pick || pick.dailyGain <= 0) continue;
+
+      suggestions.push({
+        company: comp,
+        currentRegion: regions[comp.region],
+        currentBonus,
+        bestRegion: pick.region,
+        bestBonus: pick.bonus,
+        depositDays: pick.depositDays,
+        dailyGain: pick.dailyGain,
+        relocCost: pick.relocCost,
+        paybackDays: pick.paybackDays,
+      });
     }
     return suggestions.sort((a, b) => a.paybackDays - b.paybackDays);
   }
@@ -619,24 +689,23 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       const needs = item.productionNeeds || null;
       // Check if user produces this
       const userComps = companies.filter(c => c.itemCode === code);
-      // Calculate maximum possible global efficiency
-      let maxBonus = 0;
-      let bestRegionName = "N/A";
+      // Best permanent bonus (specialization) drives the ranking; the best active deposit is shown separately as temporary.
+      let maxBonus = 0, bestRegionName = "N/A", tempBonus = 0, tempRegionName = null, tempDays = null;
       for (const regionId of Object.keys(regions)) {
         const region = regions[regionId];
+        if (isEnemyRegion(region)) continue;
         const country = getCountryForRegion(regionId);
         const cEthics = country?._id ? partyEthics[country._id] : null;
-        const bonus = calcTotalBonus(region, code, country, gameConfig, cEthics);
-        if (bonus > maxBonus) {
-          maxBonus = bonus;
-          bestRegionName = region.name;
-        }
+        const parts = calcBonusParts(region, code, country, gameConfig, cEthics);
+        if (parts.permanent > maxBonus) { maxBonus = parts.permanent; bestRegionName = region.name; }
+        if (parts.deposit > 0 && parts.total > tempBonus) { tempBonus = parts.total; tempRegionName = region.name; tempDays = parts.depositRemainingDays; }
       }
       const maxGoldPerPP = goldPerPP * (1 + maxBonus / 100);
+      const tempGoldPerPP = tempBonus > maxBonus ? goldPerPP * (1 + tempBonus / 100) : null;
 
       products.push({
         itemCode: code, type: item.type, price: price, pp, materialCost, netMargin, goldPerPP, needs,
-        maxBonus, maxGoldPerPP, bestRegionName,
+        maxBonus, maxGoldPerPP, bestRegionName, tempBonus, tempRegionName, tempDays, tempGoldPerPP,
         userCompanyCount: userComps.length,
         userTotalProfit: userComps.reduce((s, c) => s + calcDailyProfit(c), 0),
         userTotalRevenue: userComps.reduce((s, c) => s + calcDailyRevenue(c), 0),
@@ -646,80 +715,60 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
     return products.sort((a, b) => b.maxGoldPerPP - a.maxGoldPerPP);
   }
 
-  function getGlobalOptimization() {
+  function getGlobalOptimization(allProducts) {
     if (!gameConfig) return [];
-    const allProducts = getAllProductsRanked();
     const betonPrice = getItemPrice("concrete") || 1;
     const moveCost = gameConfig.company?.moveCost || 5;
     const changeCost = gameConfig.company?.changeItemCost || 5;
-    
+    const regionList = Object.values(regions).filter(r => !isEnemyRegion(r));
+
+    // Permanent bonus per (item, region), computed once instead of once per company.
+    const cache = new Map();
+    const permBonus = (itemCode, region) => {
+      const key = itemCode + "|" + region._id;
+      let v = cache.get(key);
+      if (v === undefined) { v = regionBonusFor(region, itemCode, { permanentOnly: true }); cache.set(key, v); }
+      return v;
+    };
+
     const suggestions = [];
-    
     for (const comp of companies) {
+      if (comp.disabledAt) continue;
       const currentItem = comp.itemCode;
-      const currentRegion = comp.region;
+      const currentRegionId = comp.region;
       const currentBonus = getRegionBonus(comp);
-      const currentRevenue = calcDailyRevenue(comp);
-      const currentCost = calcDailyCost(comp);
-      const currentProfit = currentRevenue - currentCost;
-      const engineLevel = comp.activeUpgradeLevels?.automatedEngine || 1;
-      const compId = comp._id;
-      const ws = workers[compId] || [];
-      
+      const currentProfit = calcDailyProfit(comp);
+      const engineBase = engineBasePPDay(comp);
+      const ws = workers[comp._id] || [];
+      const workerBase = ws.map(w => ({ base: calcWorkerBasePPH(w), fid: w.fidelity || 0 }));
+      const dailyCost = calcDailyCost(comp);
+
       let bestDailyGain = 0;
       let bestSuggestion = null;
-      
       for (const prod of allProducts) {
-        for (const regionId of Object.keys(regions)) {
-          if (prod.itemCode === currentItem && regionId === currentRegion) continue;
-          
-          const region = regions[regionId];
-          const country = getCountryForRegion(regionId);
-          const optEthics = country?._id ? partyEthics[country._id] : null;
-          const newBonus = calcTotalBonus(region, prod.itemCode, country, gameConfig, optEthics);
-          
-          const newEnginePP = engineLevel * 24 * (1 + newBonus / 100);
-          // Assuming workers are fired and re-hired? No, workers move with the factory (is loyalty kept? Let's assume yes).
-          const newWorkerPP = ws.reduce((sum, w) => {
-            const basePPH = calcWorkerBasePPH(w);
-            return sum + basePPH * (1 + newBonus / 100) * (1 + (w.fidelity || 0) / 100) * 24;
-          }, 0);
-          const newTotalPP = newEnginePP + newWorkerPP;
-          const newRevenue = (newTotalPP / prod.pp) * prod.netMargin;
-          const newCost = ws.reduce((sum, w) => sum + calcWorkerCostPerH(w) * 24, 0);
-          const newProfit = newRevenue - newCost;
+        if (!prod.pp) continue;
+        for (const region of regionList) {
+          if (prod.itemCode === currentItem && region._id === currentRegionId) continue;
+          const newBonus = permBonus(prod.itemCode, region);
+          const newTotalPP = engineBase * (1 + newBonus / 100)
+            + workerBase.reduce((sum, w) => sum + w.base * (1 + newBonus / 100) * (1 + w.fid / 100) * 24, 0);
+          const newProfit = (newTotalPP / prod.pp) * prod.netMargin - dailyCost;
           const dailyGain = newProfit - currentProfit;
-          
           if (dailyGain > bestDailyGain) {
             let concreteNeeded = 0;
-            if (regionId !== currentRegion) concreteNeeded += moveCost;
+            if (region._id !== currentRegionId) concreteNeeded += moveCost;
             if (prod.itemCode !== currentItem) concreteNeeded += changeCost;
-            
             const totalCost = concreteNeeded * betonPrice;
-            const paybackDays = totalCost / dailyGain;
-            
             bestDailyGain = dailyGain;
             bestSuggestion = {
-              company: comp,
-              currentItem,
-              currentRegion: regions[currentRegion],
-              currentBonus,
-              currentProfit,
-              newItem: prod.itemCode,
-              newRegion: region,
-              newBonus,
-              newProfit,
-              dailyGain,
-              totalCost,
-              concreteNeeded,
-              paybackDays
+              company: comp, currentItem, currentRegion: regions[currentRegionId], currentBonus, currentProfit,
+              newItem: prod.itemCode, newRegion: region, newBonus, newProfit, dailyGain, totalCost, concreteNeeded,
+              paybackDays: totalCost / dailyGain,
             };
           }
         }
       }
-      if (bestSuggestion) {
-        suggestions.push(bestSuggestion);
-      }
+      if (bestSuggestion) suggestions.push(bestSuggestion);
     }
     return suggestions.sort((a, b) => a.paybackDays - b.paybackDays);
   }
@@ -732,6 +781,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
     // Build a list of all workers with their current factory
     const allWorkers = [];
     for (const comp of companies) {
+      if (comp.disabledAt) continue;
       const ws = workers[comp._id] || [];
       for (const w of ws) {
         allWorkers.push({ worker: w, currentCompany: comp });
@@ -755,7 +805,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       let bestNetPerH = currentNetPerH;
 
       for (const comp of companies) {
-        if (comp._id === currentCompany._id) continue;
+        if (comp._id === currentCompany._id || comp.disabledAt) continue;
         const bonus = getRegionBonus(comp);
         const ppPerUnit = getPPPerUnit(comp.itemCode);
         const margin = calcNetMarginPerUnit(comp.itemCode);
@@ -801,38 +851,73 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   const TD = getTD;
   const hasData = companies.length > 0;
 
-  const enemyWarnings = hasData ? getEnemyWarnings() : [];
-  const wageWarnings = hasData ? getWageLossWarnings() : [];
-  const betterRegions = hasData ? getBetterRegions() : [];
-  const allProducts = hasData ? getAllProductsRanked() : [];
-  const globalOptimization = hasData ? getGlobalOptimization() : [];
-  const workerOptimization = hasData ? getWorkerOptimization() : [];
+  const analysis = useMemo(() => {
+    if (!hasData) return { enemyWarnings: [], wageWarnings: [], betterRegions: [], allProducts: [], globalOptimization: [], workerOptimization: [] };
+    const allProducts = getAllProductsRanked();
+    return {
+      enemyWarnings: getEnemyWarnings(),
+      wageWarnings: getWageLossWarnings(),
+      betterRegions: getBetterRegions(),
+      allProducts,
+      globalOptimization: getGlobalOptimization(allProducts),
+      workerOptimization: getWorkerOptimization(),
+    };
+    // The analysis functions close over these states; recompute only when the data changes.
+  }, [hasData, companies, workers, regions, allRegions, countries, prices, gameConfig, partyEthics, ownerCountry]);
+  const { enemyWarnings, wageWarnings, betterRegions, allProducts, globalOptimization, workerOptimization } = analysis;
   const totalWarnings = enemyWarnings.length + wageWarnings.length;
 
-  const optimizerProps = hasData ? {
-    liquidAssets: userData?.liquidAssets || 0,
-    totalWealth: userData?.totalWealth || 0,
-    totalCompaniesValue: userData?.totalCompaniesValue || 0,
-    prices: prices,
-    bestProduct: allProducts[0],
-    facs: companies.map(c => {
-      const bonus = getRegionBonus(c);
-      const baseGoldPerPP = calcGoldPerPP(c.itemCode);
-      const goldPerPPWithBonus = baseGoldPerPP * (1 + bonus / 100);
-      return {
-        level: c.activeUpgradeLevels?.automatedEngine || 1,
-        name: c.name || c.itemCode,
-        item: c.itemCode,
-        goldPerLevelPerDay: 24 * goldPerPPWithBonus,
-        workerGoldPerDay: (workers[c._id] || []).reduce((sum, w) => {
-          const wPPDay = calcWorkerPPH(w, bonus) * 24;
-          const wGoldDaily = wPPDay * baseGoldPerPP;
-          const wWageDaily = calcWorkerCostPerH(w) * 24;
-          return sum + (wGoldDaily - wWageDaily);
-        }, 0)
-      };
-    })
-  } : null;
+  const activeCompanies = companies.filter(c => !c.disabledAt);
+  const companyCap = Number(userData?.skills?.companies?.total ?? userData?.skills?.companies?.value) || null;
+  const companyRungs = Number(userData?.skills?.companies?.prestige) || 0;
+  const baseCompanyCap = Number(gameConfig?.skills?.companies?.levels?.["10"]?.value) || 12;
+  const prestigePoints = Number(userData?.leveling?.prestige) || 0;
+  const prestigeLevel = Number(userData?.leveling?.prestigeLevel) || 0;
+
+  const optimizerProps = useMemo(() => {
+    if (!hasData) return null;
+    const engineCfg = gameConfig?.upgradesConfig?.automatedEngine;
+    const engineLevels = engineCfg?.levels || null;
+    const engineMaxLevel = engineLevels ? Math.max(...Object.keys(engineLevels).map(Number)) : 7;
+    return {
+      loadId,
+      liquidAssets: userData?.liquidAssets || 0,
+      totalWealth: userData?.totalWealth || 0,
+      totalCompaniesValue: userData?.totalCompaniesValue || 0,
+      prices,
+      bestProduct: allProducts[0],
+      maxCompanies: companyCap || baseCompanyCap,
+      baseCompanyCap,
+      companyRungs,
+      prestigePoints,
+      prestigeLevel,
+      constructionCostPerCompany: Number(gameConfig?.company?.constructionCostIncreasePerCompany) || 50,
+      engineLevels,
+      engineMaxLevel,
+      enginePendingHours: Number(engineCfg?.pendingDurationHours) || 0,
+      missionReward: gameConfig?.mission?.reward || null,
+      casePrice: getItemPrice("case1") || 0,
+      // Planning uses the permanent bonus only, temporary deposits would overstate multi-week plans.
+      facs: companies.map(c => {
+        const bonus = getPermanentBonus(c);
+        const baseGoldPerPP = calcGoldPerPP(c.itemCode);
+        const goldPerPPWithBonus = baseGoldPerPP * (1 + bonus / 100);
+        const disabled = !!c.disabledAt;
+        return {
+          id: c._id,
+          level: c.activeUpgradeLevels?.automatedEngine || 1,
+          name: c.name || c.itemCode,
+          item: c.itemCode,
+          disabled,
+          goldPerLevelPerDay: disabled ? 0 : 24 * goldPerPPWithBonus,
+          workerGoldPerDay: disabled ? 0 : (workers[c._id] || []).reduce((sum, w) => {
+            const wPPDay = calcWorkerPPH(w, bonus) * 24;
+            return sum + (wPPDay * baseGoldPerPP - calcWorkerCostPerH(w) * 24);
+          }, 0),
+        };
+      }),
+    };
+  }, [hasData, loadId, companies, workers, prices, gameConfig, userData, allProducts, partyEthics, regions, countries, companyCap, companyRungs, baseCompanyCap, prestigePoints, prestigeLevel]);
 
   return (
     <div>
@@ -867,6 +952,9 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                   />
                 </Tip>
                 {!apiKey && <div style={{ fontSize: 11, color: C.accent, marginTop: 6, textAlign: "center" }}>{L.apiKeyRequiredForWorkers}</div>}
+                <label style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, cursor: "pointer", fontSize: 11, color: C.textMuted, marginTop: 6 }}>
+                  <input type="checkbox" checked={rememberKey} onChange={e => setRememberKey(e.target.checked)} /> {L.apiKeyRemember}
+                </label>
               </div>
             </div>
             <div style={{ display: "flex", justifyContent: "center" }}>
@@ -881,6 +969,10 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
           <div style={{ marginTop: 12, fontSize: 12, fontFamily: F.m, color: C.green, textAlign: "center" }}>
             {L.successLoaded(userData.username, companies.length)}
             {ownerCountry && <span>{L.successCountry(ownerCountry.name)}</span>}
+            {companyCap && <div style={{ color: C.textDim, marginTop: 4 }}>{L.capLine(companyCap, companyCap - companyRungs, companyRungs)} · {L.prestigeStats(prestigeLevel, prestigePoints)}</div>}
+            {companyCap && activeCompanies.length > companyCap && <div style={{ color: C.red, marginTop: 4 }}>{L.overCapWarning(activeCompanies.length, companyCap)}</div>}
+            {skippedCompanies > 0 && <div style={{ color: "#ff9900", marginTop: 4 }}>{L.partialLoad(skippedCompanies)}</div>}
+            {workerIssues && <div style={{ color: "#ff9900", marginTop: 4 }}>{L.workerDataUnavailable(workerIssues.failed, workerIssues.total, workerIssues.reason === "NO_KEY" ? L.reasonNoApiKey : workerIssues.reason)}</div>}
           </div>
         )}
       </GlassCard>
@@ -950,7 +1042,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
           {subTab === "overview" && (
             <GlassCard style={{ padding: 0, overflow: "hidden" }}>
               <div style={{ padding: "16px 20px 8px" }}>
-                <Sec icon="&#127981;">{L.sectionFactoryOverview(companies.length)}</Sec>
+                <Sec icon="&#127981;">{companyCap ? L.sectionFactoryOverviewCap(activeCompanies.length, companyCap) : L.sectionFactoryOverview(companies.length)}</Sec>
                 <div style={{ fontSize: 11, color: C.textMuted, marginTop: -10, marginBottom: 8 }}>{L.tipClickWorkerDetails}</div>
               </div>
               <div style={{ overflowX: "auto" }}>
@@ -975,7 +1067,8 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                     {companies.map((comp, i) => {
                       const compId = comp._id;
                       const ws = workers[compId] || [];
-                      const bonus = getRegionBonus(comp);
+                      const parts = getBonusParts(comp);
+                      const bonus = parts.total;
                       const enginePP = calcEnginePPDay(comp);
                       const workerPPTotal = ws.reduce((sum, w) => sum + calcWorkerPPH(w, bonus) * 24, 0);
                       const ppDay = enginePP + workerPPTotal;
@@ -988,7 +1081,9 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
 
                       return [
                         <tr key={compId} onClick={() => setExpandedCompany(isExpanded ? null : compId)}
-                          style={{ background: i % 2 ? C.rowAlt : "transparent", cursor: ws.length > 0 ? "pointer" : "default",
+                          className="row-toggle" tabIndex={ws.length > 0 ? 0 : -1} role={ws.length > 0 ? "button" : undefined} aria-expanded={ws.length > 0 ? isExpanded : undefined}
+                          onKeyDown={e => { if (ws.length > 0 && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); setExpandedCompany(isExpanded ? null : compId); } }}
+                          style={{ background: i % 2 ? C.rowAlt : "transparent", cursor: ws.length > 0 ? "pointer" : "default", opacity: comp.disabledAt ? 0.55 : 1,
                             outline: isExpanded ? "1px solid " + C.accent + "44" : "none" }}>
                           <td style={TD(false)}>
                             {ws.length > 0 && <span style={{ marginRight: 6, fontSize: 10, color: C.accent }}>{isExpanded ? "\u25BC" : "\u25B6"}</span>}
@@ -1003,6 +1098,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                           </td>
                           <td style={{ ...TD(false), color: bonus > 0 ? C.green : C.textMuted }}>
                             {bonus > 0 ? "+" + fmt(bonus, 2) + "%" : "-"}
+                            {parts.deposit > 0 && <div style={{ fontSize: 10, color: C.textMuted }}>{L.depositTemp} +{fmt(parts.deposit + parts.ethicDeposit, 0)}%{parts.depositRemainingDays != null && " · " + L.remainingDays(fmt(parts.depositRemainingDays, 1))}</div>}
                           </td>
                           <td style={TD(false)}>{ws.length}</td>
                           <td style={{ ...TD(false), color: C.blue }}>{fmt(enginePP, 1)}</td>
@@ -1018,10 +1114,11 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                             {fmt(profit, 2)} G
                           </td>
                           <td style={TD(false)}>
+                            {comp.disabledAt && <Bdg color={C.textMuted}>{L.badgeDisabled}</Bdg>}
                             {isEnemy && <Bdg color={C.red}>{L.badgeEnemy}</Bdg>}
                             {hasWageLoss && <Bdg color="#ff9900">{L.badgeWageLoss}</Bdg>}
                             {!getPPPerUnit(comp.itemCode) && <Bdg color={C.red}>{L.badgeConfigMissing}</Bdg>}
-                            {!isEnemy && !hasWageLoss && getPPPerUnit(comp.itemCode) && <Bdg color={C.green}>{L.badgeOk}</Bdg>}
+                            {!comp.disabledAt && !isEnemy && !hasWageLoss && getPPPerUnit(comp.itemCode) && <Bdg color={C.green}>{L.badgeOk}</Bdg>}
                           </td>
                         </tr>,
                         // Expanded worker details
@@ -1053,10 +1150,10 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                                       const fidelity = w.fidelity || 0;
                                       return (
                                         <tr key={wi} style={{ background: wi % 2 ? "rgba(255,255,255,0.02)" : "transparent" }}>
-                                          <td style={{ ...TD(false), fontSize: 13 }}>{w.username || "Arbeiter " + (wi+1)}</td>
+                                          <td style={{ ...TD(false), fontSize: 13 }}>{w.username || L.workerFallback(wi)}</td>
                                           <td style={{ ...TD(false), fontSize: 13 }}>
                                             <span style={{ color: C.accent }}>{w.energy}</span>
-                                            <span style={{ color: C.textMuted, fontSize: 10 }}> (aktuell: {fmt(w.energyCurrent || 0, 1)})</span>
+                                            <span style={{ color: C.textMuted, fontSize: 10 }}> ({L.currentValue(fmt(w.energyCurrent || 0, 1))})</span>
                                           </td>
                                           <td style={{ ...TD(false), fontSize: 13, color: C.blue }}>{w.productivity}</td>
                                           <td style={{ ...TD(false), fontSize: 13, color: fidelity > 0 ? C.green : C.textMuted }}>
@@ -1184,7 +1281,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
               <GlassCard glow={betterRegions.length > 0 ? C.greenGlow : undefined}>
                 <Sec icon="&#127758;">{L.sectionBetterRegions(betterRegions.length)}</Sec>
                 <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
-                  {L.betterRegionsDesc}
+                  {L.betterRegionsDesc} {L.enemyExcluded}
                 </div>
                 {betterRegions.length === 0 ? (
                   <div style={{ padding: "16px", textAlign: "center", color: C.green, background: "rgba(0,255,0,0.05)", borderRadius: 8, border: "1px solid " + C.green + "44" }}>
@@ -1216,6 +1313,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                           <td style={TD(false)}>
                             <div style={{ color: C.green }}>{s.bestRegion?.name || "?"}</div>
                             <div style={{ fontSize: 10, color: C.green }}>+{fmt(s.bestBonus, 1)}%</div>
+                            {s.depositDays != null && <div style={{ fontSize: 10, color: C.textMuted }}>{L.depositTemp} · {L.remainingDays(fmt(s.depositDays, 1))}</div>}
                           </td>
                           <td style={{ ...TD(false), color: C.green, fontWeight: 700 }}>+{fmt(s.dailyGain, 2)} G</td>
                           <td style={{ ...TD(false), color: C.textDim }}>{fmt(s.relocCost, 2)} G</td>
@@ -1273,7 +1371,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
               <GlassCard glow={globalOptimization.length > 0 ? C.accentGlow : undefined}>
                 <Sec icon="&#128260;">{L.sectionGlobalOpt(globalOptimization.length)}</Sec>
                 <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
-                  {L.globalOptDesc}
+                  {L.globalOptDesc} {L.enemyExcluded}
                 </div>
                 {globalOptimization.length === 0 ? (
                   <div style={{ padding: "16px", textAlign: "center", color: C.green, background: "rgba(0,255,0,0.05)", borderRadius: 8, border: "1px solid " + C.green + "44" }}>
@@ -1327,7 +1425,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
               <div style={{ padding: "16px 20px 8px" }}>
                 <Sec icon="&#128176;">{L.sectionMarket}</Sec>
                 <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
-                  {L.marketDesc}
+                  {L.marketDesc} {L.enemyExcluded}
                 </div>
               </div>
               <div style={{ overflowX: "auto" }}>
@@ -1383,6 +1481,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                           <td style={{ ...TD(false), fontWeight: 700, color: i === 0 ? C.green : p.maxGoldPerPP > 0 ? C.text : C.red, fontSize: 15 }}>
                             <div>{fmt(p.maxGoldPerPP, 4)} G</div>
                             <div style={{ fontSize: 10, color: C.green }}>{p.bestRegionName} (+{fmt(p.maxBonus, 1)}%)</div>
+                            {p.tempGoldPerPP != null && <div style={{ fontSize: 10, color: C.textMuted }}>{L.depositTemp}: {fmt(p.tempGoldPerPP, 4)} G · {p.tempRegionName} (+{fmt(p.tempBonus, 1)}%{p.tempDays != null ? ", " + L.remainingDays(fmt(p.tempDays, 1)) : ""})</div>}
                           </td>
                           <td style={TD(false)}>
                             {isProducing

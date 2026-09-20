@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import { THEMES, C, F, setThemeVars, glass, fmt, fmtT, fmtN, GlassCard, Sec, Inp, Bdg, Tip, Btn, getTH, getTD, apiCall } from "./shared.jsx";
+import { THEMES, C, F, setThemeVars, glass, fmt, fmtT, fmtN, GlassCard, Sec, Inp, Bdg, Tip, Btn, getTH, getTD } from "./shared.jsx";
 import { getLang } from "./translations.jsx";
 
 function getStrats(L) {
@@ -13,45 +13,103 @@ function getStrats(L) {
 }
 
 // ── Encode / Decode ──
+// v2 codes are base64(JSON) and carry the income fields; v1 "p|f|theme" codes are still readable.
+function paramsFromArray(p) {
+  return {
+    maxFactories: p[0], maxLevel: p[1], upgradeBase: p[2], factoryBase: p[3],
+    includeWorkers: !!p[4], includeMissions: !!p[5], includeCases: !!p[6], includeDonations: !!p[7],
+    startBalance: p[8] || 0, startStahl: p[9] || 0, startBeton: p[10] || 0,
+  };
+}
+
 function encodeState(params, facs, theme) {
-  const p = [params.maxFactories, params.maxLevel, params.upgradeBase, params.factoryBase,
-    params.includeWorkers?1:0, params.includeMissions?1:0, params.includeCases?1:0, params.includeDonations?1:0, 
-    params.startBalance, params.startStahl, params.startBeton].join(",");
-  const f = facs.map(x => x.level + ":" + (x.item||"")).join(",");
-  try { return btoa(p + "|" + f + "|" + theme); } catch { return ""; }
+  const payload = {
+    v: 2,
+    p: [params.maxFactories, params.maxLevel, params.upgradeBase, params.factoryBase,
+      params.includeWorkers ? 1 : 0, params.includeMissions ? 1 : 0, params.includeCases ? 1 : 0, params.includeDonations ? 1 : 0,
+      params.startBalance, params.startStahl, params.startBeton],
+    f: facs.map(x => [x.level, x.item || "", x.name || "",
+      Math.round((x.goldPerLevelPerDay || 0) * 1000) / 1000, Math.round((x.workerGoldPerDay || 0) * 1000) / 1000, x.disabled ? 1 : 0]),
+    t: theme,
+  };
+  try { return btoa(unescape(encodeURIComponent(JSON.stringify(payload)))); } catch { return ""; }
 }
 
 function decodeState(str) {
   try {
-    const raw = atob(str.trim());
+    const raw = decodeURIComponent(escape(atob(str.trim())));
+    if (raw.startsWith("{")) {
+      const o = JSON.parse(raw);
+      const facs = (o.f || []).map(a => ({
+        level: Number(a[0]) || 1, item: a[1] || "", name: a[2] || "",
+        goldPerLevelPerDay: Number(a[3]) || 0, workerGoldPerDay: Number(a[4]) || 0, disabled: !!a[5],
+      }));
+      return { params: paramsFromArray((o.p || []).map(Number)), facs, theme: o.t === "pink" ? "pink" : "grau" };
+    }
     const parts = raw.split("|");
-    const pStr = parts[0], fStr = parts[1], thm = parts[2] || "grau";
-    const p = pStr.split(",").map(Number);
-    const facs = fStr.split(",").map(s => {
+    const p = parts[0].split(",").map(Number);
+    const facs = (parts[1] || "").split(",").filter(Boolean).map(s => {
       const sp = s.split(":");
-      return { level: Number(sp[0]), item: sp[1] || "" };
+      return { level: Number(sp[0]) || 1, item: sp[1] || "" };
     });
-    return {
-      params: { maxFactories: p[0], maxLevel: p[1], upgradeBase: p[2], factoryBase: p[3],
-        includeWorkers: !!p[4], includeMissions: !!p[5], includeCases: !!p[6], includeDonations: !!p[7], 
-        startBalance: p[8] || 0, startStahl: p[9] || 0, startBeton: p[10] || 0 },
-      facs, theme: thm === "pink" ? "pink" : "grau"
-    };
+    return { params: paramsFromArray(p), facs, theme: parts[2] === "pink" ? "pink" : "grau" };
   } catch { return null; }
 }
 
 // ── Game Logic ──
-const upgStahl = (lvl, base) => base * Math.pow(2, lvl - 1);
+// Engine upgrade cost in steel: from gameConfig.upgradesConfig.automatedEngine when available, else the 2^n formula.
+const upgStahl = (lvl, base, engineLevels) => {
+  const cfg = engineLevels?.[lvl + 1]?.steelCost;
+  return Number.isFinite(cfg) ? cfg : base * Math.pow(2, lvl - 1);
+};
+const upgCP = (lvl, engineLevels) => {
+  const cfg = engineLevels?.[lvl + 1]?.constructionPointsCost;
+  return Number.isFinite(cfg) ? cfg : null;
+};
 const facBeton = (n, base) => n * base;
+// Companies beyond the skill cap (12 at level 10) need prestige rungs: rung r costs 2^(r-1) points.
+const rungCost = (n, baseCap) => (n > baseCap ? Math.pow(2, n - baseCap - 1) : 0);
+function maxBuyableFactories(baseCap, rungs, points, hardCap = 40) {
+  let n = baseCap + rungs;
+  let pts = points;
+  while (n < hardCap) {
+    const c = rungCost(n + 1, baseCap);
+    if (c > pts) break;
+    pts -= c;
+    n++;
+  }
+  return n;
+}
+function planLimits(params) {
+  const { maxFactories, optData, ignorePrestige } = params;
+  const baseCap = Number(optData?.baseCompanyCap) || 12;
+  const rungs = Number(optData?.companyRungs) || 0;
+  const points = Number(optData?.prestigePoints) || 0;
+  const buyable = ignorePrestige ? 40 : maxBuyableFactories(baseCap, rungs, points);
+  return { baseCap, rungs, points, buyable, buyLimit: Math.min(maxFactories, buyable), capLimited: maxFactories > buyable };
+}
+
+function missionIncome(optData) {
+  const mr = optData?.missionReward;
+  const money = mr
+    ? (Number(mr.daily?.money) || 0) + (Number(mr.weekly?.money) || 0) / 7 + (Number(mr.monthly?.money) || 0) / 30
+    : 10 + 30 / 7;
+  const cases = mr
+    ? (Number(mr.daily?.cases) || 0) + (Number(mr.weekly?.cases) || 0) / 7 + (Number(mr.monthly?.cases) || 0) / 30
+    : 1 + 3 / 7;
+  const casePrice = Number(optData?.casePrice) || Number(optData?.prices?.case1) || 0;
+  return { money, cases, casePrice };
+}
 
 function totalGoldPerDay(fs, params) {
   const { includeWorkers, includeMissions, includeDonations, includeCases, optData } = params;
+  const inc = missionIncome(optData);
   let g = 0;
-  if (includeMissions) g += 10 + 30/7;
-  // Fallback box price if unknown, assume ~8G
-  if (includeCases) g += (1 + 3/7) * (optData?.prices?.dailyResourceBox || 8); 
+  if (includeMissions) g += inc.money;
+  if (includeCases) g += inc.cases * inc.casePrice;
   if (includeDonations) g -= 5;
   for (const f of fs) {
+    if (f.disabled) continue;
     if (f.goldPerLevelPerDay) g += f.level * f.goldPerLevelPerDay;
     if (includeWorkers && f.workerGoldPerDay) g += f.workerGoldPerDay;
   }
@@ -65,176 +123,184 @@ class Heap {
   get size() { return this.d.length; }
 }
 
-function facKey(fs) { return fs.map(f => f.level).sort().join("|"); }
+// State key: factories with identical income are interchangeable (sorted within their income class),
+// factories with different income stay distinct, so the search never merges unequal states.
+function facKey(fs) {
+  return fs.map(f => (f.disabled ? "d" : "") + Math.round((f.goldPerLevelPerDay || 0) * 100) + ":" + f.level).sort().join("|");
+}
+
+function goalFacs(startFacs, params, newFacTemplate, buyLimit) {
+  const { maxLevel } = params;
+  const goal = startFacs.map(f => ({ ...f, level: f.disabled ? f.level : Math.max(f.level, maxLevel) }));
+  for (let i = startFacs.length; i < buyLimit; i++) goal.push({ ...newFacTemplate, level: maxLevel });
+  return goal;
+}
+
+function newFactoryTemplate(params, L) {
+  const { optData } = params;
+  return {
+    level: 1,
+    item: optData?.bestProduct?.itemCode || L.newFac,
+    goldPerLevelPerDay: optData?.bestProduct ? (24 * optData.bestProduct.maxGoldPerPP) : 2.5,
+    workerGoldPerDay: 0, // no workers assigned yet in simulations
+  };
+}
 
 function runDijkstra(startFacs, params, L) {
-  const { maxFactories, maxLevel, upgradeBase, factoryBase, optData } = params;
+  const { maxLevel, upgradeBase, factoryBase, optData } = params;
   const priceStahl = optData?.prices?.steel || 1.58;
   const priceBeton = optData?.prices?.concrete || 1.57;
-  const newFacGoldPerLevelDay = optData?.bestProduct ? (24 * optData.bestProduct.maxGoldPerPP) : 2.5;
+  const engineLevels = optData?.engineLevels || null;
+  const pending = Number(optData?.enginePendingHours) || 0;
+  const limits = planLimits(params);
+  const tmpl = newFactoryTemplate(params, L);
+
+  const gk = facKey(goalFacs(startFacs, params, tmpl, limits.buyLimit));
+  if (facKey(startFacs) === gk) return { path: [], complete: true, iter: 0, ...limits, alreadyDone: true };
 
   const heap = new Heap(), visited = new Set();
-  const gp = []; for (const f of startFacs) gp.push(maxLevel);
-  for (let i = startFacs.length; i < maxFactories; i++) gp.push(maxLevel);
-  const gk = gp.sort().join("|");
-  if (facKey(startFacs) === gk) return { path: [], complete: true, iter: 0 };
-
-  const sk = (fs) => facKey(fs);
   heap.push(0, { facs: startFacs.map(f => ({ ...f })), path: [], savings: params.startBalance || 0, invStahl: params.startStahl || 0, invBeton: params.startBeton || 0 });
   let iter = 0;
 
   while (heap.size > 0 && iter < 500000) {
     iter++;
     const { p: time, v: { facs, path, savings, invStahl, invBeton } } = heap.pop();
-    const key = sk(facs);
+    const key = facKey(facs);
     if (visited.has(key)) continue; visited.add(key);
-    if (facKey(facs) === gk) return { path, complete: true, iter };
-    
+    if (key === gk) return { path, complete: true, iter, ...limits };
+
     const rateDay = totalGoldPerDay(facs, params);
     const rateHour = rateDay / 24;
-    // If we are losing money and have no savings, we are stuck
-    if (rateHour <= 0 && savings <= 0 && invStahl <= 0 && invBeton <= 0) continue; 
+    if (rateHour <= 0 && savings <= 0 && invStahl <= 0 && invBeton <= 0) continue; // stuck
 
     for (let i = 0; i < facs.length; i++) {
-      if (facs[i].level >= maxLevel) continue;
+      if (facs[i].disabled || facs[i].level >= maxLevel) continue;
       const lvl = facs[i].level;
-      const stahl = upgStahl(lvl, upgradeBase);
-      
+      const stahl = upgStahl(lvl, upgradeBase, engineLevels);
       const usedStahl = Math.min(invStahl, stahl);
-      const remainingStahl = stahl - usedStahl;
-      const goldCost = remainingStahl * priceStahl;
-      
+      const goldCost = (stahl - usedStahl) * priceStahl;
+
       let dt = 0;
       if (savings < goldCost) {
         if (rateHour <= 0) continue;
         dt = (goldCost - savings) / rateHour;
       }
-      
-      const newSavings = savings + (dt * rateHour) - goldCost;
+      // Income keeps flowing at the old rate while the upgrade is pending.
+      const newSavings = savings + (dt + pending) * rateHour - goldCost;
       const nf = facs.map((f, j) => j === i ? { ...f, level: f.level + 1 } : { ...f });
-      const nk = sk(nf);
-      
+      const nk = facKey(nf);
       if (!visited.has(nk)) {
-        heap.push(time + dt, { facs: nf, path: [...path, {
+        heap.push(time + dt + pending, { facs: nf, path: [...path, {
           action: L.upgradeAction(i+1, facs[i].name || facs[i].item || L.newFac, lvl, lvl+1),
-          type: "upgrade", resType: "stahl", resCost: stahl, usedInv: usedStahl,
-          goldCost, goldGainDay: facs[i].goldPerLevelPerDay, dt, time: time + dt, 
+          type: "upgrade", resType: "stahl", resCost: stahl, usedInv: usedStahl, cp: upgCP(lvl, engineLevels),
+          goldCost, goldGainDay: facs[i].goldPerLevelPerDay || 0, dt: dt + pending, time: time + dt + pending,
           rateDay: totalGoldPerDay(nf, params), savings: newSavings,
         }], savings: newSavings, invStahl: invStahl - usedStahl, invBeton });
       }
     }
-    
-    if (facs.length < maxFactories) {
+
+    if (facs.length < limits.buyLimit) {
       const n = facs.length + 1;
       const beton = facBeton(n, factoryBase);
-      
       const usedBeton = Math.min(invBeton, beton);
-      const remainingBeton = beton - usedBeton;
-      const goldCost = remainingBeton * priceBeton;
-      
+      const goldCost = (beton - usedBeton) * priceBeton;
+
       let dt = 0;
       if (savings < goldCost) {
         if (rateHour <= 0) continue;
         dt = (goldCost - savings) / rateHour;
       }
-      
-      const newSavings = savings + (dt * rateHour) - goldCost;
-      const nf = [...facs.map(f => ({ ...f })), { 
-        level: 1, 
-        item: optData?.bestProduct?.itemCode || "Neu",
-        goldPerLevelPerDay: newFacGoldPerLevelDay,
-        workerGoldPerDay: 0 // Assume no workers assigned yet for simulations
-      }];
-      const nk = sk(nf);
-      
+      const newSavings = savings + dt * rateHour - goldCost;
+      const nf = [...facs.map(f => ({ ...f })), { ...tmpl }];
+      const nk = facKey(nf);
       if (!visited.has(nk)) {
         heap.push(time + dt, { facs: nf, path: [...path, {
-          action: L.newFactoryAction(n, optData?.bestProduct?.itemCode || L.newFac), type: "buy", resType: "beton", resCost: beton, usedInv: usedBeton,
-          goldCost, goldGainDay: newFacGoldPerLevelDay, dt, time: time + dt, 
+          action: L.newFactoryAction(n, tmpl.item), type: "buy", resType: "beton", resCost: beton, usedInv: usedBeton,
+          prestigeCost: rungCost(n, limits.baseCap),
+          goldCost, goldGainDay: tmpl.goldPerLevelPerDay, dt, time: time + dt,
           rateDay: totalGoldPerDay(nf, params), savings: newSavings,
         }], savings: newSavings, invStahl, invBeton: invBeton - usedBeton });
       }
     }
   }
-  return { path: [], complete: false, iter };
+  return { path: [], complete: false, iter, ...limits };
 }
 
 function simulate(startFacs, params, strategy, L) {
-  const { maxFactories, maxLevel, upgradeBase, factoryBase, optData } = params;
+  const { maxLevel, upgradeBase, factoryBase, optData } = params;
   const priceStahl = optData?.prices?.steel || 1.58;
   const priceBeton = optData?.prices?.concrete || 1.57;
-  const newFacGoldPerLevelDay = optData?.bestProduct ? (24 * optData.bestProduct.maxGoldPerPP) : 2.5;
+  const engineLevels = optData?.engineLevels || null;
+  const pending = Number(optData?.enginePendingHours) || 0;
+  const limits = planLimits(params);
+  const tmpl = newFactoryTemplate(params, L);
 
   let st = startFacs.map(f => ({ ...f }));
   let t = 0;
   let savings = params.startBalance || 0;
   let invStahl = params.startStahl || 0;
   let invBeton = params.startBeton || 0;
-  
+
   const path = []; let safe = 0;
-  while (safe < 300) {
+  while (safe < 400) {
     safe++;
-    if (st.length >= maxFactories && st.every(f => f.level >= maxLevel)) break;
-    
+    if (st.length >= limits.buyLimit && st.every(f => f.disabled || f.level >= maxLevel)) break;
+
     const rateDay = totalGoldPerDay(st, params);
     const rateHour = rateDay / 24;
     if (rateHour <= 0 && savings <= 0 && invStahl <= 0 && invBeton <= 0) break;
 
     const acts = [];
     st.forEach((f, i) => {
-      if (f.level >= maxLevel) return;
-      const stahl = upgStahl(f.level, upgradeBase);
+      if (f.disabled || f.level >= maxLevel) return;
+      const stahl = upgStahl(f.level, upgradeBase, engineLevels);
       const usedStahl = Math.min(invStahl, stahl);
       const goldCost = (stahl - usedStahl) * priceStahl;
-      let dt = savings < goldCost ? (rateHour > 0 ? ((goldCost - savings) / rateHour) : Infinity) : 0;
-      acts.push({ type: "upgrade", idx: i, resCost: stahl, resType: "stahl", usedInv: usedStahl,
-        goldCost, goldGainDay: f.goldPerLevelPerDay, dt, label: L.upgradeAction(i+1, f.name || f.item || L.newFac, f.level, f.level+1) });
+      const dt = savings < goldCost ? (rateHour > 0 ? ((goldCost - savings) / rateHour) : Infinity) : 0;
+      acts.push({ type: "upgrade", idx: i, resCost: stahl, resType: "stahl", usedInv: usedStahl, cp: upgCP(f.level, engineLevels),
+        goldCost, goldGainDay: f.goldPerLevelPerDay || 0, dt, pending, label: L.upgradeAction(i+1, f.name || f.item || L.newFac, f.level, f.level+1) });
     });
-    
-    if (st.length < maxFactories) {
+
+    if (st.length < limits.buyLimit) {
       const n = st.length + 1;
       const beton = facBeton(n, factoryBase);
       const usedBeton = Math.min(invBeton, beton);
       const goldCost = (beton - usedBeton) * priceBeton;
-      let dt = savings < goldCost ? (rateHour > 0 ? ((goldCost - savings) / rateHour) : Infinity) : 0;
-      acts.push({ type: "buy", resCost: beton, resType: "beton", usedInv: usedBeton,
-        goldCost, goldGainDay: newFacGoldPerLevelDay, dt, label: L.newFactoryAction(n, optData?.bestProduct?.itemCode || L.newFac) });
+      const dt = savings < goldCost ? (rateHour > 0 ? ((goldCost - savings) / rateHour) : Infinity) : 0;
+      acts.push({ type: "buy", resCost: beton, resType: "beton", usedInv: usedBeton, prestigeCost: rungCost(n, limits.baseCap),
+        goldCost, goldGainDay: tmpl.goldPerLevelPerDay, dt, pending: 0, label: L.newFactoryAction(n, tmpl.item) });
     }
-    
-    if (!acts.length) break;
-    
+
+    // Only affordable actions are eligible, so a strategy never aborts while another action is still possible.
+    const feasible = acts.filter(a => a.dt !== Infinity);
+    if (!feasible.length) break;
+
     let pick;
-    if (strategy === "cheapest") pick = acts.sort((a, b) => a.goldCost - b.goldCost)[0];
-    else if (strategy === "upgrade_first") { 
-      const u = acts.filter(a => a.type === "upgrade").sort((a,b) => (b.goldGainDay/(b.goldCost||1)) - (a.goldGainDay/(a.goldCost||1))); 
-      pick = u.length ? u[0] : acts.find(a => a.type === "buy"); 
+    if (strategy === "cheapest") pick = feasible.sort((a, b) => a.goldCost - b.goldCost)[0];
+    else if (strategy === "upgrade_first") {
+      const u = feasible.filter(a => a.type === "upgrade").sort((a, b) => (b.goldGainDay / (b.goldCost || 1)) - (a.goldGainDay / (a.goldCost || 1)));
+      pick = u.length ? u[0] : feasible.find(a => a.type === "buy");
     }
-    else { 
-      // buy first
-      const b = acts.filter(a => a.type === "buy"); 
-      pick = b.length ? b[0] : acts.sort((a,b) => a.goldCost - b.goldCost)[0]; 
+    else {
+      const b = feasible.filter(a => a.type === "buy");
+      pick = b.length ? b[0] : feasible.sort((a, b) => a.goldCost - b.goldCost)[0];
     }
-    
-    if (pick.dt === Infinity) break;
-    
-    t += pick.dt;
-    savings = savings + (pick.dt * rateHour) - pick.goldCost;
+    if (!pick) break;
+
+    const wait = pick.dt + (pick.pending || 0);
+    t += wait;
+    savings = savings + wait * rateHour - pick.goldCost;
     if (pick.type === "upgrade") invStahl -= pick.usedInv;
     if (pick.type === "buy") invBeton -= pick.usedInv;
-    
-    if (pick.type === "upgrade") { 
-      st = st.map((f, j) => j === pick.idx ? { ...f, level: f.level + 1 } : f); 
-    } else { 
-      st = [...st, { 
-        level: 1, 
-        item: optData?.bestProduct?.itemCode || "Neu",
-        goldPerLevelPerDay: newFacGoldPerLevelDay,
-        workerGoldPerDay: 0 
-      }]; 
+
+    if (pick.type === "upgrade") {
+      st = st.map((f, j) => j === pick.idx ? { ...f, level: f.level + 1 } : f);
+    } else {
+      st = [...st, { ...tmpl }];
     }
-    
-    path.push({ action: pick.label, type: pick.type, resType: pick.resType, resCost: pick.resCost, usedInv: pick.usedInv,
-      goldCost: pick.goldCost, goldGainDay: pick.goldGainDay, dt: pick.dt, time: t, 
+
+    path.push({ action: pick.label, type: pick.type, resType: pick.resType, resCost: pick.resCost, usedInv: pick.usedInv, cp: pick.cp ?? null,
+      prestigeCost: pick.prestigeCost || 0, goldCost: pick.goldCost, goldGainDay: pick.goldGainDay, dt: wait, time: t,
       rateDay: totalGoldPerDay(st, params), savings });
   }
   return path;
@@ -280,9 +346,7 @@ export default function App({ theme, setTheme, optData, lang }) {
   const [stBeton, setStBeton] = useState(0);
 
   const [actv, setActv] = useState(["dijkstra", "cheapest"]);
-  const [tab, setTab] = useState("chart");
-  const [cM, setCM] = useState("rate");
-  const [tS, setTS] = useState("dijkstra");
+  const [cM] = useState("rate");
   const [res, setRes] = useState(null);
   const [busy, setBusy] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -290,71 +354,98 @@ export default function App({ theme, setTheme, optData, lang }) {
   const [showImp, setShowImp] = useState(false);
   const [copied, setCopied] = useState(false);
   const [useApiWealth, setUseApiWealth] = useState(true);
+  const [ignorePrestige, setIgnorePrestige] = useState(false);
+
+  const engineMaxLevel = Number(optData?.engineMaxLevel) || 7;
+  const engineLevels = optData?.engineLevels || null;
+  const baseCap = Number(optData?.baseCompanyCap) || 12;
+  const rungs = Number(optData?.companyRungs) || 0;
+  const prestigePoints = Number(optData?.prestigePoints) || 0;
+  const prestigeLevel = Number(optData?.prestigeLevel) || 0;
+  const pendingHours = Number(optData?.enginePendingHours) || 0;
+  const inc = missionIncome(optData);
+
+  // Initialise from a fresh data load only (loadId), never on unrelated parent re-renders.
+  const initRef = useRef(null);
+  useEffect(() => {
+    if (!optData?.facs?.length) return;
+    if (initRef.current === optData.loadId) return;
+    initRef.current = optData.loadId;
+    setFacs(optData.facs.map(f => ({ ...f })));
+    setMxF(Math.max(Number(optData.maxCompanies) || 12, optData.facs.length));
+    setMxL(engineMaxLevel);
+    if (optData.constructionCostPerCompany) setFB(optData.constructionCostPerCompany);
+    if (Number.isFinite(engineLevels?.[2]?.steelCost)) setUB(engineLevels[2].steelCost);
+    if (useApiWealth && optData.liquidAssets !== undefined) setStB(Math.round(optData.liquidAssets * 100) / 100);
+  }, [optData?.loadId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (optData?.facs && optData.facs.length > 0) {
-      setFacs(optData.facs);
-      
-      let nextStB = stB;
-      if (useApiWealth && optData.liquidAssets !== undefined) {
-         nextStB = Math.round(optData.liquidAssets * 100) / 100;
-         setStB(nextStB);
-      }
+    if (useApiWealth && optData?.liquidAssets !== undefined) setStB(Math.round(optData.liquidAssets * 100) / 100);
+  }, [useApiWealth]); // eslint-disable-line react-hooks/exhaustive-deps
 
-      compute(optData.facs, {
-        maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB,
-        includeWorkers: inclW, includeMissions: inclM, includeCases: inclC, includeDonations: inclD, 
-        startBalance: nextStB, startStahl: stStahl, startBeton: stBeton,
-        optData
-      });
-    }
-  }, [optData, useApiWealth]);
+  const params = {
+    // Clamped here as well, because the inputs only clamp on blur.
+    maxFactories: Math.max(1, Math.round(mxF) || 0), maxLevel: Math.min(Math.max(1, Math.round(mxL) || 1), engineMaxLevel), upgradeBase: uB, factoryBase: fB,
+    includeWorkers: inclW, includeMissions: inclM, includeCases: inclC, includeDonations: inclD,
+    startBalance: stB, startStahl: stStahl, startBeton: stBeton,
+    ignorePrestige,
+    optData
+  };
 
-  function compute(customFacs = null, customParams = null) {
+  function compute() {
     setBusy(true);
-    const fData = customFacs || facs;
-    const pData = customParams || { 
-      maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB,
-      includeWorkers: inclW, includeMissions: inclM, includeCases: inclC, includeDonations: inclD, 
-      startBalance: stB, startStahl: stStahl, startBeton: stBeton,
-      optData
-    };
-
+    const fData = facs;
+    const pData = params;
     setTimeout(() => {
       const paths = {}, d = runDijkstra(fData, pData, L);
       paths.dijkstra = d.path;
       for (const s of STRATS) { if (s.key !== "dijkstra") try { paths[s.key] = simulate(fData, pData, s.key, L); } catch { paths[s.key] = []; } }
       const finals = {};
       for (const s of STRATS) { const p = paths[s.key]; finals[s.key] = p?.length ? p[p.length-1].time : null; }
-      setRes({ paths, finals, ok: d.complete, iter: d.iter });
+      // When the optimal search aborted, the table shows the fastest greedy plan instead of nothing.
+      let tableKey = "dijkstra";
+      if (!d.complete) {
+        const candidates = STRATS.filter(s => s.key !== "dijkstra" && finals[s.key] != null).sort((a, b) => finals[a.key] - finals[b.key]);
+        tableKey = candidates.length ? candidates[0].key : "dijkstra";
+      }
+      setRes({ paths, finals, ok: d.complete, iter: d.iter, alreadyDone: !!d.alreadyDone, capLimited: d.capLimited, buyLimit: d.buyLimit, tableKey });
       setBusy(false);
     }, 50);
   }
 
-  const updF = useCallback((i, k, v) => setFacs(p => p.map((f, j) => j === i ? { ...f, [k]: v } : f)), []);
-  const addF = useCallback(() => setFacs(p => [...p, { level: 1 }]), []);
+  // Recompute whenever a planning input changes; the effect always sees the committed state.
+  useEffect(() => {
+    if (!facs.length) { setRes(null); return; }
+    const id = setTimeout(() => compute(), 200);
+    return () => clearTimeout(id);
+  }, [facs, mxF, mxL, uB, fB, inclW, inclM, inclC, inclD, stB, stStahl, stBeton, ignorePrestige, optData?.loadId, lang]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const newFac = () => newFactoryTemplate(params, L);
+  const addF = useCallback(() => setFacs(p => [...p, newFac()]), [optData, lang]); // eslint-disable-line react-hooks/exhaustive-deps
   const rmF = useCallback(i => setFacs(p => p.filter((_, j) => j !== i)), []);
+  const levelF = (i, delta) => setFacs(p => p.map((f, j) => {
+    if (j !== i || f.disabled) return f;
+    const lvl = Math.min(Math.max(1, f.level + delta), mxL);
+    return { ...f, level: lvl };
+  }));
 
-  const params = { 
-    maxFactories: mxF, maxLevel: mxL, upgradeBase: uB, factoryBase: fB,
-    includeWorkers: inclW, includeMissions: inclM, includeCases: inclC, includeDonations: inclD, 
-    startBalance: stB, startStahl: stStahl, startBeton: stBeton,
-    optData
-  };
   const pph = totalGoldPerDay(facs, params);
-
   const code = encodeState(params, facs, theme);
 
   function doImport() {
     const d = decodeState(impStr);
     if (!d) return;
     const p = d.params;
-    setMxF(p.maxFactories); setMxL(p.maxLevel); setUB(p.upgradeBase); setFB(p.factoryBase);
-    setInclW(p.includeWorkers); setInclM(p.includeMissions); setInclC(p.includeCases); setInclD(p.includeDonations); 
+    if (p.maxFactories) setMxF(p.maxFactories);
+    if (p.maxLevel) setMxL(Math.min(p.maxLevel, engineMaxLevel));
+    if (p.upgradeBase) setUB(p.upgradeBase);
+    if (p.factoryBase) setFB(p.factoryBase);
+    setInclW(p.includeWorkers); setInclM(p.includeMissions); setInclC(p.includeCases); setInclD(p.includeDonations);
     setStB(p.startBalance || 0); setStStahl(p.startStahl || 0); setStBeton(p.startBeton || 0);
-    setFacs(d.facs);
+    const fallback = newFac();
+    setFacs(d.facs.map(f => ({ ...f, goldPerLevelPerDay: f.goldPerLevelPerDay || fallback.goldPerLevelPerDay, workerGoldPerDay: f.workerGoldPerDay || 0 })));
     if (d.theme) setTheme(d.theme);
-    setShowImp(false); setImpStr(""); setRes(null);
+    setShowImp(false); setImpStr("");
   }
 
   const expRef = useRef(null);
@@ -367,12 +458,6 @@ export default function App({ theme, setTheme, optData, lang }) {
     });
   }
 
-  const trade = null;
-
-  const displayActs = res?.paths?.dijkstra?.slice(0, 3) || [];
-
-  function computeOld() {}
-
   const chart = res ? (() => {
     const rd = buildChart(res.paths, pph, actv);
     if (cM === "rate") return rd;
@@ -380,7 +465,8 @@ export default function App({ theme, setTheme, optData, lang }) {
     return rd.map(d => { const dt = d.time - prev; const pt = { time: d.time }; for (const k of actv) { if (!(k in acc)) acc[k] = 0; acc[k] += (d[k]||0) * dt; pt[k] = Math.round(acc[k]); } prev = d.time; return pt; });
   })() : [];
 
-  const curPath = res?.paths?.[tS] || [];
+  const tablePath = res ? (res.paths[res.tableKey] || []) : [];
+  const buttonStyle = { background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", color: C.text, fontSize: 10, cursor: "pointer", padding: "2px 6px", borderRadius: 4, transition: "background 0.2s" };
 
   return (
     <div>
@@ -395,14 +481,22 @@ export default function App({ theme, setTheme, optData, lang }) {
           <GlassCard>
             <Sec icon="&#9881;">{L.sectionParams}</Sec>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "0 12px" }}>
-              <Inp label={L.labelSteelInv} value={stStahl} onChange={v => { setStStahl(v); compute(); }} suffix="Stk" tip={L.tipSteelInv} />
-              <Inp label={L.labelConcreteInv} value={stBeton} onChange={v => { setStBeton(v); compute(); }} suffix="Stk" tip={L.tipConcreteInv} />
-              <Inp label={L.labelMaxFactories} value={mxF} onChange={v => { setMxF(v); compute(); }} suffix="Stk" tip={L.tipMaxFactories} />
-              <Inp label={L.labelMaxLevel} value={mxL} onChange={v => { setMxL(v); compute(); }} suffix="Lvl" tip={L.tipMaxLevel} />
-              <Inp label={L.labelUpgCost} value={uB} onChange={v => { setUB(v); compute(); }} suffix="Stk" tip={L.tipUpgCost} />
-              <Inp label={L.labelFacCost} value={fB} onChange={v => { setFB(v); compute(); }} suffix="Bt" tip={L.tipFacCost} />
+              <Inp label={L.labelSteelInv} value={stStahl} onChange={setStStahl} min={0} suffix="Stk" tip={L.tipSteelInv} />
+              <Inp label={L.labelConcreteInv} value={stBeton} onChange={setStBeton} min={0} suffix="Stk" tip={L.tipConcreteInv} />
+              <Inp label={L.labelMaxFactories} value={mxF} onChange={setMxF} min={facs.length} max={40} suffix="Stk" tip={L.tipMaxFactoriesPrestige} />
+              <Inp label={L.labelMaxLevel} value={mxL} onChange={setMxL} min={1} max={engineMaxLevel} suffix="Lvl" tip={L.tipMaxLevelCfg(engineMaxLevel)} />
+              <Inp label={L.labelUpgCost} value={uB} onChange={setUB} min={0} suffix="Stk" tip={L.tipUpgCost} />
+              <Inp label={L.labelFacCost} value={fB} onChange={setFB} min={0} suffix="Bt" tip={L.tipFacCost} />
             </div>
-            
+            {optData?.maxCompanies && (
+              <div style={{ fontSize: 11, color: C.textDim, fontFamily: F.m, marginTop: 4 }}>
+                {L.capLine(optData.maxCompanies, baseCap, rungs)} · {L.prestigeStats(prestigeLevel, prestigePoints)}
+              </div>
+            )}
+            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 11, color: C.textMuted, marginTop: 6 }}>
+              <input type="checkbox" checked={ignorePrestige} onChange={e => setIgnorePrestige(e.target.checked)} /> {L.ignorePrestigeCap}
+            </label>
+
             <div style={{...glass(0.05, 8), padding: 8, marginTop: 16, display: "flex", flexDirection: "column", gap: 4}}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div style={{fontSize: 11, fontWeight: "bold", color: C.textDim, textTransform: "uppercase", letterSpacing: "0.05em"}}>{L.wealthProfile}</div>
@@ -434,7 +528,7 @@ export default function App({ theme, setTheme, optData, lang }) {
                 <Btn on color={C.green} onClick={doImport}>{L.btnLoad}</Btn>
               </div>
             )}
-            <div style={{ fontSize: 16, color: C.textMuted, wordBreak: "break-all", marginTop: 12, lineHeight: 1.4 }}>{code}</div>
+            <div ref={expRef} style={{ fontSize: 12, color: C.textMuted, wordBreak: "break-all", marginTop: 12, lineHeight: 1.4 }}>{code}</div>
           </GlassCard>
 
           <GlassCard style={{ marginTop: 0 }}>
@@ -442,23 +536,28 @@ export default function App({ theme, setTheme, optData, lang }) {
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, fontSize: 16 }}>
               <div>
                 <div style={{ color: C.stahl, fontWeight: 700, fontFamily: F.h, marginBottom: 12, letterSpacing: "0.08em" }}>{L.upgradesHeader}</div>
-                {Array.from({ length: mxL - 1 }, (_, i) => i+1).map(l => {
-                  const s = upgStahl(l, uB), goldCost = s * (optData?.prices?.steel || 1.58);
-                  return <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: C.textDim }}>
+                {Array.from({ length: Math.max(0, params.maxLevel - 1) }, (_, i) => i+1).map(l => {
+                  const s = upgStahl(l, uB, engineLevels), goldCost = s * (optData?.prices?.steel || 1.58), cp = upgCP(l, engineLevels);
+                  return <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: C.textDim, gap: 6 }}>
                     <span style={{ width: 70, color: C.text }}>L{l} -&gt; L{l+1}</span>
                     <span style={{ color: C.stahl }}>{fmt(s, 0)} Stahl</span>
+                    {cp != null && <Tip text={L.tipConstructionPoints}><span style={{ color: C.textMuted, fontSize: 13 }}>{fmt(cp, 0)} {L.cpSuffix}</span></Tip>}
                     <span style={{ color: C.gold || "#eab308" }}>{fmt(goldCost, 0)} G</span>
                   </div>;
                 })}
+                {pendingHours > 0 && <div style={{ fontSize: 11, color: C.textMuted, marginTop: 6 }}>{L.pendingNote(pendingHours)}</div>}
               </div>
               <div>
                 <div style={{ color: C.betonC, fontWeight: 700, fontFamily: F.h, marginBottom: 12, letterSpacing: "0.08em" }}>{L.factoriesHeader}</div>
-                {Array.from({ length: mxF }, (_, i) => i+1).map(n => {
-                  const b = facBeton(n, fB), goldCost = b * (optData?.prices?.concrete || 1.57);
-                  return <div key={n} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: C.textDim }}>
-                    <span style={{ width: 70, color: C.text }}>Fabrik #{n}</span>
-                    <span style={{ color: C.betonC }}>{fmt(b, 0)} Beton</span>
-                    <span style={{ color: C.gold || "#eab308" }}>{fmt(goldCost, 0)} G</span>
+                {Array.from({ length: Math.min(params.maxFactories, 40) }, (_, i) => i+1).map(n => {
+                  const b = facBeton(n, fB), goldCost = b * (optData?.prices?.concrete || 1.57), pc = rungCost(n, baseCap);
+                  return <div key={n} style={{ padding: "3px 0", color: C.textDim }}>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ width: 70, color: C.text }}>{L.factoryN(n)}</span>
+                      <span style={{ color: C.betonC }}>{fmt(b, 0)} Beton</span>
+                      <span style={{ color: C.gold || "#eab308" }}>{fmt(goldCost, 0)} G</span>
+                    </div>
+                    {pc > 0 && n > baseCap + rungs && <div style={{ fontSize: 10, color: C.purple }}>{L.prestigeNeeded(pc, prestigePoints)}</div>}
                   </div>;
                 })}
               </div>
@@ -477,44 +576,51 @@ export default function App({ theme, setTheme, optData, lang }) {
               const isBest = t === Math.min(...Object.values(res.finals).filter(v => v != null)) && t != null;
               return (
                 <Tip key={s.key} text={s.tip}>
-                  <div onClick={() => setActv(p => p.includes(s.key) ? p.filter(x => x !== s.key) : [...p, s.key])}
-                    style={{ ...glass(on ? 0.07 : 0.03, 16), borderRadius: 12, padding: "16px", cursor: "pointer",
+                  <button type="button" aria-pressed={on} onClick={() => setActv(p => p.includes(s.key) ? p.filter(x => x !== s.key) : [...p, s.key])}
+                    style={{ ...glass(on ? 0.07 : 0.03, 16), borderRadius: 12, padding: "16px", cursor: "pointer", color: C.text, textAlign: "left", fontFamily: F.m,
                       borderColor: on ? s.color + "55" : "rgba(255,255,255,0.06)", transition: "all 0.2s",
                       boxShadow: isBest && on ? "0 0 20px " + s.glow : "none" }}>
                     <div style={{ fontFamily: F.h, fontSize: 12, color: s.color, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>{s.label}</div>
                     <div style={{ fontSize: 24, fontWeight: 700, fontFamily: F.h }}>{t != null ? fmtT(t) : "-"}</div>
-                      {isBest && <div style={{ fontSize: 10, color: s.color, fontWeight: 700, marginTop: 4 }}>{L.best}</div>}
-                  </div>
+                    {isBest && <div style={{ fontSize: 10, color: s.color, fontWeight: 700, marginTop: 4 }}>{L.best}</div>}
+                  </button>
                 </Tip>
               );
             })}
 
             <div style={{ ...glass(0.03, 16), borderRadius: 12, padding: "16px", minWidth: 260, flex: 1, display: "flex", gap: 24, flexWrap: "wrap", alignItems: "flex-start" }}>
               <div style={{ flex: 1, minWidth: 150 }}>
-                <Inp label={L.labelStartBalance} value={stB} onChange={v => { setStB(v); compute(); }} suffix="G" tip={L.tipStartBalance} />
+                <Inp label={L.labelStartBalance} value={stB} onChange={setStB} suffix="G" tip={L.tipStartBalance} />
               </div>
-              
+
               <div style={{ width: "1px", minHeight: 120, background: "rgba(255,255,255,0.05)", display: "block" }}></div>
 
               <div style={{ flex: 1, minWidth: 200 }}>
                 <div style={{ fontFamily: F.h, fontSize: 12, color: C.textDim, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 10 }}>{L.incomeSources}</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13}}>
-                    <input type="checkbox" checked={inclW} onChange={e => { setInclW(e.target.checked); compute(null, { ...params, includeWorkers: e.target.checked }); }} /> {L.inclWorkers}
+                    <input type="checkbox" checked={inclW} onChange={e => setInclW(e.target.checked)} /> {L.inclWorkers}
                   </label>
                   <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13}}>
-                    <input type="checkbox" checked={inclM} onChange={e => { setInclM(e.target.checked); compute(null, { ...params, includeMissions: e.target.checked }); }} /> {L.inclMissions}
+                    <input type="checkbox" checked={inclM} onChange={e => setInclM(e.target.checked)} /> {optData?.missionReward ? L.inclMissionsDyn(fmt(optData.missionReward.daily?.money || 0, 0), fmt(optData.missionReward.weekly?.money || 0, 0), fmt(optData.missionReward.monthly?.money || 0, 0)) : L.inclMissions}
                   </label>
                   <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13}}>
-                    <input type="checkbox" checked={inclC} onChange={e => { setInclC(e.target.checked); compute(null, { ...params, includeCases: e.target.checked }); }} /> {L.inclCases}
+                    <input type="checkbox" checked={inclC} onChange={e => setInclC(e.target.checked)} /> {inc.casePrice > 0 ? L.inclCasesDyn(fmt(inc.casePrice, 2)) : L.inclCases}
                   </label>
                   <label style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13}}>
-                    <input type="checkbox" checked={inclD} onChange={e => { setInclD(e.target.checked); compute(null, { ...params, includeDonations: e.target.checked }); }} /> {L.inclDonations}
+                    <input type="checkbox" checked={inclD} onChange={e => setInclD(e.target.checked)} /> {L.inclDonations}
                   </label>
                 </div>
               </div>
             </div>
           </div>
+          {(res.alreadyDone || !res.ok || res.capLimited) && (
+            <div style={{ fontSize: 12, color: res.ok ? C.textDim : "#ff9900", fontFamily: F.m, marginBottom: 12 }}>
+              {res.alreadyDone && <div>{L.planAlreadyDone}</div>}
+              {!res.ok && <div>{L.planAborted(fmt(res.iter, 0))}</div>}
+              {res.capLimited && <div>{L.planCapReached(res.buyLimit)}</div>}
+            </div>
+          )}
           <GlassCard style={{ padding: "16px" }}>
             <ResponsiveContainer width="100%" height={350}>
               <AreaChart data={chart}>
@@ -536,17 +642,17 @@ export default function App({ theme, setTheme, optData, lang }) {
           <Sec icon="&#127981;">{L.sectionYourFactories(facs.length, mxF)}</Sec>
           <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 20 }}>
             {facs.map((f, i) => (
-              <div key={i} style={{ ...glass(0.08, 10), borderRadius: 12, padding: "12px 16px", border: "1px solid rgba(255,255,255,0.08)", display: "flex", justifyContent: "space-between", alignItems: "center", transition: "transform 0.2s, box-shadow 0.2s" }} onMouseOver={e => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 6px 20px rgba(0,0,0,0.4)"; }} onMouseOut={e => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = glass(0.08, 10).boxShadow; }}>
+              <div key={f.id || i} style={{ ...glass(0.08, 10), borderRadius: 12, padding: "12px 16px", border: "1px solid rgba(255,255,255,0.08)", display: "flex", justifyContent: "space-between", alignItems: "center", transition: "transform 0.2s, box-shadow 0.2s", opacity: f.disabled ? 0.55 : 1 }} onMouseOver={e => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 6px 20px rgba(0,0,0,0.4)"; }} onMouseOut={e => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = glass(0.08, 10).boxShadow; }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
                   <div style={{ fontSize: 13, color: C.accent, fontWeight: 700, letterSpacing: "0.05em", width: "24px" }}>F{i+1}</div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span style={{ fontSize: 20, fontWeight: 700, fontFamily: F.h, width: "32px", textAlign: "center" }}>L{f.level}</span>
                     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                       <Tip text={L.tipIncreaseLevel}>
-                        <button aria-label={L.tipIncreaseLevel} onClick={() => { if (f.level < mxL) { const nf = facs.map((x, j) => j === i ? { ...x, level: x.level + 1 } : x); setFacs(nf); compute(nf); } }} style={{ background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", color: C.text, fontSize: 10, cursor: "pointer", padding: "2px 6px", borderRadius: 4, transition: "background 0.2s" }} onMouseOver={e => e.currentTarget.style.background = "rgba(255,255,255,0.2)"} onMouseOut={e => e.currentTarget.style.background = "rgba(255,255,255,0.1)"}>&#9650;</button>
+                        <button aria-label={L.tipIncreaseLevel} disabled={f.disabled || f.level >= mxL} onClick={() => levelF(i, 1)} style={buttonStyle} onMouseOver={e => e.currentTarget.style.background = "rgba(255,255,255,0.2)"} onMouseOut={e => e.currentTarget.style.background = "rgba(255,255,255,0.1)"}>&#9650;</button>
                       </Tip>
                       <Tip text={L.tipDecreaseLevel}>
-                        <button aria-label={L.tipDecreaseLevel} onClick={() => { if (f.level > 1) { const nf = facs.map((x, j) => j === i ? { ...x, level: x.level - 1 } : x); setFacs(nf); compute(nf); } }} style={{ background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", color: C.text, fontSize: 10, cursor: "pointer", padding: "2px 6px", borderRadius: 4, transition: "background 0.2s" }} onMouseOver={e => e.currentTarget.style.background = "rgba(255,255,255,0.2)"} onMouseOut={e => e.currentTarget.style.background = "rgba(255,255,255,0.1)"}>&#9660;</button>
+                        <button aria-label={L.tipDecreaseLevel} disabled={f.disabled || f.level <= 1} onClick={() => levelF(i, -1)} style={buttonStyle} onMouseOver={e => e.currentTarget.style.background = "rgba(255,255,255,0.2)"} onMouseOut={e => e.currentTarget.style.background = "rgba(255,255,255,0.1)"}>&#9660;</button>
                       </Tip>
                     </div>
                   </div>
@@ -556,15 +662,16 @@ export default function App({ theme, setTheme, optData, lang }) {
                   <div style={{ fontSize: 12, color: C.textDim, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", background: "rgba(0,0,0,0.2)", padding: "4px 12px", borderRadius: 6, display: "inline-block" }}>
                     {f.name && f.name !== f.item ? <span style={{ color: C.text }}>{f.name} <span style={{color: C.textMuted}}>({f.item})</span></span> : <span>{f.item || L.newFac}</span>}
                   </div>
+                  {f.disabled && <Bdg color={C.textMuted}>{L.badgeDisabled}</Bdg>}
                 </div>
 
                 <Tip text={L.tipRemoveFactory}>
-                  <button aria-label={L.tipRemoveFactory} onClick={() => { rmF(i); compute(facs.filter((_, j) => j !== i)); }} style={{ background: "rgba(255,50,50,0.1)", border: "1px solid rgba(255,50,50,0.3)", borderRadius: "50%", color: C.red, cursor: "pointer", fontSize: 14, fontWeight: 700, width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s" }} onMouseOver={e => { e.currentTarget.style.background = C.red; e.currentTarget.style.color = "#fff"; }} onMouseOut={e => { e.currentTarget.style.background = "rgba(255,50,50,0.1)"; e.currentTarget.style.color = C.red; }}>&times;</button>
+                  <button aria-label={L.tipRemoveFactory} onClick={() => rmF(i)} style={{ background: "rgba(255,50,50,0.1)", border: "1px solid rgba(255,50,50,0.3)", borderRadius: "50%", color: C.red, cursor: "pointer", fontSize: 14, fontWeight: 700, width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s" }} onMouseOver={e => { e.currentTarget.style.background = C.red; e.currentTarget.style.color = "#fff"; }} onMouseOut={e => { e.currentTarget.style.background = "rgba(255,50,50,0.1)"; e.currentTarget.style.color = C.red; }}>&times;</button>
                 </Tip>
               </div>
             ))}
             <Tip text={L.tipAddFactory}>
-              <button aria-label={L.tipAddFactory} onClick={() => { const nf = [...facs, { level: 1, item: optData?.bestProduct?.itemCode || L.newFac, goldPerLevelPerDay: optData?.bestProduct ? (24 * optData.bestProduct.maxGoldPerPP) : 2.5, workerGoldPerDay: 0 }]; setFacs(nf); compute(nf); }}style={{ ...glass(0.05), borderRadius: 12, border: "2px dashed rgba(255,255,255,0.2)", color: C.textMuted, cursor: "pointer", fontSize: 24, padding: "12px", width: "100%", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s" }} onMouseOver={e => { e.currentTarget.style.background = "rgba(255,255,255,0.1)"; e.currentTarget.style.borderColor = C.accent; e.currentTarget.style.color = C.accent; }} onMouseOut={e => { e.currentTarget.style.background = glass(0.05).background; e.currentTarget.style.borderColor = "rgba(255,255,255,0.2)"; e.currentTarget.style.color = C.textMuted; }}>
+              <button aria-label={L.tipAddFactory} onClick={addF} style={{ ...glass(0.05), borderRadius: 12, border: "2px dashed rgba(255,255,255,0.2)", color: C.textMuted, cursor: "pointer", fontSize: 24, padding: "12px", width: "100%", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s" }} onMouseOver={e => { e.currentTarget.style.background = "rgba(255,255,255,0.1)"; e.currentTarget.style.borderColor = C.accent; e.currentTarget.style.color = C.accent; }} onMouseOut={e => { e.currentTarget.style.background = glass(0.05).background; e.currentTarget.style.borderColor = "rgba(255,255,255,0.2)"; e.currentTarget.style.color = C.textMuted; }}>
                 +
               </button>
             </Tip>
@@ -574,29 +681,31 @@ export default function App({ theme, setTheme, optData, lang }) {
         <div style={{ flex: "1 1 400px", minWidth: 0 }}>
           {res && (
             <>
-              <Sec icon="&#128220;">{L.sectionBestPlan}</Sec>
-              <GlassCard style={{ padding: "0", overflow: "hidden" }}>
+              <Sec icon="&#128220;">{L.sectionBestPlan}{res.tableKey !== "dijkstra" ? " · " + (STRATS.find(s => s.key === res.tableKey)?.label || "") : ""}{busy ? " …" : ""}</Sec>
+              <GlassCard style={{ padding: "0" }}>
                 <div style={{ maxHeight: "600px", overflowY: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead><tr>
-                      <th style={TH}><Tip text={L.tipStep}>{L.colStep}</Tip></th>
-                      <th style={TH}><Tip text={L.tipAction}>{L.colAction}</Tip></th>
-                      <th style={TH}><Tip text={L.tipTime}>{L.colTime}</Tip></th>
-                      <th style={TH}><Tip text={L.tipGainPerDay}>{L.colGainPerDay}</Tip></th>
+                      <th style={TH}><Tip text={L.tipStep} pos="bottom">{L.colStep}</Tip></th>
+                      <th style={TH}><Tip text={L.tipAction} pos="bottom">{L.colAction}</Tip></th>
+                      <th style={TH}><Tip text={L.tipTime} pos="bottom">{L.colTime}</Tip></th>
+                      <th style={TH}><Tip text={L.tipGainPerDay} pos="bottom">{L.colGainPerDay}</Tip></th>
                     </tr></thead>
                     <tbody>
-                      {res.paths.dijkstra.map((s, i) => (
+                      {tablePath.map((s, i) => (
                         <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
                           <td style={TD(false)}>{i+1}</td>
                           <td style={TD(false)}>
                             <div style={{ fontSize: 11, fontWeight: 700, color: s.type === "buy" ? C.blue : C.green }}>{s.action}</div>
                             <div style={{ fontSize: 9, color: C.textMuted }}>
-                              {fmt(s.goldCost, 0)} G 
+                              {fmt(s.goldCost, 0)} G{" "}
                               {s.usedInv > 0 ? L.fromInventory(fmt(s.usedInv, 0)) : L.unitsSuffix(fmt(s.resCost, 0))}
+                              {s.cp != null && " · " + fmt(s.cp, 0) + " " + L.cpSuffix}
+                              {s.prestigeCost > 0 && " · " + L.prestigeNeeded(s.prestigeCost, prestigePoints)}
                             </div>
                           </td>
                           <td style={TD(true)}>{fmtT(s.time)}</td>
-                          <td style={{ ...TD(false), color: C.green }}>+{fmt(s.goldGainDay, 1)} G</td>
+                          <td style={{ ...TD(false), color: C.green }}>+{fmt(s.goldGainDay || 0, 1)} G</td>
                         </tr>
                       ))}
                     </tbody>
