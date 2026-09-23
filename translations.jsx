@@ -229,6 +229,35 @@ export const TRANSLATIONS = {
 
     upgradeAction: (i, name, from, to) => `Upgrade F${i} (${name}) L${from} -> L${to}`,
     newFactoryAction: (n, item) => `Neue Fabrik #${n} (${item})`,
+
+    // Shared UI
+    themeGrau: "Grau",
+    themePink: "Pink",
+    items: {
+      limestone: "Kalkstein",
+      grain: "Getreide",
+      livestock: "Vieh",
+      fish: "Fisch",
+      iron: "Eisen",
+      coca: "Koka",
+      lead: "Blei",
+      petroleum: "Erdöl",
+      wood: "Holz",
+      concrete: "Beton",
+      steel: "Stahl",
+      bread: "Brot",
+      steak: "Steak",
+      cookedFish: "Gebratener Fisch",
+      lightAmmo: "Leichte Munition",
+      ammo: "Munition",
+      cocain: "Kokain",
+      oil: "Öl",
+      paper: "Papier",
+      heavyAmmo: "Schwere Munition",
+    },
+
+    // @@dashboard-ui:de (insert new company-dashboard keys above this line)
+    // @@optimizer-ui:de (insert new factory-optimizer keys above this line)
   },
 
   // ─────────────────────────────────────────────────────
@@ -444,6 +473,35 @@ export const TRANSLATIONS = {
 
     upgradeAction: (i, name, from, to) => `Upgrade F${i} (${name}) L${from} -> L${to}`,
     newFactoryAction: (n, item) => `New Factory #${n} (${item})`,
+
+    // Shared UI
+    themeGrau: "Grey",
+    themePink: "Pink",
+    items: {
+      limestone: "Limestone",
+      grain: "Grain",
+      livestock: "Livestock",
+      fish: "Fish",
+      iron: "Iron",
+      coca: "Coca",
+      lead: "Lead",
+      petroleum: "Petroleum",
+      wood: "Wood",
+      concrete: "Concrete",
+      steel: "Steel",
+      bread: "Bread",
+      steak: "Steak",
+      cookedFish: "Cooked Fish",
+      lightAmmo: "Light Ammo",
+      ammo: "Ammo",
+      cocain: "Cocaine",
+      oil: "Oil",
+      paper: "Paper",
+      heavyAmmo: "Heavy Ammo",
+    },
+
+    // @@dashboard-ui:en (insert new company-dashboard keys above this line)
+    // @@optimizer-ui:en (insert new factory-optimizer keys above this line)
   },
 
   // ─────────────────────────────────────────────────────
@@ -659,9 +717,50 @@ export const TRANSLATIONS = {
 
     upgradeAction: (i, name, from, to) => `Uppgradering F${i} (${name}) N${from} -> N${to}`,
     newFactoryAction: (n, item) => `Ny fabrik #${n} (${item})`,
+
+    // Shared UI
+    themeGrau: "Grå",
+    themePink: "Rosa",
+    items: {
+      limestone: "Kalksten",
+      grain: "Spannmål",
+      livestock: "Boskap",
+      fish: "Fisk",
+      iron: "Järn",
+      coca: "Koka",
+      lead: "Bly",
+      petroleum: "Råolja",
+      wood: "Trä",
+      concrete: "Betong",
+      steel: "Stål",
+      bread: "Bröd",
+      steak: "Stek",
+      cookedFish: "Tillagad fisk",
+      lightAmmo: "Lätt ammunition",
+      ammo: "Ammunition",
+      cocain: "Kokain",
+      oil: "Olja",
+      paper: "Papper",
+      heavyAmmo: "Tung ammunition",
+    },
+
+    // @@dashboard-ui:sv (insert new company-dashboard keys above this line)
+    // @@optimizer-ui:sv (insert new factory-optimizer keys above this line)
   },
 };
 
+// Missing keys fall back to German so the UI never shows "undefined".
+const merged = {};
 export function getLang(lang) {
-  return TRANSLATIONS[lang] || TRANSLATIONS.de;
+  const k = TRANSLATIONS[lang] ? lang : "de";
+  if (!merged[k]) {
+    const base = TRANSLATIONS.de, own = TRANSLATIONS[k];
+    merged[k] = { ...base, ...own, items: { ...base.items, ...own.items } };
+  }
+  return merged[k];
+}
+
+// Localized item name for a WarEra item code (falls back to the code itself).
+export function itemName(code, L) {
+  return (code && L?.items?.[code]) || code || "";
 }
