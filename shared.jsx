@@ -189,15 +189,14 @@ export function Kpi({ label, value, color, sub }) {
     {sub && <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>{sub}</div>}
   </div>;
 }
-// Number input with label; `tip` is shown next to the label (hover/tap on the info mark, or while the
-// input has focus) and exposed to screen readers as the input's description.
+// Number input with label; `tip` is shown next to the label (hover/tap on the info mark)
+// and exposed to screen readers as the input's description.
 export function Inp({ label, value, onChange, step = 1, suffix, tip, min }) {
   const id = useId();
-  const [focused, setFocused] = useState(false);
   return <div style={{ marginBottom: 12 }}>
     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
       <label htmlFor={id} style={{ fontFamily: F.m, fontSize: 14, color: C.textDim, letterSpacing: "0.03em" }}>{label}</label>
-      {tip && <Tip text={tip} open={focused}><span aria-hidden="true" style={{ color: C.textMuted, cursor: "help", fontSize: 14 }}>&#9432;</span></Tip>}
+      {tip && <Tip text={tip}><span aria-hidden="true" style={{ color: C.textMuted, cursor: "help", fontSize: 14 }}>&#9432;</span></Tip>}
     </div>
     {tip && <span id={id + "-tip"} hidden>{tip}</span>}
     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -206,8 +205,8 @@ export function Inp({ label, value, onChange, step = 1, suffix, tip, min }) {
         style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 6, color: C.text,
           padding: "9px 12px", fontSize: 15, width: "100%", minWidth: 0, boxSizing: "border-box", outline: "none",
           fontFamily: F.m, transition: "border-color 0.2s, box-shadow 0.2s" }}
-        onFocus={e => { setFocused(true); e.target.style.borderColor = C.accent + "88"; e.target.style.boxShadow = "0 0 12px " + C.accentGlow; }}
-        onBlur={e => { setFocused(false); e.target.style.borderColor = C.inputBorder; e.target.style.boxShadow = "none"; }} />
+        onFocus={e => { e.target.style.borderColor = C.accent + "88"; e.target.style.boxShadow = "0 0 12px " + C.accentGlow; }}
+        onBlur={e => { e.target.style.borderColor = C.inputBorder; e.target.style.boxShadow = "none"; }} />
       {suffix && <span style={{ fontFamily: F.m, fontSize: 14, color: C.textMuted, whiteSpace: "nowrap" }}>{suffix}</span>}
     </div>
   </div>;

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo, useId } from "react";
+import { useState, useRef, useEffect, useMemo, useId, useCallback } from "react";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { C, F, setThemeVars, glass, fmt, fmtT, fmtN, GlassCard, Sec, Inp, Tip, Btn, getTH, getTD, useIsMobile, useMediaQuery } from "./shared.jsx";
 import { TRANSLATIONS, getLang, itemName } from "./translations.jsx";
@@ -13,6 +13,7 @@ const FO_CSS = `
   .fo-card { transition: background 0.2s, border-color 0.2s, box-shadow 0.2s; }
   .fo-card:hover { background: rgba(255,255,255,0.09) !important; }
   .fo-card > .tip-wrap { flex: 1 1 auto; }
+  .fo-scroll[tabindex]:focus-visible { outline-offset: -2px !important; }
   @keyframes foSpin { to { transform: rotate(360deg); } }
   .fo-spin { display: inline-block; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: foSpin 0.8s linear infinite; vertical-align: -1px; }
 `;
@@ -317,6 +318,18 @@ function buildChart(paths, startRate, keys) {
   });
 }
 
+// Cumulative gold: integrate gold/day over the time axis (hours). Between two samples the earlier
+// sample's rate applies (the rate is a step function), so every sampled total is exact.
+function cumulateChart(rd, keys) {
+  const acc = {}, rate = {}; let prev = 0;
+  return rd.map(d => {
+    const dt = d.time - prev, pt = { time: d.time };
+    for (const k of keys) { acc[k] = (acc[k] || 0) + (rate[k] || 0) * dt / 24; rate[k] = d[k] || 0; pt[k] = Math.round(acc[k]); }
+    prev = d.time;
+    return pt;
+  });
+}
+
 // Centered message box used in place of empty charts / tables
 function Notice({ icon, children, action, compact }) {
   return <div style={{ ...glass(0.04, 16), borderRadius: 12, padding: compact ? "14px 16px" : "28px 20px", marginBottom: 14, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, textAlign: "center", minHeight: compact ? 0 : 160 }}>
@@ -336,12 +349,14 @@ export default function App({ theme, setTheme, optData, lang }) {
   const TD = getTD;
   const isMobile = useIsMobile();
   const reduceMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
-  const advId = useId(), impErrId = useId();
+  const advId = useId(), impErrId = useId(), impBtnId = useId();
 
   const apiFacs = optData?.facs?.length ? optData.facs : null;
   const liquid = optData?.liquidAssets;
 
   const [mxF, setMxF] = useState(() => Math.max(12, apiFacs?.length || 0));
+  // Last Max. Fabriken value the app derived itself; only such a value follows a player switch
+  const autoMxF = useRef(mxF);
   const [mxL, setMxL] = useState(7);
   const [uB, setUB] = useState(20);
   const [fB, setFB] = useState(50);
@@ -361,6 +376,7 @@ export default function App({ theme, setTheme, optData, lang }) {
   const [tS, setTS] = useState("dijkstra");
   const [res, setRes] = useState(null);
   const [busy, setBusy] = useState(true);
+  const [slow, setSlow] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [impStr, setImpStr] = useState("");
   const [impErr, setImpErr] = useState(false);
@@ -372,8 +388,11 @@ export default function App({ theme, setTheme, optData, lang }) {
   useEffect(() => {
     if (!apiFacs) return;
     setFacs(apiFacs);
-    // many players already own more factories than the default maximum
-    setMxF(m => Math.max(m, apiFacs.length));
+    // An automatic maximum follows the player (many own more factories than the default 12);
+    // a value the user set is kept, but never below the owned factory count.
+    const prevAuto = autoMxF.current, auto = Math.max(12, apiFacs.length);
+    autoMxF.current = auto;
+    setMxF(m => m === prevAuto ? auto : Math.max(m, apiFacs.length));
   }, [facsSig]);
 
   useEffect(() => {
@@ -390,28 +409,50 @@ export default function App({ theme, setTheme, optData, lang }) {
   }), [mxF, mxL, uB, fB, inclW, inclM, inclC, inclD, stB, stStahl, stBeton, optSig]);
 
   // Recompute whenever inputs change; debounced so typing does not start many searches,
-  // and results of outdated runs are dropped.
-  const runRef = useRef(0);
+  // and results of outdated runs are dropped. Results are dimmed at once (busy), but the
+  // "computing" status is only shown and announced if they are still outstanding after a while.
+  const runRef = useRef(0), doneRef = useRef(0), slowTimer = useRef(null);
   useEffect(() => {
     const run = ++runRef.current;
     setBusy(true);
+    if (!slowTimer.current) slowTimer.current = setTimeout(() => {
+      slowTimer.current = null;
+      if (doneRef.current !== runRef.current) setSlow(true);
+    }, 800);
     const timer = setTimeout(() => {
       if (run !== runRef.current) return;
       let out = null;
       try { out = computePlans(facs, params); } catch (e) { console.error(e); }
       if (run !== runRef.current) return;
+      doneRef.current = run;
+      clearTimeout(slowTimer.current); slowTimer.current = null;
       setRes(out);
       setBusy(false);
+      setSlow(false);
     }, 200);
     return () => clearTimeout(timer);
   }, [facs, params]);
+  useEffect(() => () => { clearTimeout(slowTimer.current); slowTimer.current = null; }, []);
 
   const lvlUp = i => setFacs(p => p.map((x, j) => j === i && x.level < mxL ? { ...x, level: x.level + 1 } : x));
   const lvlDown = i => setFacs(p => p.map((x, j) => j === i && x.level > 1 ? { ...x, level: x.level - 1 } : x));
-  const rmF = i => setFacs(p => p.filter((_, j) => j !== i));
+  // After removing a row keep focus in the list: the × now at the same position, else the previous row's, else "add"
+  const listRef = useRef(null), addRef = useRef(null), rmRefs = useRef([]), rmFocus = useRef(null);
+  const rmF = i => { rmFocus.current = i; setFacs(p => p.filter((_, j) => j !== i)); };
+  useEffect(() => {
+    const i = rmFocus.current;
+    if (i == null) return;
+    rmFocus.current = null;
+    const a = document.activeElement;
+    if (a && a !== document.body && !listRef.current?.contains(a)) return;
+    const el = facs.length ? rmRefs.current[Math.min(i, facs.length - 1)] : addRef.current;
+    if (el && el !== a) el.focus();
+  }, [facs]);
   const addF = () => {
     const n = facs.length + 1;
     setFacs(p => [...p, { level: 1, item: optData?.bestProduct?.itemCode || NEW_ITEM, goldPerLevelPerDay: optData?.bestProduct ? (24 * optData.bestProduct.maxGoldPerPP) : 2.5, workerGoldPerDay: 0 }]);
+    // an automatic maximum that grows with an added factory stays automatic
+    if (mxF === autoMxF.current && n > mxF) autoMxF.current = n;
     setMxF(m => Math.max(m, n));
   };
   const toggleChart = k => setActv(p => p.includes(k) ? p.filter(x => x !== k) : [...p, k]);
@@ -428,6 +469,8 @@ export default function App({ theme, setTheme, optData, lang }) {
     setFacs(d.facs);
     if (d.theme) setTheme(d.theme);
     setImpErr(false); setShowImp(false); setImpStr("");
+    // the form (and the focused input) closes: continue from its toggle button
+    document.getElementById(impBtnId)?.focus();
   }
 
   const expRef = useRef(null);
@@ -447,7 +490,7 @@ export default function App({ theme, setTheme, optData, lang }) {
   const focusMaxFactories = () => {
     const el = mxFRef.current?.querySelector("input");
     if (!el) return;
-    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.scrollIntoView({ block: "center", behavior: reduceMotion ? "auto" : "smooth" });
     el.focus({ preventScroll: true });
   };
   function openAdvanced() {
@@ -463,11 +506,23 @@ export default function App({ theme, setTheme, optData, lang }) {
   const chart = useMemo(() => {
     if (!res || !chartKeys.length) return [];
     const rd = buildChart(res.paths, res.startRate, chartKeys);
-    if (cM === "rate") return rd;
-    // cumulative gold: integrate gold/day over the time axis (hours)
-    const acc = {}; let prev = 0;
-    return rd.map(d => { const dt = d.time - prev; const pt = { time: d.time }; for (const k of chartKeys) { if (!(k in acc)) acc[k] = 0; acc[k] += (d[k]||0) * dt / 24; pt[k] = Math.round(acc[k]); } prev = d.time; return pt; });
+    return cM === "rate" ? rd : cumulateChart(rd, chartKeys);
   }, [res, actv, cM]);
+
+  // The plan table scrolls inside the card; when it overflows it becomes a named, focusable region
+  const [planOverflow, setPlanOverflow] = useState(false);
+  const planRO = useRef(null);
+  const planScrollRef = useCallback(el => {
+    planRO.current?.disconnect(); planRO.current = null;
+    if (!el) { setPlanOverflow(false); return; }
+    const check = () => setPlanOverflow(el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1);
+    check();
+    if (typeof ResizeObserver !== "undefined") {
+      planRO.current = new ResizeObserver(check);
+      planRO.current.observe(el);
+      if (el.firstElementChild) planRO.current.observe(el.firstElementChild);
+    }
+  }, []);
 
   const selStrat = STRATS.find(s => s.key === tS) || STRATS[0];
   const curPath = res?.paths?.[tS] || [];
@@ -532,7 +587,7 @@ export default function App({ theme, setTheme, optData, lang }) {
                 <Btn on={copied} onClick={doCopy}>{copied ? L.btnCopied : L.btnCopyCode}</Btn>
               </Tip>
               <Tip text={L.tipImportCode}>
-                <Btn on={showImp} aria-expanded={showImp} onClick={() => { setShowImp(!showImp); setImpErr(false); }}>{L.btnImportCode}</Btn>
+                <Btn id={impBtnId} on={showImp} aria-expanded={showImp} onClick={() => { setShowImp(!showImp); setImpErr(false); }}>{L.btnImportCode}</Btn>
               </Tip>
             </div>
             {showImp && (
@@ -597,7 +652,7 @@ export default function App({ theme, setTheme, optData, lang }) {
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", justifyContent: "space-between", columnGap: 16 }}>
           <Sec icon="📈">{L.sectionProductionCurve}</Sec>
           <div role="status" aria-live="polite" style={{ fontSize: 13, color: C.textDim, marginBottom: 16, minHeight: 18, display: "flex", alignItems: "center", gap: 8 }}>
-            {busy && <><span className="fo-spin" aria-hidden="true" />{L.optComputing}</>}
+            {slow && <><span className="fo-spin" aria-hidden="true" />{L.optComputing}</>}
           </div>
         </div>
         <div style={{ fontSize: 13, color: C.textMuted, marginTop: -8, marginBottom: 12 }}>{L.optStratHint}</div>
@@ -623,7 +678,7 @@ export default function App({ theme, setTheme, optData, lang }) {
                     </button>
                   </Tip>
                   <label style={{ display: "flex", alignItems: "center", gap: 6, padding: isMobile ? "4px 12px 10px" : "4px 16px 12px", fontSize: 12, color: C.textDim, cursor: "pointer", width: "fit-content" }}>
-                    <input type="checkbox" checked={on} onChange={() => toggleChart(s.key)} style={{ accentColor: s.color, margin: 0 }} />
+                    <input type="checkbox" checked={on} onChange={() => toggleChart(s.key)} aria-label={L.optShowInChartFor(s.label)} style={{ accentColor: s.color, margin: 0 }} />
                     {L.optShowInChart}
                   </label>
                 </div>
@@ -676,7 +731,7 @@ export default function App({ theme, setTheme, optData, lang }) {
                     <Tooltip contentStyle={{ background: "rgba(15,20,35,0.95)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 10, fontSize: 13, color: C.text }} labelStyle={{ color: C.text }}
                       labelFormatter={v => v >= 48 ? fmt(v/24, 1) + "d" : fmt(v, 1) + "h"}
                       formatter={(v, n) => [fmt(v, cM === "rate" ? 1 : 0) + " " + unit, STRATS.find(s => s.key === n)?.label || n]} />
-                    {STRATS.filter(s => chartKeys.includes(s.key)).map(s => <Area key={s.key} type="stepAfter" dataKey={s.key} stroke={s.color} strokeWidth={3} fill={"url(#g_" + s.key + ")"} dot={false} isAnimationActive={!reduceMotion} />)}
+                    {STRATS.filter(s => chartKeys.includes(s.key)).map(s => <Area key={s.key} type={cM === "rate" ? "stepAfter" : "linear"} dataKey={s.key} stroke={s.color} strokeWidth={3} fill={"url(#g_" + s.key + ")"} dot={false} isAnimationActive={!reduceMotion} />)}
                   </AreaChart>
                 </ResponsiveContainer>
               ) : (
@@ -691,9 +746,9 @@ export default function App({ theme, setTheme, optData, lang }) {
       <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "flex-start" }}>
         <div style={{ flex: "1 1 500px", minWidth: 0 }}>
           <Sec icon="🏭">{L.sectionYourFactories(facs.length, mxF)}</Sec>
-          <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 10 : 12, marginBottom: 20 }}>
+          <div ref={listRef} style={{ display: "flex", flexDirection: "column", gap: isMobile ? 10 : 12, marginBottom: 20 }}>
             {facs.map((f, i) => {
-              const upOff = f.level >= mxL, downOff = f.level <= 1;
+              const upOff = f.level >= mxL, downOff = f.level <= 1, fl = facLabel(f, L);
               return (
                 <div key={i} className="fo-row" style={{ ...glass(0.08, 10), borderRadius: 12, padding: isMobile ? "10px 10px" : "12px 16px", border: "1px solid rgba(255,255,255,0.08)", display: "flex", alignItems: "center", gap: isMobile ? 8 : 16, minWidth: 0, "--fo-red": C.red }}>
                   <div style={{ fontSize: 13, color: C.accent, fontWeight: 700, letterSpacing: "0.05em", minWidth: isMobile ? 26 : 30, flexShrink: 0 }}>F{i+1}</div>
@@ -701,10 +756,10 @@ export default function App({ theme, setTheme, optData, lang }) {
                     <span style={{ fontSize: isMobile ? 18 : 20, fontWeight: 700, fontFamily: F.h, minWidth: 30, textAlign: "center" }}>{L.optLvl(f.level)}</span>
                     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                       <Tip text={L.tipIncreaseLevel}>
-                        <button type="button" className="fo-lvl" aria-label={L.tipIncreaseLevel} aria-disabled={upOff} onClick={() => lvlUp(i)} style={lvlBtn(upOff)}><span aria-hidden="true">▲</span></button>
+                        <button type="button" className="fo-lvl" aria-label={L.optFacLvlUp(i+1, fl)} aria-disabled={upOff} onClick={() => lvlUp(i)} style={lvlBtn(upOff)}><span aria-hidden="true">▲</span></button>
                       </Tip>
                       <Tip text={L.tipDecreaseLevel}>
-                        <button type="button" className="fo-lvl" aria-label={L.tipDecreaseLevel} aria-disabled={downOff} onClick={() => lvlDown(i)} style={lvlBtn(downOff)}><span aria-hidden="true">▼</span></button>
+                        <button type="button" className="fo-lvl" aria-label={L.optFacLvlDown(i+1, fl)} aria-disabled={downOff} onClick={() => lvlDown(i)} style={lvlBtn(downOff)}><span aria-hidden="true">▼</span></button>
                       </Tip>
                     </div>
                   </div>
@@ -719,14 +774,14 @@ export default function App({ theme, setTheme, optData, lang }) {
 
                   <div style={{ flexShrink: 0 }}>
                     <Tip text={L.tipRemoveFactory}>
-                      <button type="button" className="fo-rm" aria-label={L.tipRemoveFactory} onClick={() => rmF(i)} style={{ background: "rgba(255,50,50,0.1)", border: "1px solid rgba(255,50,50,0.3)", borderRadius: "50%", color: C.red, cursor: "pointer", fontSize: 16, fontWeight: 700, width: 30, height: 30, padding: 0, display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s" }}><span aria-hidden="true">&times;</span></button>
+                      <button type="button" ref={el => { rmRefs.current[i] = el; }} className="fo-rm" aria-label={L.optFacRemove(i+1, fl)} onClick={() => rmF(i)} style={{ background: "rgba(255,50,50,0.1)", border: "1px solid rgba(255,50,50,0.3)", borderRadius: "50%", color: C.red, cursor: "pointer", fontSize: 16, fontWeight: 700, width: 30, height: 30, padding: 0, display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s" }}><span aria-hidden="true">&times;</span></button>
                     </Tip>
                   </div>
                 </div>
               );
             })}
             <Tip text={L.tipAddFactory} block>
-              <button type="button" className="fo-add" onClick={addF} style={{ ...glass(0.05), borderRadius: 12, border: "2px dashed rgba(255,255,255,0.2)", color: C.textDim, cursor: "pointer", fontSize: 15, fontFamily: F.h, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", padding: 12, width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, transition: "all 0.2s" }}>
+              <button type="button" ref={addRef} className="fo-add" onClick={addF} style={{ ...glass(0.05), borderRadius: 12, border: "2px dashed rgba(255,255,255,0.2)", color: C.textDim, cursor: "pointer", fontSize: 15, fontFamily: F.h, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", padding: 12, width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, transition: "all 0.2s" }}>
                 <span aria-hidden="true" style={{ fontSize: 22, lineHeight: 1 }}>+</span>{L.optAddFactory}
               </button>
             </Tip>
@@ -749,13 +804,13 @@ export default function App({ theme, setTheme, optData, lang }) {
                   : <><span aria-hidden="true">⚠️ </span>{L.optPlanIncomplete}</>}
               </div>
               <GlassCard style={{ padding: "0", overflow: "hidden" }}>
-                <div style={{ maxHeight: "600px", overflow: "auto" }}>
+                <div ref={planScrollRef} className="fo-scroll" style={{ maxHeight: "600px", overflow: "auto", borderRadius: 11 }}
+                  {...(planOverflow ? { tabIndex: 0, role: "region", "aria-label": L.optPlanFor(selStrat.label) } : {})}>
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead><tr>
-                      <th scope="col" style={thS}><Tip text={L.tipStep}>{L.colStep}</Tip></th>
-                      <th scope="col" style={thS}><Tip text={L.tipAction}>{L.colAction}</Tip></th>
-                      <th scope="col" style={thS}><Tip text={L.tipTime}>{L.colTime}</Tip></th>
-                      <th scope="col" style={thS}><Tip text={L.tipGainPerDay}>{L.colGainPerDay}</Tip></th>
+                      {[[L.colStep, L.tipStep], [L.colAction, L.tipAction], [L.colTime, L.tipTime], [L.colGainPerDay, L.tipGainPerDay]].map(([label, tip]) => (
+                        <th key={label} scope="col" style={thS}><Tip text={tip}><span tabIndex={0} style={{ cursor: "help", borderRadius: 3 }}>{label}</span></Tip></th>
+                      ))}
                     </tr></thead>
                     <tbody>
                       {curPath.map((s, i) => (

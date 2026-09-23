@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useId, Fragment } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useId, Fragment } from "react";
 import { THEMES, C, F, setThemeVars, glass, fmt, fmtClock, GlassCard, Sec, Bdg, Tip, Btn, Kpi, getTH, getTD, useSort, SortTh, useIsMobile, apiCall } from "./shared.jsx";
 import FactoryOptimizer from "./factory-optimizer.jsx";
 import { getLang, itemName } from "./translations.jsx";
@@ -13,6 +13,7 @@ if (typeof document !== "undefined" && !document.getElementById("dash-styles")) 
     .dash-spinner { display: inline-block; width: 0.85em; height: 0.85em; margin-right: 10px; vertical-align: -0.08em;
       border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: dashSpin 0.8s linear infinite; }
     @media (prefers-reduced-motion: reduce) { .dash-spinner { animation: none; border-right-color: currentColor; opacity: 0.6; } }
+    div.dash-scroll[tabindex]:focus-visible { outline-offset: -2px !important; }
   `;
   document.head.appendChild(s);
 }
@@ -102,12 +103,70 @@ function Stats({ items, min = 120 }) {
   </dl>;
 }
 
-function ProvisionalBadge({ L }) {
+// `ink`: text colour that stays readable on the accent tint
+function ProvisionalBadge({ L, ink }) {
   return <Tip text={L.provisionalTip}>
     <span tabIndex={0} style={{ display: "inline-flex", cursor: "help", borderRadius: 4 }}>
-      <Bdg color={C.accent}><span aria-hidden="true">⏳ </span>{L.provisional}</Bdg>
+      <Bdg color={C.accent}><span style={{ color: ink }}><span aria-hidden="true">⏳ </span>{L.provisional}</span></Bdg>
     </span>
   </Tip>;
+}
+
+const FOCUS_GAP = 6; // room for the 2px focus ring + 2px offset
+
+// First sticky cell of a table row (the pinned name column), if any.
+function stickyCell(tr) {
+  return tr ? [...tr.cells].find(c => getComputedStyle(c).position === "sticky") || null : null;
+}
+
+// Horizontal scroller for wide tables. Only while the table really overflows it is a focusable, named
+// region (so keyboard users can scroll it). Keyboard focus inside is kept clear of the sticky name column.
+function ScrollX({ label, style, children }) {
+  const ref = useRef(null);
+  const [over, setOver] = useState(false);
+  const [stickyW, setStickyW] = useState(0);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const head = () => stickyCell(el.querySelector(":scope > table > thead > tr"));
+    const measure = () => {
+      setOver(el.scrollWidth > el.clientWidth + 1);
+      setStickyW(head()?.offsetWidth || 0);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    for (const n of [el, el.firstElementChild, head()]) if (n) ro.observe(n);
+    return () => ro.disconnect();
+  }, []);
+
+  // After the browser's own focus scrolling (next frame): scroll so the focused control is fully visible,
+  // right of the sticky column and inside the scroller (the browser leaves partly visible ones alone).
+  const onFocusCapture = e => {
+    const el = ref.current, t = e.target;
+    if (!el || t === el) return;
+    try { if (!t.matches(":focus-visible")) return; } catch {} // pointer focus: leave the scroll position alone
+    requestAnimationFrame(() => {
+      if (document.activeElement !== t || el.scrollWidth <= el.clientWidth + 1) return;
+      const cell = stickyCell(t.closest("tr"));
+      if (cell && cell.contains(t)) return; // the sticky column is always in view
+      const box = el.getBoundingClientRect(), r = t.getBoundingClientRect();
+      const lo = box.left + el.clientLeft + (cell ? cell.offsetWidth : 0) + FOCUS_GAP;
+      const hi = box.left + el.clientLeft + el.clientWidth - FOCUS_GAP;
+      const d = r.left < lo ? r.left - lo // hidden under the sticky column / left edge
+        : r.right > hi && r.width <= hi - lo ? r.right - hi : 0; // cut off on the right (and fits)
+      if (Math.abs(d) < 1) return;
+      let reduce = false;
+      try { reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch {}
+      el.scrollTo({ left: el.scrollLeft + d, behavior: reduce ? "auto" : "smooth" });
+    });
+  };
+
+  return <div ref={ref} className="dash-scroll" onFocusCapture={onFocusCapture}
+    {...(over ? { tabIndex: 0, role: "region", "aria-label": label } : {})}
+    style={{ overflowX: "auto", WebkitOverflowScrolling: "touch", maxWidth: "100%", scrollPaddingLeft: stickyW ? stickyW + FOCUS_GAP : undefined, ...style }}>
+    {children}
+  </div>;
 }
 
 // ── Helpers ──
@@ -199,10 +258,12 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   const [loading, setLoading] = useState(false);
   const [phase, setPhase] = useState(null); // { step: 0..5, n?: count } while loading
   const [rateWait, setRateWait] = useState(0); // seconds left of a rate-limit pause
+  const [ratePause, setRatePause] = useState(0); // length of that pause (announced once)
   const [error, setError] = useState(null); // { kind, name?, detail? }
   const [loadedAt, setLoadedAt] = useState(null);
   const loadingRef = useRef(false);
   const autoLoadRef = useRef(false);
+  const focusRetryRef = useRef(false); // a Retry failed again -> focus the new Retry button
 
   // Loaded data
   const [userData, setUserData] = useState(null);
@@ -246,6 +307,22 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
     autoLoadRef.current = true;
     if (URL_USER) loadData();
   }, []);
+
+  // A Retry that failed again: move focus from the load button to the new Retry button
+  // (unless the user has moved on to something else meanwhile).
+  useEffect(() => {
+    if (!error || !focusRetryRef.current) return;
+    focusRetryRef.current = false;
+    const ae = document.activeElement;
+    if (ae && ae !== document.body && ae.id !== `${uid}-load`) return;
+    document.getElementById(`${uid}-retry`)?.focus();
+  }, [error]);
+
+  // Retry unmounts the error box: keep focus on the load button, which stays.
+  function retryLoad() {
+    document.getElementById(`${uid}-load`)?.focus();
+    loadData({ fromRetry: true });
+  }
 
   // Persist the active tab as ?tab=
   useEffect(() => {
@@ -291,6 +368,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
     const handleRL = (e) => {
       let remaining = Math.ceil(e.detail.delay / 1000);
       setRateWait(remaining);
+      setRatePause(remaining);
       clearInterval(interval);
       interval = setInterval(() => {
         remaining -= 1;
@@ -305,7 +383,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
     };
   }, []);
 
-  async function loadData() {
+  async function loadData({ fromRetry = false } = {}) {
     const input = userInput.trim();
     if (!input || loadingRef.current) return;
     loadingRef.current = true;
@@ -456,17 +534,17 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
           const worker = async () => {
             while (queue.length > 0) {
               if (thisBgFetch !== currentBgFetch) break; // aborted
-              const c = queue[0];
+              const c = queue.shift(); // each worker takes its own country
               let retryDelay = 0;
               try {
                 const p = await apiCall("party.getById", { partyId: c.rulingParty });
                 if (p?.ethics && thisBgFetch === currentBgFetch) {
                   setPartyEthics(prev => ({ ...prev, [c._id]: p.ethics }));
                 }
-                queue.shift();
                 loaded++;
                 if (thisBgFetch === currentBgFetch) setBgProgress({ loaded, total: remainingCountriesToFetch.length, status: "loading" });
               } catch (e) {
+                queue.unshift(c); // retry it after the pause
                 retryDelay = 5000;
                 if (thisBgFetch === currentBgFetch) setBgProgress(prev => prev ? { ...prev, status: "waiting" } : prev);
               }
@@ -494,7 +572,10 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       }
 
       setLoadedAt(new Date());
+      // Keep ?user= in step with the loaded player (reload / shared link shows the same one)
+      updateUrlParams(p => { p.set("user", input); p.delete("username"); p.delete("id"); });
     } catch (e) {
+      if (fromRetry) focusRetryRef.current = true;
       setError(classifyError(e, input));
     }
     loadingRef.current = false;
@@ -925,8 +1006,10 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   const TH = getTH();
   const TD = getTD;
   const THs = { ...TH, fontSize: 14 }; // headers with sort buttons (keeps the sort arrow >= 11px)
-  const scrollX = { overflowX: "auto", WebkitOverflowScrolling: "touch", maxWidth: "100%" };
   const nowrap = { whiteSpace: "nowrap" };
+  const sep = " ·\u00A0"; // separator that wraps together with the following part, never dangles at a line end
+  // Small accent text on accent tints: the pink accent is below 4.5:1 there, so it gets a lighter tint.
+  const accentInk = theme === "pink" ? blendWhite(C.accent, 0.4) : C.accent;
   const subText = { fontSize: 12, color: C.textMuted };
   const labelSmall = { fontFamily: F.h, fontSize: 12, fontWeight: 700, color: C.textMuted, letterSpacing: "0.08em", textTransform: "uppercase" };
   const headRow = { display: "flex", alignItems: "center", flexWrap: "wrap", columnGap: 10 };
@@ -935,6 +1018,8 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   // Base on the middle stop of the page gradient (what the glass cards mostly sit on), else the page colour.
   const cardSolid = blendWhite((String(T.bg).match(/#[0-9a-f]{6}(?= 40%)/i) || [])[0] || T.pageBg || "#0f172a", 0.05);
   // Sticky first column: opaque background (plus the row tint) so scrolled cells do not shine through.
+  // Its table gets the same solid background, so the pinned cells match the rest of their row.
+  const solidTable = { background: cardSolid };
   const sticky = (tint, z = 1, bar) => ({
     position: "sticky", left: 0, zIndex: z,
     background: tint ? `linear-gradient(${tint}, ${tint}), ${cardSolid}` : cardSolid,
@@ -1021,7 +1106,6 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
     L.loadingPartyEthics,
     L.loadingDiplomacy,
   ][phase.step] : "";
-  const statusText = loading ? (rateWait > 0 ? L.rateLimitWait(rateWait) : phaseText) : "";
 
   let errorText = "";
   if (error) {
@@ -1057,7 +1141,10 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   }
 
   const inputStyle = { background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 8, color: C.text, padding: "10px 14px", fontSize: isMobile ? 16 : 15, fontFamily: F.m, outline: "none", width: "100%", minWidth: 0, boxSizing: "border-box" };
-  const fieldLabel = { display: "flex", alignItems: "center", gap: 8, marginBottom: 8, fontFamily: F.h, fontSize: 16, fontWeight: 700, color: C.textDim, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer" };
+  const fieldHead = { display: "flex", alignItems: "center", gap: 8, marginBottom: 8 };
+  const fieldLabel = { display: "flex", alignItems: "center", gap: 8, fontFamily: F.h, fontSize: 16, fontWeight: 700, color: C.textDim, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer" };
+  // Input hint next to the label (hover/tap); the input itself gets the same text as its description
+  const infoMark = text => <Tip text={text}><span aria-hidden="true" style={{ color: C.textMuted, cursor: "help", fontSize: 16, padding: "0 4px" }}>&#9432;</span></Tip>;
   const toggleBtn = { all: "unset", cursor: "pointer", display: "inline-flex", alignItems: "baseline", gap: 6, borderRadius: 3 };
 
   const statusBadges = r => <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
@@ -1070,7 +1157,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   // Engine / worker PP breakdown; each part stays on one line, wrapping only at the separator
   const ppSplit = (engine, workerPP) => <>
     <span style={{ color: C.blue, whiteSpace: "nowrap" }}>{L.ppEngine(fmt(engine, 1))}</span>
-    <span style={{ color: C.textMuted }}> · </span>
+    <span style={{ color: C.textMuted }}>{sep}</span>
     <span style={{ color: C.purple, whiteSpace: "nowrap" }}>{L.ppWorkers(fmt(workerPP, 1))}</span>
   </>;
 
@@ -1098,7 +1185,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       <div style={{ fontFamily: F.h, fontSize: 13, fontWeight: 700, color: C.accent, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8 }}>
         {L.workerDetailsTitle(fmt(bonus, 2))}
       </div>
-      <div style={scrollX}>
+      <ScrollX label={`${r.name} – ${L.workerDetailsTitle(fmt(bonus, 2))}`}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead><tr>
             <th style={th}>{L.colName}</th>
@@ -1164,7 +1251,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
             </tr>
           </tbody>
         </table>
-      </div>
+      </ScrollX>
     </>;
   }
 
@@ -1198,7 +1285,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
           </div>;
         })}
       </div>
-      <div style={{ ...scrollX, marginTop: 6 }}>
+      <ScrollX label={`${r.name} – ${L.workerDetailsTitle(fmt(bonus, 2))}`} style={{ marginTop: 6 }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead><tr>
             <th style={{ ...th, textAlign: "left" }}><span className="sr-only">{L.colName}</span></th>
@@ -1227,7 +1314,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
             </tr>
           </tbody>
         </table>
-      </div>
+      </ScrollX>
     </>;
   }
 
@@ -1235,7 +1322,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   function renderOverviewTable() {
     const thO = { ...THs, padding: "10px 10px" };
     const tdO = extra => ({ ...TD(false), padding: "8px 10px", ...extra });
-    return <div style={scrollX}>
+    return <ScrollX label={L.sectionFactoryOverview(companies.length)} style={solidTable}>
       <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
         <thead><tr>
           <SortTh label={L.colName} k="name" sort={ovSort} style={{ ...thO, ...sticky(null, 2) }} />
@@ -1256,7 +1343,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
             const hasW = r.ws.length > 0;
             const open = hasW && expandedCompany === id;
             const detailsId = `${uid}-w-${id}`;
-            const tint = open ? C.accent + "12" : i % 2 ? C.rowAlt : null;
+            const tint = open ? C.accent + "0a" : i % 2 ? C.rowAlt : null; // light enough for muted text (4.5:1)
             const toggle = () => setExpandedCompany(open ? null : id);
             return <Fragment key={id}>
               <tr onClick={hasW ? toggle : undefined} style={{ background: tint || "transparent", cursor: hasW ? "pointer" : "default" }}>
@@ -1306,7 +1393,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
           })}
         </tbody>
       </table>
-    </div>;
+    </ScrollX>;
   }
 
   // ── Overview: cards (phone) ──
@@ -1322,7 +1409,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
             <div style={{ minWidth: 0, flex: "1 1 150px" }}>
               <div style={{ fontWeight: 700, fontSize: 16, color: C.text, overflowWrap: "anywhere" }}>{r.name}</div>
               <div style={{ fontSize: 13, color: C.textDim, marginTop: 2 }}>{itemName(r.comp.itemCode, L)}</div>
-              <div style={subText}>{getRegionName(r.comp)} · {getCountryName(r.comp.region)}</div>
+              <div style={subText}>{getRegionName(r.comp)}{sep}{getCountryName(r.comp.region)}</div>
             </div>
             {statusBadges(r)}
           </div>
@@ -1336,7 +1423,8 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
             { label: L.colProfit, value: fmt(r.profit, 2) + " G", color: r.profit >= 0 ? C.green : C.red, bold: true, big: true, full: true },
           ]} />
           {hasW && <>
-            <button type="button" aria-expanded={open} aria-controls={detailsId} onClick={() => setExpandedCompany(open ? null : id)} style={{
+            <button type="button" aria-expanded={open} aria-controls={detailsId} onClick={() => setExpandedCompany(open ? null : id)}
+              aria-label={`${L.workerDetailsToggle(r.ws.length)}: ${r.name}`} style={{
               display: "flex", alignItems: "center", gap: 8, width: "100%", marginTop: 12, minHeight: 44, padding: "8px 12px", borderRadius: 8,
               border: "1px solid " + C.accent + "44", background: open ? C.accent + "18" : "rgba(255,255,255,0.03)", color: C.accent,
               fontFamily: F.h, fontSize: 14, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", textAlign: "left", cursor: "pointer",
@@ -1360,43 +1448,47 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
         <div style={{ width: "100%", maxWidth: 640, margin: "0 auto" }}>
           <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", gap: isMobile ? 14 : 16, marginBottom: 16 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <label htmlFor={`${uid}-player`} style={fieldLabel}>
-                <span aria-hidden="true" style={{ fontSize: 18 }}>👤</span>{L.sectionPlayer}
-              </label>
-              <Tip text={L.tipPlayerInput} block>
-                <input
-                  id={`${uid}-player`}
-                  value={userInput} onChange={e => setUserInput(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && loadData()}
-                  placeholder={L.placeholderPlayer} autoComplete="off" spellCheck={false}
-                  style={inputStyle}
-                />
-              </Tip>
+              <div style={fieldHead}>
+                <label htmlFor={`${uid}-player`} style={fieldLabel}>
+                  <span aria-hidden="true" style={{ fontSize: 18 }}>👤</span>{L.sectionPlayer}
+                </label>
+                {infoMark(L.tipPlayerInput)}
+              </div>
+              <span id={`${uid}-player-hint`} hidden>{L.tipPlayerInput}</span>
+              <input
+                id={`${uid}-player`} aria-describedby={`${uid}-player-hint`}
+                value={userInput} onChange={e => setUserInput(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && loadData()}
+                placeholder={L.placeholderPlayer} autoComplete="off" spellCheck={false}
+                style={inputStyle}
+              />
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <label htmlFor={`${uid}-apikey`} style={fieldLabel}>
-                <span aria-hidden="true" style={{ fontSize: 18 }}>🔑</span>{L.sectionApiKey}
-              </label>
-              <Tip text={L.tipApiKey} block>
-                <input
-                  id={`${uid}-apikey`}
-                  type="password"
-                  value={apiKey} onChange={e => setApiKey(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && loadData()}
-                  placeholder="wae_..." autoComplete="off" spellCheck={false}
-                  style={inputStyle}
-                />
-              </Tip>
+              <div style={fieldHead}>
+                <label htmlFor={`${uid}-apikey`} style={fieldLabel}>
+                  <span aria-hidden="true" style={{ fontSize: 18 }}>🔑</span>{L.sectionApiKey}
+                </label>
+                {infoMark(L.tipApiKey)}
+              </div>
+              <span id={`${uid}-apikey-hint`} hidden>{L.tipApiKey}</span>
+              <input
+                id={`${uid}-apikey`} aria-describedby={`${uid}-apikey-hint` + (apiKey ? "" : ` ${uid}-apikey-help`)}
+                type="password"
+                value={apiKey} onChange={e => setApiKey(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && loadData()}
+                placeholder="wae_..." autoComplete="off" spellCheck={false}
+                style={inputStyle}
+              />
               {!apiKey && (
                 <div style={{ display: "flex", gap: 6, alignItems: "baseline", fontSize: 12, color: C.textDim, marginTop: 6, lineHeight: 1.4 }}>
                   <span aria-hidden="true" style={{ color: C.textMuted }}>ⓘ</span>
-                  <span>{L.apiKeyRequiredForWorkers}</span>
+                  <span id={`${uid}-apikey-help`}>{L.apiKeyRequiredForWorkers}</span>
                 </div>
               )}
             </div>
           </div>
           <div style={{ display: "flex", justifyContent: "center" }}>
-            <Btn on big color={C.accent} onClick={loadData}
+            <Btn id={`${uid}-load`} on big color={C.accent} onClick={() => loadData()}
               disabled={!loading && !userInput.trim()}
               aria-disabled={loading || undefined} aria-busy={loading || undefined}
               style={loading ? { cursor: "progress" } : undefined}>
@@ -1411,7 +1503,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                   padding: "3px 10px", borderRadius: 999, fontSize: 12, fontFamily: F.m, whiteSpace: "nowrap",
                   border: "1px solid " + (cur ? C.accent + "88" : done ? C.green + "44" : "rgba(255,255,255,0.08)"),
                   background: cur ? C.accent + "18" : "transparent",
-                  color: cur ? C.accent : done ? C.green : C.textMuted, fontWeight: cur ? 700 : 400,
+                  color: cur ? accentInk : done ? C.green : C.textMuted, fontWeight: cur ? 700 : 400,
                 }}>
                   {done && <span aria-hidden="true">✓ </span>}
                   {s}
@@ -1420,9 +1512,24 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
               })}
             </ol>
           )}
-          <div role="status" aria-live="polite" style={{ textAlign: "center", fontSize: 12, fontFamily: F.m, color: loading && rateWait > 0 ? "#f97316" : C.textDim, marginTop: statusText ? 8 : 0 }}>
-            {statusText}
+          {/* Polite status: loading steps, a rate-limit pause (once, not every second) and the loaded result */}
+          <div role="status" aria-live="polite" style={{ textAlign: "center", fontSize: 12, fontFamily: F.m }}>
+            {loading && (rateWait > 0
+              ? <span className="sr-only">{L.rateLimitAnnounce(ratePause)}</span>
+              : phaseText && <div style={{ marginTop: 8, color: C.textDim }}>{phaseText}</div>)}
+            {userData && !loading && !error && (
+              <div style={{ marginTop: 12, color: C.green }}>
+                {L.successLoaded(userData.username, companies.length)}
+                {ownerCountry && <>{sep}{L.successCountryName(ownerCountry.name)}</>}
+                {loadedAt && <span style={{ color: C.textDim }}>{sep}<span style={nowrap}>{L.pricesAsOf(fmtClock(loadedAt))}</span></span>}
+              </div>
+            )}
           </div>
+          {loading && rateWait > 0 && (
+            <div aria-hidden="true" style={{ marginTop: 8, textAlign: "center", fontSize: 12, fontFamily: F.m, color: "#f97316" }}>
+              {L.rateLimitWait(rateWait)}
+            </div>
+          )}
           {error && (
             <div role="alert" style={{ marginTop: 14, padding: "12px 14px", borderRadius: 8, border: "1px solid " + C.red + "55", background: C.red + "14", display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px 14px" }}>
               <div style={{ flex: "1 1 240px", minWidth: 0, display: "flex", gap: 10, alignItems: "flex-start" }}>
@@ -1432,16 +1539,9 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                   {error.detail && <div style={{ color: C.textMuted, fontSize: 12, marginTop: 4, overflowWrap: "anywhere" }}>{L.errTechDetail(error.detail)}</div>}
                 </div>
               </div>
-              <Btn on color={C.red} onClick={loadData} disabled={loading || !userInput.trim()}>
+              <Btn id={`${uid}-retry`} on color={C.red} onClick={retryLoad} disabled={loading || !userInput.trim()}>
                 <span aria-hidden="true">↻ </span>{L.btnRetry}
               </Btn>
-            </div>
-          )}
-          {userData && !loading && !error && (
-            <div style={{ marginTop: 12, fontSize: 12, fontFamily: F.m, color: C.green, textAlign: "center" }}>
-              {L.successLoaded(userData.username, companies.length)}
-              {ownerCountry && <span>{L.successCountry(ownerCountry.name)}</span>}
-              {loadedAt && <span style={{ color: C.textDim }}> · {L.pricesAsOf(fmtClock(loadedAt))}</span>}
             </div>
           )}
         </div>
@@ -1460,7 +1560,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                 {[
                   enemyWarnings.length > 0 && L.warningEnemy(enemyWarnings.length),
                   wageWarnings.length > 0 && L.warningWage(wageWarnings.length),
-                ].filter(Boolean).join(" · ")}
+                ].filter(Boolean).join(sep)}
               </div>
             </div>
           </div>
@@ -1579,7 +1679,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                   <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
                     {L.wageWarningDesc}
                   </div>
-                  <div style={scrollX}>
+                  <ScrollX label={L.sectionWageWarnings(wageWarnings.length)} style={{ ...solidTable, borderRadius: 8 }}>
                     <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
                       <thead><tr>
                         <th style={{ ...TH, ...sticky(null, 2) }}>{L.colName}</th>
@@ -1610,7 +1710,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                         })}
                       </tbody>
                     </table>
-                  </div>
+                  </ScrollX>
                 </GlassCard>
               )}
 
@@ -1618,7 +1718,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
               <GlassCard glow={betterRegions.length > 0 ? C.greenGlow : undefined} style={cardPad}>
                 <div style={headRow}>
                   <Sec icon="🌎">{L.sectionBetterRegions(betterRegions.length)}</Sec>
-                  {provisional && <div style={{ marginBottom: 16 }}><ProvisionalBadge L={L} /></div>}
+                  {provisional && <div style={{ marginBottom: 16 }}><ProvisionalBadge L={L} ink={accentInk} /></div>}
                 </div>
                 <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
                   {L.betterRegionsDesc}
@@ -1647,7 +1747,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                     ))}
                   </div>
                 ) : (
-                  <div style={scrollX}>
+                  <ScrollX label={L.sectionBetterRegions(betterRegions.length)}>
                     <table style={{ width: "100%", borderCollapse: "collapse" }}>
                       <thead><tr>
                         <th style={TH}>{L.colName}</th>
@@ -1683,7 +1783,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                         ))}
                       </tbody>
                     </table>
-                  </div>
+                  </ScrollX>
                 )}
               </GlassCard>
 
@@ -1731,7 +1831,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
               <GlassCard glow={globalOptimization.length > 0 ? C.accentGlow : undefined} style={cardPad}>
                 <div style={headRow}>
                   <Sec icon="🔄">{L.sectionGlobalOpt(globalOptimization.length)}</Sec>
-                  {provisional && <div style={{ marginBottom: 16 }}><ProvisionalBadge L={L} /></div>}
+                  {provisional && <div style={{ marginBottom: 16 }}><ProvisionalBadge L={L} ink={accentInk} /></div>}
                 </div>
                 <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
                   {L.globalOptDesc}
@@ -1761,7 +1861,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                     ))}
                   </div>
                 ) : (
-                  <div style={scrollX}>
+                  <ScrollX label={L.sectionGlobalOpt(globalOptimization.length)}>
                     <table style={{ width: "100%", borderCollapse: "collapse" }}>
                       <thead><tr>
                         <th style={TH}>{L.colName}</th>
@@ -1798,7 +1898,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                         ))}
                       </tbody>
                     </table>
-                  </div>
+                  </ScrollX>
                 )}
               </GlassCard>
             </div>
@@ -1810,14 +1910,13 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
               <div style={{ padding: isMobile ? "14px 14px 8px" : "16px 20px 8px" }}>
                 <div style={headRow}>
                   <Sec icon="💰">{L.sectionMarket}</Sec>
-                  {provisional && <div style={{ marginBottom: 16 }}><ProvisionalBadge L={L} /></div>}
+                  {provisional && <div style={{ marginBottom: 16 }}><ProvisionalBadge L={L} ink={accentInk} /></div>}
                 </div>
                 <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
                   {L.marketDesc}
-                  {loadedAt && <span style={{ color: C.textMuted }}> · {L.pricesAsOf(fmtClock(loadedAt))}</span>}
                 </div>
               </div>
-              <div style={scrollX}>
+              <ScrollX label={L.sectionMarket} style={solidTable}>
                 <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, minWidth: 900 }}>
                   <thead><tr>
                     {!isMobile && <th style={THs}>#</th>}
@@ -1830,7 +1929,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                     <SortTh label={L.colBaseMarginPP} k="base" sort={mkSort} style={THs} />
                     <SortTh k="max" sort={mkSort} style={THs} tip={provisional ? L.provisionalTip : undefined}
                       label={provisional
-                        ? <>{L.colMaxMarginPP}<span style={{ display: "block", color: C.accent, fontSize: 12, letterSpacing: "0.06em" }}><span aria-hidden="true">⏳ </span>{L.provisional}</span></>
+                        ? <>{L.colMaxMarginPP}<br /><span style={{ color: accentInk, fontSize: 12, letterSpacing: "0.06em" }}><span aria-hidden="true">⏳ </span>{L.provisional}</span></>
                         : L.colMaxMarginPP} />
                     <SortTh label={L.colYourFactories} k="factories" sort={mkSort} style={THs} />
                     <SortTh label={L.colYourProfit} k="profit" sort={mkSort} style={THs} />
@@ -1841,6 +1940,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                       const needsStr = p.needs ? Object.entries(p.needs).map(([k, v]) => v + "× " + itemName(k, L)).join(", ") : null;
                       const tint = isProducing ? C.accent + "0a" : i % 2 ? C.rowAlt : null;
                       const bar = isProducing ? C.accent : null;
+                      const typeCol = p.type === "raw" ? C.blue : C.purple; // badge text a bit lighter: >= 4.5:1 on tinted rows
                       const rank = <span style={{ fontFamily: F.h, fontWeight: 700, color: p.rank <= 3 ? C.accent : C.textDim, fontSize: 16 }}>{p.rank}</span>;
                       return (
                         <tr key={p.itemCode} style={{ background: tint || "transparent" }}>
@@ -1854,7 +1954,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                               : itemName(p.itemCode, L)}
                           </td>
                           <td style={{ ...TD(false), fontSize: 12 }}>
-                            <Bdg color={p.type === "raw" ? C.blue : C.purple}>{p.type === "raw" ? L.badgeRaw : L.badgeProduct}</Bdg>
+                            <Bdg color={typeCol}><span style={{ color: blendWhite(typeCol, 0.25) }}>{p.type === "raw" ? L.badgeRaw : L.badgeProduct}</span></Bdg>
                           </td>
                           <td style={{ ...TD(false), color: C.accent, ...nowrap }}>{fmt(p.price, 4)} G</td>
                           <td style={TD(false)}>
@@ -1898,7 +1998,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                     })}
                   </tbody>
                 </table>
-              </div>
+              </ScrollX>
             </GlassCard>
           )}
 

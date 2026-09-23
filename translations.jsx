@@ -30,7 +30,6 @@ export const TRANSLATIONS = {
     apiKeyRequiredForWorkers: "Für die Anzeige von Arbeitern wird ein API-Key benötigt.",
     btnLoadData: "Daten laden",
     successLoaded: (username, n) => `${username}: ${n} Fabriken geladen`,
-    successCountry: name => ` · Land: ${name}`,
 
     // Warnings
     warningsTitle: n => `${n} Warnung${n > 1 ? "en" : ""}`,
@@ -52,13 +51,9 @@ export const TRANSLATIONS = {
     // Overview table columns
     colName: "Name",
     colProduct: "Produkt",
-    colEngine: "Motor",
-    colStorage: "Lager",
     colRegion: "Region",
     colBonus: "Bonus",
     colWorkers: "Arbeiter",
-    colEnginePP: "Motor PP/Tag",
-    colWorkerPP: "Arbeiter PP/Tag",
     colTotalPP: "Gesamt PP/Tag",
     colRevenue: "Umsatz/Tag",
     colCost: "Kosten/Tag",
@@ -82,10 +77,6 @@ export const TRANSLATIONS = {
     badgeOk: "OK",
 
     // Totals
-    totalPPDay: "Gesamt PP/Tag:",
-    totalRevenue: "Gesamt Umsatz/Tag:",
-    totalCost: "Gesamt Kosten/Tag:",
-    totalProfit: "Gesamt Gewinn/Tag:",
 
     // Overview section
     sectionFactoryOverview: n => `Fabrik-Übersicht (${n})`,
@@ -212,7 +203,6 @@ export const TRANSLATIONS = {
     tipRemoveFactory: "Fabrik aus der Planung entfernen",
     tipAddFactory: "Neue Fabrik (L1) zur Planung hinzufügen",
 
-    sectionBestPlan: "Bester Bauplan (Dijkstra)",
     colStep: "Schritt",
     colAction: "Aktion",
     colTime: "Zeit",
@@ -222,7 +212,6 @@ export const TRANSLATIONS = {
     tipTime: "Zeitpunkt (kumuliert) ab jetzt",
     tipGainPerDay: "Gewinn an täglicher Goldproduktion durch diesen Schritt",
     fromInventory: n => `(+ ${n} aus Lager)`,
-    unitsSuffix: n => `(${n} Einh.)`,
 
     footerText: "HEBELMINISTERIUM DEUTSCHLAND · FABRIK-OPTIMIERER · DIJKSTRA + MARKTHANDEL",
     best: "BESTE",
@@ -292,7 +281,8 @@ export const TRANSLATIONS = {
     provisional: "vorläufig",
     provisionalTip: "Die Partei-Ethiken der übrigen Länder werden noch im Hintergrund geladen. Boni und Rangfolge können sich noch ändern.",
     pricesAsOf: t => `Preise, Stand ${t}`,
-    // @@dashboard-ui:de (insert new company-dashboard keys above this line)
+    rateLimitAnnounce: s => `Rate Limit erreicht – neuer Versuch in ${s} ${s === 1 ? "Sekunde" : "Sekunden"}.`,
+    successCountryName: name => `Land:\u00A0${name}`,
     optComputing: "Berechne…",
     optStratHint: "Karte anklicken, um ihren Bauplan anzuzeigen.",
     optShowInChart: "im Diagramm",
@@ -322,7 +312,10 @@ export const TRANSLATIONS = {
     optUnitPcs: "Stk",
     optUnitLvl: "Lvl",
     optWordGold: "Gold",
-    // @@optimizer-ui:de (insert new factory-optimizer keys above this line)
+    optShowInChartFor: s => `${s} im Diagramm`,
+    optFacLvlUp: (n, name) => `F${n} ${name}: Level erhöhen`,
+    optFacLvlDown: (n, name) => `F${n} ${name}: Level senken`,
+    optFacRemove: (n, name) => `F${n} ${name}: Aus der Planung entfernen`,
   },
 
   // ─────────────────────────────────────────────────────
@@ -350,7 +343,6 @@ export const TRANSLATIONS = {
     apiKeyRequiredForWorkers: "An API key is required to load worker details.",
     btnLoadData: "Load Data",
     successLoaded: (username, n) => `${username}: ${n} factories loaded`,
-    successCountry: name => ` · Country: ${name}`,
 
     warningsTitle: n => `${n} Warning${n > 1 ? "s" : ""}`,
     warningEnemy: n => `${n}x Enemy country`,
@@ -368,13 +360,9 @@ export const TRANSLATIONS = {
 
     colName: "Name",
     colProduct: "Product",
-    colEngine: "Engine",
-    colStorage: "Storage",
     colRegion: "Region",
     colBonus: "Bonus",
     colWorkers: "Workers",
-    colEnginePP: "Engine PP/Day",
-    colWorkerPP: "Worker PP/Day",
     colTotalPP: "Total PP/Day",
     colRevenue: "Revenue/Day",
     colCost: "Cost/Day",
@@ -395,10 +383,6 @@ export const TRANSLATIONS = {
     badgeConfigMissing: "CONFIG MISSING",
     badgeOk: "OK",
 
-    totalPPDay: "Total PP/Day:",
-    totalRevenue: "Total Revenue/Day:",
-    totalCost: "Total Cost/Day:",
-    totalProfit: "Total Profit/Day:",
 
     sectionFactoryOverview: n => `Factory Overview (${n})`,
     tipClickWorkerDetails: "Click a factory to see worker details",
@@ -521,7 +505,6 @@ export const TRANSLATIONS = {
     tipRemoveFactory: "Remove factory from planning",
     tipAddFactory: "Add new factory (L1) to planning",
 
-    sectionBestPlan: "Best Build Plan (Dijkstra)",
     colStep: "Step",
     colAction: "Action",
     colTime: "Time",
@@ -531,7 +514,6 @@ export const TRANSLATIONS = {
     tipTime: "Time (cumulative) from now",
     tipGainPerDay: "Gain in daily gold production from this step",
     fromInventory: n => `(+ ${n} from storage)`,
-    unitsSuffix: n => `(${n} units)`,
 
     footerText: "LEVER MINISTRY GERMANY · FACTORY OPTIMIZER · DIJKSTRA + MARKET TRADING",
     best: "BEST",
@@ -601,7 +583,8 @@ export const TRANSLATIONS = {
     provisional: "provisional",
     provisionalTip: "Party ethics for the remaining countries are still loading in the background. Bonuses and the ranking may still change.",
     pricesAsOf: t => `Prices as of ${t}`,
-    // @@dashboard-ui:en (insert new company-dashboard keys above this line)
+    rateLimitAnnounce: s => `Rate limit reached – retrying in ${s} ${s === 1 ? "second" : "seconds"}.`,
+    successCountryName: name => `Country:\u00A0${name}`,
     optComputing: "Calculating…",
     optStratHint: "Click a card to show its build plan.",
     optShowInChart: "in chart",
@@ -631,7 +614,10 @@ export const TRANSLATIONS = {
     optUnitPcs: "pcs",
     optUnitLvl: "Lvl",
     optWordGold: "Gold",
-    // @@optimizer-ui:en (insert new factory-optimizer keys above this line)
+    optShowInChartFor: s => `${s} in chart`,
+    optFacLvlUp: (n, name) => `F${n} ${name}: Increase level`,
+    optFacLvlDown: (n, name) => `F${n} ${name}: Decrease level`,
+    optFacRemove: (n, name) => `F${n} ${name}: Remove from planning`,
   },
 
   // ─────────────────────────────────────────────────────
@@ -659,7 +645,6 @@ export const TRANSLATIONS = {
     apiKeyRequiredForWorkers: "En API-nyckel krävs för att ladda arbetardetaljer.",
     btnLoadData: "Ladda data",
     successLoaded: (username, n) => `${username}: ${n} fabriker laddade`,
-    successCountry: name => ` · Land: ${name}`,
 
     warningsTitle: n => `${n} Varning${n > 1 ? "ar" : ""}`,
     warningEnemy: n => `${n}x Fientligt land`,
@@ -677,13 +662,9 @@ export const TRANSLATIONS = {
 
     colName: "Namn",
     colProduct: "Produkt",
-    colEngine: "Motor",
-    colStorage: "Lager",
     colRegion: "Region",
     colBonus: "Bonus",
     colWorkers: "Arbetare",
-    colEnginePP: "Motor PP/Dag",
-    colWorkerPP: "Arbetar PP/Dag",
     colTotalPP: "Totalt PP/Dag",
     colRevenue: "Omsättning/Dag",
     colCost: "Kostnad/Dag",
@@ -704,10 +685,6 @@ export const TRANSLATIONS = {
     badgeConfigMissing: "KONFIG SAKNAS",
     badgeOk: "OK",
 
-    totalPPDay: "Totalt PP/Dag:",
-    totalRevenue: "Total omsättning/Dag:",
-    totalCost: "Total kostnad/Dag:",
-    totalProfit: "Total vinst/Dag:",
 
     sectionFactoryOverview: n => `Fabriksöversikt (${n})`,
     tipClickWorkerDetails: "Klicka på en fabrik för att se arbetardetaljer",
@@ -830,7 +807,6 @@ export const TRANSLATIONS = {
     tipRemoveFactory: "Ta bort fabrik från planeringen",
     tipAddFactory: "Lägg till ny fabrik (N1) till planeringen",
 
-    sectionBestPlan: "Bästa byggplan (Dijkstra)",
     colStep: "Steg",
     colAction: "Åtgärd",
     colTime: "Tid",
@@ -840,7 +816,6 @@ export const TRANSLATIONS = {
     tipTime: "Tid (kumulativ) från nu",
     tipGainPerDay: "Vinst i daglig guldproduktion från detta steg",
     fromInventory: n => `(+ ${n} från lager)`,
-    unitsSuffix: n => `(${n} enh.)`,
 
     footerText: "HÄVSTÅNGSMINISTERIET TYSKLAND · FABRIKSOPTIMERING · DIJKSTRA + MARKNADSHANDEL",
     best: "BÄST",
@@ -910,7 +885,8 @@ export const TRANSLATIONS = {
     provisional: "preliminärt",
     provisionalTip: "Partietiken för övriga länder laddas fortfarande i bakgrunden. Bonusar och rankningen kan fortfarande ändras.",
     pricesAsOf: t => `Priser kl. ${t}`,
-    // @@dashboard-ui:sv (insert new company-dashboard keys above this line)
+    rateLimitAnnounce: s => `Hastighetsgränsen nådd – nytt försök om ${s} ${s === 1 ? "sekund" : "sekunder"}.`,
+    successCountryName: name => `Land:\u00A0${name}`,
     optComputing: "Beräknar…",
     optStratHint: "Klicka på ett kort för att visa dess byggplan.",
     optShowInChart: "i diagrammet",
@@ -940,7 +916,10 @@ export const TRANSLATIONS = {
     optUnitPcs: "st",
     optUnitLvl: "nivå",
     optWordGold: "Guld",
-    // @@optimizer-ui:sv (insert new factory-optimizer keys above this line)
+    optShowInChartFor: s => `${s} i diagrammet`,
+    optFacLvlUp: (n, name) => `F${n} ${name}: Öka nivå`,
+    optFacLvlDown: (n, name) => `F${n} ${name}: Minska nivå`,
+    optFacRemove: (n, name) => `F${n} ${name}: Ta bort från planeringen`,
   },
 };
 
