@@ -89,7 +89,7 @@ function Shell() {
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
             {/* Language switcher */}
-            <div role="group" aria-label="Language" style={{ display: "flex", gap: 4 }}>
+            <div role="group" aria-label={L.languageLabel} style={{ display: "flex", gap: 4 }}>
               {LANGS.map(l => (
                 <button key={l.code} type="button" lang={l.code} title={l.name} aria-pressed={lang === l.code} onClick={() => switchLang(l.code)} style={{
                   padding: "6px 10px", borderRadius: 16,
@@ -104,7 +104,7 @@ function Shell() {
               ))}
             </div>
             <Tip text={L.themeSwitchTo(themeLabel(otherTheme))} pos="bottom">
-              <button type="button" aria-label={L.themeSwitchTo(themeLabel(otherTheme))} onClick={() => setTheme(otherTheme)} style={{
+              <button type="button" onClick={() => setTheme(otherTheme)} style={{
                 padding: "6px 16px", borderRadius: 20,
                 border: "1px solid " + (theme === "pink" ? "rgba(255,107,157,0.5)" : "rgba(255,255,255,0.1)"),
                 background: theme === "pink"

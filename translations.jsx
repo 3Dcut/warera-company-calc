@@ -233,6 +233,7 @@ export const TRANSLATIONS = {
     // Shared UI
     themeGrau: "Grau",
     themePink: "Pink",
+    languageLabel: "Sprache",
     items: {
       limestone: "Kalkstein",
       grain: "Getreide",
@@ -332,8 +333,8 @@ export const TRANSLATIONS = {
     themeSwitchTo: t => "Switch theme: " + t,
 
     loadingSearchPlayer: "Searching player...",
-    loadingFactories: "Loading companies...",
-    loadingFactoriesN: n => `Loading ${n} companies...`,
+    loadingFactories: "Loading factories...",
+    loadingFactoriesN: n => `Loading ${n} factories...`,
     loadingWorkerProfiles: n => `Loading ${n} worker profiles...`,
     loadingLiquid: "Calculating liquid assets...",
     loadingPartyEthics: "Loading relevant party ethics...",
@@ -348,7 +349,7 @@ export const TRANSLATIONS = {
     tipApiKey: "Personal API Key",
     apiKeyRequiredForWorkers: "An API key is required to load worker details.",
     btnLoadData: "Load Data",
-    successLoaded: (username, n) => `${username}: ${n} companies loaded`,
+    successLoaded: (username, n) => `${username}: ${n} factories loaded`,
     successCountry: name => ` · Country: ${name}`,
 
     warningsTitle: n => `${n} Warning${n > 1 ? "s" : ""}`,
@@ -541,6 +542,7 @@ export const TRANSLATIONS = {
     // Shared UI
     themeGrau: "Grey",
     themePink: "Pink",
+    languageLabel: "Language",
     items: {
       limestone: "Limestone",
       grain: "Grain",
@@ -828,12 +830,12 @@ export const TRANSLATIONS = {
     tipRemoveFactory: "Ta bort fabrik från planeringen",
     tipAddFactory: "Lägg till ny fabrik (N1) till planeringen",
 
-    sectionBestPlan: "Bästa byggnadsplan (Dijkstra)",
+    sectionBestPlan: "Bästa byggplan (Dijkstra)",
     colStep: "Steg",
     colAction: "Åtgärd",
     colTime: "Tid",
     colGainPerDay: "G/d Vinst",
-    tipStep: "Stegnummer i byggnadsplanen",
+    tipStep: "Stegnummer i byggplanen",
     tipAction: "Åtgärden som ska utföras",
     tipTime: "Tid (kumulativ) från nu",
     tipGainPerDay: "Vinst i daglig guldproduktion från detta steg",
@@ -849,6 +851,7 @@ export const TRANSLATIONS = {
     // Shared UI
     themeGrau: "Grå",
     themePink: "Rosa",
+    languageLabel: "Språk",
     items: {
       limestone: "Kalksten",
       grain: "Spannmål",

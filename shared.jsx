@@ -2,6 +2,7 @@
 //   SHARED: Theme, Primitives, API, Formatters
 // ═══════════════════════════════════════════════════════
 import { useState, useEffect, useLayoutEffect, useRef, useId, isValidElement, cloneElement } from "react";
+import { createPortal } from "react-dom";
 
 const fl = document.createElement("link");
 fl.rel = "stylesheet";
@@ -17,23 +18,21 @@ styleEl.textContent = `
   .tip-wrap { position: relative; display: inline-flex; }
   .tip-wrap.tip-block { display: flex; width: 100%; }
   .tip-wrap.tip-block > * { flex: 1 1 auto; min-width: 0; }
-  .tip-wrap .tip-box {
-    display: none; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
-    padding: 8px 12px; border-radius: 6px; font-size: 13px; line-height: 1.4; z-index: 100; pointer-events: none;
-    width: max-content; max-width: min(320px, calc(100vw - 32px)); white-space: normal; overflow-wrap: anywhere;
+  .tip-box {
+    position: fixed; z-index: 1000; pointer-events: none;
+    padding: 8px 12px; border-radius: 6px; font-size: 13px; line-height: 1.4;
+    width: max-content; max-width: min(320px, calc(100vw - 16px)); white-space: normal; overflow-wrap: anywhere;
     background: rgba(15,20,35,0.95); border: 1px solid rgba(255,255,255,0.12);
     backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
     box-shadow: 0 8px 24px rgba(0,0,0,0.5); color: #e4e4dc;
     font-family: 'Source Code Pro', monospace; font-weight: 400; letter-spacing: 0; text-transform: none; text-align: left;
     animation: tipIn 0.15s ease-out;
   }
-  .tip-wrap .tip-box::after {
+  .tip-box::after {
     content: ''; position: absolute; top: 100%; left: var(--tip-arrow, 50%); transform: translateX(-50%);
     border: 5px solid transparent; border-top-color: rgba(255,255,255,0.12);
   }
-  .tip-wrap .tip-box.tip-below { bottom: auto; top: calc(100% + 8px); }
-  .tip-wrap .tip-box.tip-below::after { top: auto; bottom: 100%; border-top-color: transparent; border-bottom-color: rgba(255,255,255,0.12); }
-  .tip-wrap.tip-open .tip-box { display: block; }
+  .tip-box.tip-below::after { top: auto; bottom: 100%; border-top-color: transparent; border-bottom-color: rgba(255,255,255,0.12); }
   .copy-flash { animation: copyFlash 0.6s ease-out; }
   button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focus-visible, summary:focus-visible {
     outline: 2px solid var(--accent, #f0b429) !important; outline-offset: 2px !important;
@@ -53,7 +52,7 @@ export const THEMES = {
     C: {
       accent: "#f0b429", accentGlow: "rgba(240,180,41,0.25)",
       green: "#34d399", greenGlow: "rgba(52,211,153,0.2)",
-      red: "#f87171",
+      red: "#fa8080",
       blue: "#60a5fa", blueGlow: "rgba(96,165,250,0.2)",
       purple: "#a78bfa",
       stahl: "#f0a060", betonC: "#90b0a0",
@@ -69,7 +68,7 @@ export const THEMES = {
     C: {
       accent: "#ff00ff", accentGlow: "rgba(255,0,255,0.5)",
       green: "#00ffcc", greenGlow: "rgba(0,255,204,0.4)",
-      red: "#ff3366",
+      red: "#ff6f8f",
       blue: "#00ccff", blueGlow: "rgba(0,204,255,0.4)",
       purple: "#cc66ff",
       stahl: "#ff9966", betonC: "#66ffcc",
@@ -164,9 +163,8 @@ export function useSort(initialKey = null, initialDir = "desc") {
 }
 export function SortTh({ label, k, sort, style, tip }) {
   const active = sort.key === k;
-  const btn = <button type="button" onClick={() => sort.toggle(k)} style={{ all: "unset", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, borderRadius: 3 }}>
-    <span>{label}</span>
-    <span aria-hidden="true" style={{ opacity: active ? 1 : 0.35, fontSize: "max(11px, 0.8em)" }}>{active ? (sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+  const btn = <button type="button" onClick={() => sort.toggle(k)} style={{ all: "unset", cursor: "pointer", display: "inline", borderRadius: 3 }}>
+    {label}<span aria-hidden="true" style={{ opacity: active ? 1 : 0.35, fontSize: "max(11px, 0.8em)", whiteSpace: "nowrap" }}>{"\u00A0"}{active ? (sort.dir === "asc" ? "\u25B2" : "\u25BC") : "\u21C5"}</span>
   </button>;
   return <th style={style} aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}>
     {tip ? <Tip text={tip}>{btn}</Tip> : btn}
@@ -191,61 +189,94 @@ export function Kpi({ label, value, color, sub }) {
     {sub && <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>{sub}</div>}
   </div>;
 }
+// Number input with label; `tip` is shown next to the label (hover/tap on the info mark, or while the
+// input has focus) and exposed to screen readers as the input's description.
 export function Inp({ label, value, onChange, step = 1, suffix, tip, min }) {
   const id = useId();
-  const inner = <div style={{ marginBottom: 12 }}>
-    <label htmlFor={id} style={{ fontFamily: F.m, fontSize: 14, color: C.textDim, marginBottom: 5, display: "block", letterSpacing: "0.03em" }}>{label} {tip && <span aria-hidden="true" style={{ color: C.textMuted, cursor: "help" }}>&#9432;</span>}</label>
+  const [focused, setFocused] = useState(false);
+  return <div style={{ marginBottom: 12 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
+      <label htmlFor={id} style={{ fontFamily: F.m, fontSize: 14, color: C.textDim, letterSpacing: "0.03em" }}>{label}</label>
+      {tip && <Tip text={tip} open={focused}><span aria-hidden="true" style={{ color: C.textMuted, cursor: "help", fontSize: 14 }}>&#9432;</span></Tip>}
+    </div>
+    {tip && <span id={id + "-tip"} hidden>{tip}</span>}
     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
       <input id={id} type="number" inputMode="decimal" step={step} min={min} value={value} onChange={e => onChange(Number(e.target.value))}
+        aria-describedby={tip ? id + "-tip" : undefined}
         style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 6, color: C.text,
           padding: "9px 12px", fontSize: 15, width: "100%", minWidth: 0, boxSizing: "border-box", outline: "none",
           fontFamily: F.m, transition: "border-color 0.2s, box-shadow 0.2s" }}
-        onFocus={e => { e.target.style.borderColor = C.accent + "88"; e.target.style.boxShadow = "0 0 12px " + C.accentGlow; }}
-        onBlur={e => { e.target.style.borderColor = C.inputBorder; e.target.style.boxShadow = "none"; }} />
+        onFocus={e => { setFocused(true); e.target.style.borderColor = C.accent + "88"; e.target.style.boxShadow = "0 0 12px " + C.accentGlow; }}
+        onBlur={e => { setFocused(false); e.target.style.borderColor = C.inputBorder; e.target.style.boxShadow = "none"; }} />
       {suffix && <span style={{ fontFamily: F.m, fontSize: 14, color: C.textMuted, whiteSpace: "nowrap" }}>{suffix}</span>}
     </div>
   </div>;
-  return tip ? <Tip text={tip} block>{inner}</Tip> : inner;
 }
 export function Bdg({ color, children }) {
   return <span style={{ display: "inline-block", padding: "3px 10px", borderRadius: 4, fontSize: 13, fontWeight: 700, fontFamily: F.h, background: color + "25", color, border: "1px solid " + color + "44", letterSpacing: "0.06em", textTransform: "uppercase", textShadow: "0 0 8px " + color + "44", whiteSpace: "nowrap" }}>{children}</span>;
 }
-// Tooltip: opens on hover, keyboard focus and tap (auto-hides after a moment on touch),
-// stays inside the viewport and is linked to its trigger via aria-describedby.
-// `block` makes the wrapper span the full width (use it around inputs and block content).
-export function Tip({ text, children, pos = "top", block }) {
+// Tooltip: opens on hover, keyboard focus and tap (auto-hides after a moment on touch), closes on Escape.
+// The box is rendered into <body> with fixed positioning, so scroll containers and cards never clip it,
+// and it is kept inside the viewport. A hidden copy of the text is the trigger's aria-describedby target.
+// `block` makes the wrapper span the full width; `open` forces it open (e.g. while a related input has focus).
+export function Tip({ text, children, pos = "top", block, open: forced }) {
   const id = useId();
-  const [open, setOpen] = useState(false);
-  const [place, setPlace] = useState({ shift: 0, below: pos === "bottom" });
+  const [hovered, setHovered] = useState(false);
+  const [place, setPlace] = useState(null);
+  const wrapRef = useRef(null);
   const boxRef = useRef(null);
   const timer = useRef(null);
+  const touchAt = useRef(0);
+  const open = !!text && (hovered || !!forced);
+
+  const hide = () => { clearTimeout(timer.current); setHovered(false); };
+  const show = () => {
+    // mouseenter/focus emulated right after a tap must not cancel the tap's auto-hide timer
+    if (Date.now() - touchAt.current > 1000) clearTimeout(timer.current);
+    setHovered(true);
+  };
+  const onTouch = () => { touchAt.current = Date.now(); clearTimeout(timer.current); setHovered(true); timer.current = setTimeout(hide, 2500); };
 
   useLayoutEffect(() => {
-    if (!open || !boxRef.current) return;
-    const r = boxRef.current.getBoundingClientRect();
-    const vw = document.documentElement.clientWidth;
-    let shift = 0;
-    if (r.left < 8) shift = 8 - r.left;
-    else if (r.right > vw - 8) shift = vw - 8 - r.right;
-    const below = pos === "bottom" || r.top < 8;
-    setPlace({ shift, below });
-  }, [open]);
+    if (!open) { setPlace(null); return; }
+    const measure = () => {
+      const w = wrapRef.current, b = boxRef.current;
+      if (!w || !b) return;
+      const tr = w.getBoundingClientRect(), br = b.getBoundingClientRect();
+      const vw = document.documentElement.clientWidth, vh = window.innerHeight;
+      const cx = tr.left + tr.width / 2;
+      const left = Math.max(8, Math.min(cx - br.width / 2, vw - 8 - br.width));
+      const above = tr.top - 8 - br.height, below = tr.bottom + 8;
+      const useBelow = pos === "bottom" ? !(below + br.height > vh - 8 && above >= 8) : above < 8;
+      setPlace({ left, top: useBelow ? below : above, below: useBelow, arrow: Math.max(12, Math.min(cx - left, br.width - 12)) });
+    };
+    measure();
+    const onKey = e => { if (e.key === "Escape") hide(); };
+    window.addEventListener("scroll", measure, true);
+    window.addEventListener("resize", measure);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("scroll", measure, true);
+      window.removeEventListener("resize", measure);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open, text]);
   useEffect(() => () => clearTimeout(timer.current), []);
 
   if (!text) return children;
-  const show = () => { clearTimeout(timer.current); setOpen(true); };
-  const hide = () => { clearTimeout(timer.current); setOpen(false); setPlace({ shift: 0, below: pos === "bottom" }); };
-  const onTouch = () => { show(); timer.current = setTimeout(hide, 2500); };
-  const child = isValidElement(children)
+  const describable = isValidElement(children);
+  const child = describable
     ? cloneElement(children, { "aria-describedby": [children.props["aria-describedby"], id].filter(Boolean).join(" ") })
     : children;
 
-  return <span className={"tip-wrap" + (block ? " tip-block" : "") + (open ? " tip-open" : "")}
-    onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={hide} onTouchStart={onTouch}
-    onKeyDown={e => { if (e.key === "Escape") hide(); }}>
+  return <span ref={wrapRef} className={"tip-wrap" + (block ? " tip-block" : "")}
+    onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={hide} onTouchStart={onTouch}>
     {child}
-    <span ref={boxRef} id={id} role="tooltip" className={"tip-box" + (place.below ? " tip-below" : "")}
-      style={place.shift ? { transform: `translateX(calc(-50% + ${place.shift}px))`, "--tip-arrow": `calc(50% - ${place.shift}px)` } : undefined}>{text}</span>
+    {describable && <span id={id} hidden>{text}</span>}
+    {open && createPortal(
+      <span ref={boxRef} aria-hidden="true" className={"tip-box" + (place?.below ? " tip-below" : "")}
+        style={{ left: place ? place.left : 0, top: place ? place.top : 0, visibility: place ? "visible" : "hidden", "--tip-arrow": place ? place.arrow + "px" : "50%" }}>{text}</span>,
+      document.body)}
   </span>;
 }
 export function Btn({ on, color, children, onClick, big, disabled, style, ...rest }) {
