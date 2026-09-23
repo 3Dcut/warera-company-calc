@@ -166,7 +166,7 @@ export function SortTh({ label, k, sort, style, tip }) {
   const active = sort.key === k;
   const btn = <button type="button" onClick={() => sort.toggle(k)} style={{ all: "unset", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, borderRadius: 3 }}>
     <span>{label}</span>
-    <span aria-hidden="true" style={{ opacity: active ? 1 : 0.35, fontSize: "0.8em" }}>{active ? (sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+    <span aria-hidden="true" style={{ opacity: active ? 1 : 0.35, fontSize: "max(11px, 0.8em)" }}>{active ? (sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
   </button>;
   return <th style={style} aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}>
     {tip ? <Tip text={tip}>{btn}</Tip> : btn}
@@ -236,7 +236,9 @@ export function Tip({ text, children, pos = "top", block }) {
   const show = () => { clearTimeout(timer.current); setOpen(true); };
   const hide = () => { clearTimeout(timer.current); setOpen(false); setPlace({ shift: 0, below: pos === "bottom" }); };
   const onTouch = () => { show(); timer.current = setTimeout(hide, 2500); };
-  const child = isValidElement(children) ? cloneElement(children, { "aria-describedby": id }) : children;
+  const child = isValidElement(children)
+    ? cloneElement(children, { "aria-describedby": [children.props["aria-describedby"], id].filter(Boolean).join(" ") })
+    : children;
 
   return <span className={"tip-wrap" + (block ? " tip-block" : "") + (open ? " tip-open" : "")}
     onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={hide} onTouchStart={onTouch}

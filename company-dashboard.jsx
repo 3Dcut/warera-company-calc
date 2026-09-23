@@ -1,7 +1,21 @@
-import { useState, useEffect } from "react";
-import { THEMES, C, F, setThemeVars, glass, fmt, fmtT, fmtN, GlassCard, Sec, Bdg, Tip, Btn, getTH, getTD, apiCall } from "./shared.jsx";
+import { useState, useEffect, useRef, useId, Fragment } from "react";
+import { THEMES, C, F, setThemeVars, glass, fmt, fmtClock, GlassCard, Sec, Bdg, Tip, Btn, Kpi, getTH, getTD, useSort, SortTh, useIsMobile, apiCall } from "./shared.jsx";
 import FactoryOptimizer from "./factory-optimizer.jsx";
-import { getLang } from "./translations.jsx";
+import { getLang, itemName } from "./translations.jsx";
+
+// ── Local styles (load spinner, blinking background progress) ──
+if (typeof document !== "undefined" && !document.getElementById("dash-styles")) {
+  const s = document.createElement("style");
+  s.id = "dash-styles";
+  s.textContent = `
+    @keyframes dashSpin { to { transform: rotate(360deg); } }
+    @keyframes dashBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .dash-spinner { display: inline-block; width: 0.85em; height: 0.85em; margin-right: 10px; vertical-align: -0.08em;
+      border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: dashSpin 0.8s linear infinite; }
+    @media (prefers-reduced-motion: reduce) { .dash-spinner { animation: none; border-right-color: currentColor; opacity: 0.6; } }
+  `;
+  document.head.appendChild(s);
+}
 
 // ── URL params ──
 function getUrlParam(...names) {
@@ -27,6 +41,75 @@ function getInitialApiKey() {
   try { return localStorage.getItem("warera_api_key") || ""; } catch { return ""; }
 }
 
+// Player explicitly given in the URL (deep link) -> auto-load once on first mount.
+const URL_USER = getUrlParam("user", "username", "id");
+
+const TAB_KEYS = ["overview", "optimize", "market", "build"];
+function getInitialTab() {
+  const t = getUrlParam("tab");
+  return TAB_KEYS.includes(t) ? t : "overview";
+}
+
+// Change query params in place (history.replaceState), keeping all others.
+function updateUrlParams(mutate) {
+  try {
+    const url = new URL(window.location.href);
+    const before = url.search;
+    mutate(url.searchParams);
+    if (url.search !== before) window.history.replaceState(window.history.state, "", url);
+  } catch {}
+}
+
+// ── Errors ──
+function appError(code, extra) {
+  const e = new Error(code);
+  e.code = code;
+  return Object.assign(e, extra);
+}
+
+// Map raw errors to a kind the UI can explain (texts come from translations).
+function classifyError(e, input) {
+  const msg = String(e?.message || e || "");
+  if (e?.code === "PLAYER_NOT_FOUND") return { kind: "notFound", name: input };
+  if (e?.code === "NO_EXACT_MATCH") return { kind: "noExactMatch", name: input };
+  if (e?.code === "NO_FACTORIES") return { kind: "noFactories", name: e.username || input };
+  const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+  if (offline || (e instanceof TypeError && /fetch|network|load failed/i.test(msg))) return { kind: "network" };
+  if (/UNAUTHORIZED|FORBIDDEN|token required|api.?key|\b40[13]\b/i.test(msg)) return { kind: "auth" };
+  if (/\b429\b|TOO_MANY_REQUESTS|rate.?limit/i.test(msg)) return { kind: "rateLimit" };
+  return { kind: "generic", detail: msg };
+}
+
+// Opaque version of the glass card background (for sticky table cells).
+function blendWhite(hex, a) {
+  const n = parseInt(String(hex).replace("#", ""), 16) || 0;
+  const ch = sh => Math.round(((n >> sh) & 255) * (1 - a) + 255 * a);
+  return `rgb(${ch(16)}, ${ch(8)}, ${ch(0)})`;
+}
+
+// ── Small presentational helpers ──
+function Stats({ items, min = 120 }) {
+  return <dl style={{ display: "grid", gridTemplateColumns: `repeat(auto-fill, minmax(${min}px, 1fr))`, gap: "10px 14px", margin: 0 }}>
+    {items.filter(Boolean).map((it, i) => (
+      <div key={i} style={{ minWidth: 0, gridColumn: it.full ? "1 / -1" : undefined }}>
+        <dt style={{ fontFamily: F.h, fontSize: 12, fontWeight: 700, color: C.textMuted, letterSpacing: "0.08em", textTransform: "uppercase", overflowWrap: "break-word", hyphens: "auto" }}>{it.label}</dt>
+        <dd style={{ margin: "2px 0 0", fontFamily: F.m, fontSize: it.big ? 18 : 15, fontWeight: it.bold ? 700 : 400, color: it.color || C.text, overflowWrap: "anywhere", fontVariantNumeric: "tabular-nums" }}>
+          {it.value}
+          {it.sub && <div style={{ fontSize: 12, fontWeight: 400, color: C.textMuted, marginTop: 2 }}>{it.sub}</div>}
+        </dd>
+      </div>
+    ))}
+  </dl>;
+}
+
+function ProvisionalBadge({ L }) {
+  return <Tip text={L.provisionalTip}>
+    <span tabIndex={0} style={{ display: "inline-flex", cursor: "help", borderRadius: 4 }}>
+      <Bdg color={C.accent}><span aria-hidden="true">⏳ </span>{L.provisional}</Bdg>
+    </span>
+  </Tip>;
+}
+
 // ── Helpers ──
 async function resolveUser(input) {
   try {
@@ -34,14 +117,14 @@ async function resolveUser(input) {
     if (u && u.username) return u;
   } catch {}
   const search = await apiCall("search.searchAnything", { searchText: input });
-  if (!search.userIds?.length) throw new Error("Spieler nicht gefunden");
+  if (!search.userIds?.length) throw appError("PLAYER_NOT_FOUND");
   for (const uid of search.userIds) {
     try {
       const u = await apiCall("user.getUserLite", { userId: uid });
       if (u.username.toLowerCase() === input.toLowerCase()) return u;
     } catch {}
   }
-  throw new Error(`Keine exakte Übereinstimmung für "${input}".`);
+  throw appError("NO_EXACT_MATCH");
 }
 
 async function batchParallel(ids, fn, concurrency = 2) {
@@ -106,14 +189,20 @@ let currentBgFetch = 0;
 
 export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   setThemeVars(theme);
-  const T = THEMES[theme];
+  const T = THEMES[theme] || THEMES.grau;
   const L = getLang(lang);
+  const isMobile = useIsMobile();
+  const uid = useId();
 
   const [userInput, setUserInput] = useState(getInitialUserInput);
   const [apiKey, setApiKey] = useState(getInitialApiKey);
   const [loading, setLoading] = useState(false);
-  const [loadingMsg, setLoadingMsg] = useState("");
-  const [error, setError] = useState("");
+  const [phase, setPhase] = useState(null); // { step: 0..5, n?: count } while loading
+  const [rateWait, setRateWait] = useState(0); // seconds left of a rate-limit pause
+  const [error, setError] = useState(null); // { kind, name?, detail? }
+  const [loadedAt, setLoadedAt] = useState(null);
+  const loadingRef = useRef(false);
+  const autoLoadRef = useRef(false);
 
   // Loaded data
   const [userData, setUserData] = useState(null);
@@ -128,8 +217,11 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   const [partyEthics, setPartyEthics] = useState({}); // countryId -> { industrialism, ... }
   const [bgProgress, setBgProgress] = useState(null);
 
-  const [subTab, setSubTab] = useState("overview");
+  const [subTab, setSubTab] = useState(getInitialTab);
   const [expandedCompany, setExpandedCompany] = useState(null);
+  const ovSort = useSort(null); // null = API order
+  const mkSort = useSort(null); // null = efficiency ranking
+  const hasData = companies.length > 0;
 
   useEffect(() => {
     try {
@@ -142,6 +234,36 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       localStorage.setItem("warera_api_key", apiKey.trim());
     } catch {}
   }, [apiKey]);
+
+  // The key is kept in localStorage (above); drop it from the address bar so it does not stay in the history.
+  useEffect(() => {
+    updateUrlParams(p => { p.delete("apikey"); p.delete("apiKey"); });
+  }, []);
+
+  // Deep link: ?user= / ?username= / ?id= loads once (ref guards against StrictMode double effects).
+  useEffect(() => {
+    if (autoLoadRef.current) return;
+    autoLoadRef.current = true;
+    if (URL_USER) loadData();
+  }, []);
+
+  // Persist the active tab as ?tab=
+  useEffect(() => {
+    updateUrlParams(p => {
+      if (p.get("tab") == null && subTab === "overview") return;
+      p.set("tab", subTab);
+    });
+  }, [subTab]);
+
+  // Keep the selected tab visible in the horizontally scrolling tab bar (mobile).
+  useEffect(() => {
+    if (!hasData) return;
+    const el = document.getElementById(`${uid}-tab-${subTab}`);
+    const box = el?.parentElement;
+    if (!el || !box || box.scrollWidth <= box.clientWidth) return;
+    const left = el.offsetLeft, right = left + el.offsetWidth;
+    if (left < box.scrollLeft || right > box.scrollLeft + box.clientWidth) box.scrollLeft = Math.max(0, left - 8);
+  }, [subTab, hasData, isMobile]);
 
   // Accept config (apiKey/user/lang) from a parent page via postMessage when embedded as iframe.
   useEffect(() => {
@@ -168,15 +290,12 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
     let interval;
     const handleRL = (e) => {
       let remaining = Math.ceil(e.detail.delay / 1000);
-      setLoadingMsg(L.rateLimitWait(remaining));
+      setRateWait(remaining);
       clearInterval(interval);
       interval = setInterval(() => {
         remaining -= 1;
-        if (remaining > 0) {
-          setLoadingMsg(L.rateLimitWait(remaining));
-        } else {
-          clearInterval(interval);
-        }
+        setRateWait(Math.max(0, remaining));
+        if (remaining <= 0) clearInterval(interval);
       }, 1000);
     };
     window.addEventListener('warera-rate-limit', handleRL);
@@ -187,12 +306,14 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   }, []);
 
   async function loadData() {
-    if (!userInput.trim()) return;
-    setLoading(true); setError(""); setLoadingMsg(L.loadingSearchPlayer);
+    const input = userInput.trim();
+    if (!input || loadingRef.current) return;
+    loadingRef.current = true;
+    setLoading(true); setError(null); setRateWait(0); setPhase({ step: 0 });
     try {
       // Phase 1: Resolve user + load global data in parallel
       const [user, pricesData, regionsData, countriesData, configData] = await Promise.all([
-        resolveUser(userInput.trim()),
+        resolveUser(input),
         apiCall("itemTrading.getPrices", {}).catch(() => ({})),
         apiCall("region.getRegionsObject", {}).catch(() => ({})),
         apiCall("country.getAllCountries", {}).catch(() => []),
@@ -202,7 +323,6 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       setUserData(user);
       setPrices(pricesData || {});
       setGameConfig(configData);
-      console.log("GAMECONFIG", JSON.stringify(configData));
 
       // Build region lookup (object keyed by _id)
       const regMap = {};
@@ -230,14 +350,18 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
 
 
       // Phase 2: Load companies
-      setLoadingMsg(L.loadingFactories);
+      setPhase({ step: 1 });
       const userId = user._id || user.id || user.userId;
       const companiesResp = await apiCall("company.getCompanies", { userId, perPage: 100 });
       const companyIds = companiesResp?.items || [];
-      if (!companyIds.length) throw new Error("Keine Fabriken gefunden");
+      if (!companyIds.length) {
+        // Do not leave a previous player's factories under this player's name
+        setCompanies([]); setWorkers({});
+        throw appError("NO_FACTORIES", { username: user.username });
+      }
 
       // Phase 3: Load company details + workers in parallel
-      setLoadingMsg(L.loadingFactoriesN(companyIds.length));
+      setPhase({ step: 1, n: companyIds.length });
       const companyDetails = await batchParallel(companyIds, async (cid) => {
         const [comp, wrk] = await Promise.all([
           apiCall("company.getById", { companyId: cid }),
@@ -261,7 +385,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
 
       // Phase 3b: Load worker user profiles to get energy/production skills
       if (allWorkerUserIds.size > 0) {
-        setLoadingMsg(L.loadingWorkerProfiles(allWorkerUserIds.size));
+        setPhase({ step: 2, n: allWorkerUserIds.size });
         const userProfiles = await batchParallel([...allWorkerUserIds], async (uid) => {
           try {
             const u = await apiCall("user.getUserLite", { userId: uid });
@@ -289,7 +413,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       setWorkers(workersMap);
 
       // Phase 3c: Calculate Liquid Assets (Geld + Items + Waffen) based on liquid_assets.py
-      setLoadingMsg(L.loadingLiquid);
+      setPhase({ step: 3 });
       const wealthRanking = await apiCall("ranking.getRanking", { rankingType: "userWealth", limit: 100, skip: 0 }).catch(() => null);
       let totalWealth = 0;
       if (wealthRanking?.items) {
@@ -300,7 +424,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       setUserData(prev => ({ ...prev, liquidAssets, totalWealth, totalCompaniesValue }));
 
       // Phase 4: Load Party Ethics for factories' countries
-      setLoadingMsg(L.loadingPartyEthics);
+      setPhase({ step: 4 });
       const relevantCountryIds = new Set();
       for (const comp of comps) {
         const reg = regMap[comp.region];
@@ -357,7 +481,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       }
 
       // Phase 5: Load owner's country for enemy check
-      setLoadingMsg(L.loadingDiplomacy);
+      setPhase({ step: 5 });
       const ownerCountryId = user.country; // field is "country" on user object
       if (ownerCountryId && cntMap[ownerCountryId]) {
         setOwnerCountry(cntMap[ownerCountryId]);
@@ -369,10 +493,12 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
         } catch { setOwnerCountry(null); }
       }
 
-      setLoadingMsg("");
+      setLoadedAt(new Date());
     } catch (e) {
-      setError(e.message);
+      setError(classifyError(e, input));
     }
+    loadingRef.current = false;
+    setPhase(null);
     setLoading(false);
   }
 
@@ -487,7 +613,6 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
     const ppDay = calcCompanyPPDay(comp);
     const margin = calcNetMarginPerUnit(comp.itemCode);
     const revenue = (ppDay / ppPerUnit) * margin;
-    console.log(`[Revenue] ${comp.itemCode} | ppDay=${ppDay.toFixed(1)} | ppPerUnit=${ppPerUnit} | margin=${margin.toFixed(3)} | revenue=${revenue.toFixed(2)}`);
     return revenue;
   }
 
@@ -799,7 +924,22 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   // ── Render ──
   const TH = getTH();
   const TD = getTD;
-  const hasData = companies.length > 0;
+  const THs = { ...TH, fontSize: 14 }; // headers with sort buttons (keeps the sort arrow >= 11px)
+  const scrollX = { overflowX: "auto", WebkitOverflowScrolling: "touch", maxWidth: "100%" };
+  const nowrap = { whiteSpace: "nowrap" };
+  const subText = { fontSize: 12, color: C.textMuted };
+  const labelSmall = { fontFamily: F.h, fontSize: 12, fontWeight: 700, color: C.textMuted, letterSpacing: "0.08em", textTransform: "uppercase" };
+  const headRow = { display: "flex", alignItems: "center", flexWrap: "wrap", columnGap: 10 };
+  const cardPad = isMobile ? { padding: "14px" } : undefined;
+  const mCard = { background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 12, minWidth: 0 };
+  // Base on the middle stop of the page gradient (what the glass cards mostly sit on), else the page colour.
+  const cardSolid = blendWhite((String(T.bg).match(/#[0-9a-f]{6}(?= 40%)/i) || [])[0] || T.pageBg || "#0f172a", 0.05);
+  // Sticky first column: opaque background (plus the row tint) so scrolled cells do not shine through.
+  const sticky = (tint, z = 1, bar) => ({
+    position: "sticky", left: 0, zIndex: z,
+    background: tint ? `linear-gradient(${tint}, ${tint}), ${cardSolid}` : cardSolid,
+    boxShadow: (bar ? "inset 3px 0 0 " + bar + ", " : "") + "inset -1px 0 0 rgba(255,255,255,0.08)",
+  });
 
   const enemyWarnings = hasData ? getEnemyWarnings() : [];
   const wageWarnings = hasData ? getWageLossWarnings() : [];
@@ -808,6 +948,8 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   const globalOptimization = hasData ? getGlobalOptimization() : [];
   const workerOptimization = hasData ? getWorkerOptimization() : [];
   const totalWarnings = enemyWarnings.length + wageWarnings.length;
+  const anyWorkers = companies.some(c => (workers[c._id] || []).length > 0);
+  const provisional = !!bgProgress; // remaining party ethics still loading -> bonuses may change
 
   const optimizerProps = hasData ? {
     liquidAssets: userData?.liquidAssets || 0,
@@ -834,286 +976,573 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
     })
   } : null;
 
+  // Overview rows: computed once in API order, then sorted for display.
+  const ovRows = companies.map((comp, idx) => {
+    const ws = workers[comp._id] || [];
+    const bonus = getRegionBonus(comp);
+    const enginePP = calcEnginePPDay(comp);
+    const workerPPTotal = ws.reduce((sum, w) => sum + calcWorkerPPH(w, bonus) * 24, 0);
+    return {
+      comp, ws, bonus, enginePP, workerPPTotal,
+      ppDay: enginePP + workerPPTotal,
+      revenue: calcDailyRevenue(comp),
+      cost: calcDailyCost(comp),
+      profit: calcDailyProfit(comp),
+      name: comp.name || L.factoryFallback(idx),
+      isEnemy: enemyWarnings.some(w => w.company._id === comp._id),
+      hasWageLoss: wageWarnings.some(w => w.company._id === comp._id),
+      hasConfig: !!getPPPerUnit(comp.itemCode),
+    };
+  });
+  const ovSorted = ovSort.apply(ovRows, {
+    name: r => r.name, product: r => itemName(r.comp.itemCode, L), region: r => getRegionName(r.comp),
+    bonus: r => r.bonus, workers: r => r.ws.length, pp: r => r.ppDay,
+    revenue: r => r.revenue, cost: r => r.cost, profit: r => r.profit,
+  });
+  const totals = ovRows.reduce((t, r) => ({
+    pp: t.pp + r.ppDay, engine: t.engine + r.enginePP, workerPP: t.workerPP + r.workerPPTotal,
+    revenue: t.revenue + r.revenue, cost: t.cost + r.cost, profit: t.profit + r.profit, workers: t.workers + r.ws.length,
+  }), { pp: 0, engine: 0, workerPP: 0, revenue: 0, cost: 0, profit: 0, workers: 0 });
+
+  // Market rows keep their efficiency rank, whatever column they are sorted by.
+  const mkRows = mkSort.apply(allProducts.map((p, i) => ({ ...p, rank: i + 1 })), {
+    name: p => itemName(p.itemCode, L), type: p => p.type, price: p => p.price, material: p => p.materialCost,
+    margin: p => p.netMargin, pp: p => p.pp, base: p => p.goldPerPP, max: p => p.maxGoldPerPP,
+    factories: p => p.userCompanyCount || null, profit: p => p.userCompanyCount > 0 ? p.userTotalProfit : null,
+  });
+
+  // Loading progress
+  const loadSteps = [L.loadStepPlayer, L.loadStepFactories, L.loadStepWorkers, L.loadStepWealth, L.loadStepEthics, L.loadStepDiplomacy];
+  const phaseText = phase ? [
+    L.loadingSearchPlayer,
+    phase.n ? L.loadingFactoriesN(phase.n) : L.loadingFactories,
+    L.loadingWorkerProfiles(phase.n || 0),
+    L.loadingLiquid,
+    L.loadingPartyEthics,
+    L.loadingDiplomacy,
+  ][phase.step] : "";
+  const statusText = loading ? (rateWait > 0 ? L.rateLimitWait(rateWait) : phaseText) : "";
+
+  let errorText = "";
+  if (error) {
+    switch (error.kind) {
+      case "network": errorText = L.errNetwork; break;
+      case "notFound": errorText = L.errPlayerNotFound(error.name); break;
+      case "noExactMatch": errorText = L.errNoExactMatch(error.name); break;
+      case "noFactories": errorText = L.errNoFactories(error.name); break;
+      case "auth": errorText = L.errAuth; break;
+      case "rateLimit": errorText = L.errRateLimit; break;
+      default: errorText = L.errGeneric;
+    }
+  }
+
+  // Tabs
+  const TABS = [
+    { key: "overview", label: L.tabOverview, icon: "🏭" },
+    { key: "optimize", label: L.tabOptimize, icon: "💡" },
+    { key: "market", label: L.tabMarket, icon: "💰" },
+    { key: "build", label: L.tabOptimizerBuild, icon: "🏨" },
+  ];
+  const tabId = k => `${uid}-tab-${k}`;
+  const panelId = `${uid}-panel`;
+  function onTabKeyDown(e, i) {
+    const last = TABS.length - 1;
+    const next = e.key === "ArrowRight" ? (i === last ? 0 : i + 1)
+      : e.key === "ArrowLeft" ? (i === 0 ? last : i - 1)
+      : e.key === "Home" ? 0 : e.key === "End" ? last : -1;
+    if (next < 0) return;
+    e.preventDefault();
+    setSubTab(TABS[next].key);
+    document.getElementById(tabId(TABS[next].key))?.focus();
+  }
+
+  const inputStyle = { background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 8, color: C.text, padding: "10px 14px", fontSize: isMobile ? 16 : 15, fontFamily: F.m, outline: "none", width: "100%", minWidth: 0, boxSizing: "border-box" };
+  const fieldLabel = { display: "flex", alignItems: "center", gap: 8, marginBottom: 8, fontFamily: F.h, fontSize: 16, fontWeight: 700, color: C.textDim, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer" };
+  const toggleBtn = { all: "unset", cursor: "pointer", display: "inline-flex", alignItems: "baseline", gap: 6, borderRadius: 3 };
+
+  const statusBadges = r => <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+    {r.isEnemy && <Bdg color={C.red}>{L.badgeEnemy}</Bdg>}
+    {r.hasWageLoss && <Bdg color="#ff9900">{L.badgeWageLoss}</Bdg>}
+    {!r.hasConfig && <Bdg color={C.red}>{L.badgeConfigMissing}</Bdg>}
+    {!r.isEnemy && !r.hasWageLoss && r.hasConfig && <Bdg color={C.green}>{L.badgeOk}</Bdg>}
+  </div>;
+
+  // Engine / worker PP breakdown; each part stays on one line, wrapping only at the separator
+  const ppSplit = (engine, workerPP) => <>
+    <span style={{ color: C.blue, whiteSpace: "nowrap" }}>{L.ppEngine(fmt(engine, 1))}</span>
+    <span style={{ color: C.textMuted }}> · </span>
+    <span style={{ color: C.purple, whiteSpace: "nowrap" }}>{L.ppWorkers(fmt(workerPP, 1))}</span>
+  </>;
+
+  // Current -> recommended block for the phone cards
+  const fromTo = (a, b) => <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto minmax(0, 1fr)", gap: 8, alignItems: "center", margin: "10px 0 12px" }}>
+    <div style={{ minWidth: 0 }}>
+      <div style={labelSmall}>{a.label}</div>
+      <div style={{ color: C.text, overflowWrap: "anywhere" }}>{a.main}</div>
+      {a.sub && <div style={subText}>{a.sub}</div>}
+    </div>
+    <span aria-hidden="true" style={{ color: C.accent, fontSize: 18 }}>→</span>
+    <div style={{ minWidth: 0 }}>
+      <div style={labelSmall}>{b.label}</div>
+      <div style={{ color: C.green, fontWeight: 700, overflowWrap: "anywhere" }}>{b.main}</div>
+      {b.sub && <div style={{ fontSize: 12, color: C.green }}>{b.sub}</div>}
+    </div>
+  </div>;
+
+  function renderWorkerDetails(r) {
+    const { comp, ws, bonus, enginePP, workerPPTotal, ppDay, cost } = r;
+    const th = { ...TH, fontSize: 12, padding: "8px 10px", whiteSpace: "nowrap" };
+    const td = extra => ({ ...TD(false), fontSize: 13, padding: "6px 10px", ...extra });
+    const sumLabel = extra => td({ fontSize: 12, fontWeight: 700, color: C.textDim, textAlign: "right", ...extra });
+    return <>
+      <div style={{ fontFamily: F.h, fontSize: 13, fontWeight: 700, color: C.accent, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8 }}>
+        {L.workerDetailsTitle(fmt(bonus, 2))}
+      </div>
+      <div style={scrollX}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr>
+            <th style={th}>{L.colName}</th>
+            <th style={th}>{L.colEnergy}</th>
+            <th style={th}>{L.colProduction}</th>
+            <th style={th}>{L.colFidelity}</th>
+            <th style={th}>{L.colWage}</th>
+            <th style={th}>{L.colFormula}</th>
+            <th style={th}>{L.colPPH}</th>
+            <th style={th}>{L.colPPDay}</th>
+            <th style={th}>{L.colCostDay}</th>
+          </tr></thead>
+          <tbody>
+            {ws.map((w, wi) => {
+              const wPPH = calcWorkerPPH(w, bonus);
+              const wPPDay = wPPH * 24;
+              const wBasePPH = calcWorkerBasePPH(w);
+              const wCostDay = calcWorkerCostPerH(w) * 24;
+              const fidelity = w.fidelity || 0;
+              return (
+                <tr key={wi} style={{ background: wi % 2 ? "rgba(255,255,255,0.02)" : "transparent" }}>
+                  <td style={td()}>{w.username || L.workerFallback(wi)}</td>
+                  <td style={td(nowrap)}>
+                    <span style={{ color: C.accent }}>{w.energy}</span>
+                    <span style={{ color: C.textMuted, fontSize: 12 }}> {L.energyCurrent(fmt(w.energyCurrent || 0, 1))}</span>
+                  </td>
+                  <td style={td({ color: C.blue })}>{w.productivity}</td>
+                  <td style={td({ color: fidelity > 0 ? C.green : C.textMuted })}>
+                    {fidelity > 0 ? "+" + fmt(fidelity, 0) + "%" : "-"}
+                  </td>
+                  <td style={td(nowrap)}>
+                    {fmt(w.wage || 0, 3)} G
+                    <div style={{ fontSize: 12, color: C.textMuted }}>{L.basePPH(fmt(wBasePPH, 2))}</div>
+                  </td>
+                  <td style={td({ fontSize: 12, color: C.textMuted, fontFamily: F.m, whiteSpace: "nowrap" })}>
+                    {w.energy}/100*{w.productivity}*(1+{fmt(bonus,1)}%)*(1+{fmt(fidelity,0)}%)
+                  </td>
+                  <td style={td({ color: C.purple, fontWeight: 700 })}>{fmt(wPPH, 2)}</td>
+                  <td style={td({ color: C.purple })}>{fmt(wPPDay, 1)}</td>
+                  <td style={td({ color: wCostDay > 0 ? C.red : C.textMuted, whiteSpace: "nowrap" })}>
+                    {wCostDay > 0 ? fmt(wCostDay, 2) + " G" : "-"}
+                  </td>
+                </tr>
+              );
+            })}
+            <tr style={{ borderTop: "1px solid rgba(255,255,255,0.1)" }}>
+              <td colSpan={6} style={sumLabel()}>{L.sumWorkers}</td>
+              <td style={td({ color: C.purple, fontWeight: 700 })}>{fmt(ws.reduce((s, w) => s + calcWorkerPPH(w, bonus), 0), 2)}</td>
+              <td style={td({ color: C.purple, fontWeight: 700 })}>{fmt(workerPPTotal, 1)}</td>
+              <td style={td({ color: C.red, fontWeight: 700, whiteSpace: "nowrap" })}>{fmt(cost, 2)} G</td>
+            </tr>
+            <tr>
+              <td colSpan={6} style={sumLabel()}>{L.engineRow(comp.activeUpgradeLevels?.automatedEngine || 1)}</td>
+              <td style={td({ color: C.blue, fontWeight: 700 })}>{fmt(enginePP / 24, 2)}</td>
+              <td style={td({ color: C.blue, fontWeight: 700 })}>{fmt(enginePP, 1)}</td>
+              <td style={td({ color: C.textMuted })}>-</td>
+            </tr>
+            <tr style={{ borderTop: "1px solid " + C.accent + "44" }}>
+              <td colSpan={6} style={sumLabel({ fontSize: 13, color: C.accent })}>{L.totalRow}</td>
+              <td style={td({ fontSize: 14, color: C.accent, fontWeight: 700 })}>{fmt(ppDay / 24, 2)}</td>
+              <td style={td({ fontSize: 14, color: C.accent, fontWeight: 700 })}>{fmt(ppDay, 1)}</td>
+              <td style={td({ color: C.red, fontWeight: 700, whiteSpace: "nowrap" })}>{fmt(cost, 2)} G</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </>;
+  }
+
+  // Phone variant of the worker details: one block per worker plus a small totals table.
+  function renderWorkerDetailsCompact(r) {
+    const { comp, ws, bonus, enginePP, workerPPTotal, ppDay, cost } = r;
+    const th = { ...TH, fontSize: 12, letterSpacing: "0.04em", padding: "6px 5px", textAlign: "right", verticalAlign: "bottom" };
+    const td = extra => ({ ...TD(false), fontSize: 12, padding: "6px 5px", whiteSpace: "nowrap", textAlign: "right", ...extra });
+    const rowLabel = extra => td({ fontWeight: 700, color: C.textDim, textAlign: "left", whiteSpace: "normal", ...extra });
+    return <>
+      <div style={{ fontFamily: F.h, fontSize: 13, fontWeight: 700, color: C.accent, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 10 }}>
+        {L.workerDetailsTitle(fmt(bonus, 2))}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {ws.map((w, wi) => {
+          const wPPH = calcWorkerPPH(w, bonus);
+          const wCostDay = calcWorkerCostPerH(w) * 24;
+          const fidelity = w.fidelity || 0;
+          return <div key={wi} style={{ paddingBottom: 10, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+            <div style={{ fontWeight: 700, color: C.text, marginBottom: 8, overflowWrap: "anywhere" }}>{w.username || L.workerFallback(wi)}</div>
+            <Stats min={120} items={[
+              { label: L.colEnergy, value: w.energy, color: C.accent, sub: L.energyCurrent(fmt(w.energyCurrent || 0, 1)) },
+              { label: L.colProduction, value: w.productivity, color: C.blue },
+              { label: L.colFidelity, value: fidelity > 0 ? "+" + fmt(fidelity, 0) + "%" : "-", color: fidelity > 0 ? C.green : C.textMuted },
+              { label: L.colWage, value: fmt(w.wage || 0, 3) + " G", sub: L.basePPH(fmt(calcWorkerBasePPH(w), 2)) },
+              { label: L.colPPH, value: fmt(wPPH, 2), color: C.purple, bold: true },
+              { label: L.colPPDay, value: fmt(wPPH * 24, 1), color: C.purple },
+              { label: L.colCostDay, value: wCostDay > 0 ? fmt(wCostDay, 2) + " G" : "-", color: wCostDay > 0 ? C.red : C.textMuted },
+              { label: L.colFormula, full: true, value: <span style={{ fontSize: 12, color: C.textMuted, overflowWrap: "anywhere" }}>{w.energy}/100*{w.productivity}*(1+{fmt(bonus,1)}%)*(1+{fmt(fidelity,0)}%)</span> },
+            ]} />
+          </div>;
+        })}
+      </div>
+      <div style={{ ...scrollX, marginTop: 6 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr>
+            <th style={{ ...th, textAlign: "left" }}><span className="sr-only">{L.colName}</span></th>
+            <th style={th}>{L.colPPH}</th>
+            <th style={th}>{L.colPPDay}</th>
+            <th style={th}>{L.colCostDay}</th>
+          </tr></thead>
+          <tbody>
+            <tr>
+              <td style={rowLabel()}>{L.sumWorkers}</td>
+              <td style={td({ color: C.purple, fontWeight: 700 })}>{fmt(ws.reduce((s, w) => s + calcWorkerPPH(w, bonus), 0), 2)}</td>
+              <td style={td({ color: C.purple, fontWeight: 700 })}>{fmt(workerPPTotal, 1)}</td>
+              <td style={td({ color: C.red, fontWeight: 700 })}>{fmt(cost, 2)} G</td>
+            </tr>
+            <tr>
+              <td style={rowLabel()}>{L.engineRow(comp.activeUpgradeLevels?.automatedEngine || 1)}</td>
+              <td style={td({ color: C.blue, fontWeight: 700 })}>{fmt(enginePP / 24, 2)}</td>
+              <td style={td({ color: C.blue, fontWeight: 700 })}>{fmt(enginePP, 1)}</td>
+              <td style={td({ color: C.textMuted })}>-</td>
+            </tr>
+            <tr style={{ borderTop: "1px solid " + C.accent + "44" }}>
+              <td style={rowLabel({ color: C.accent, fontSize: 13 })}>{L.totalRow}</td>
+              <td style={td({ color: C.accent, fontWeight: 700 })}>{fmt(ppDay / 24, 2)}</td>
+              <td style={td({ color: C.accent, fontWeight: 700 })}>{fmt(ppDay, 1)}</td>
+              <td style={td({ color: C.red, fontWeight: 700 })}>{fmt(cost, 2)} G</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </>;
+  }
+
+  // ── Overview: table (desktop) ──
+  function renderOverviewTable() {
+    const thO = { ...THs, padding: "10px 10px" };
+    const tdO = extra => ({ ...TD(false), padding: "8px 10px", ...extra });
+    return <div style={scrollX}>
+      <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+        <thead><tr>
+          <SortTh label={L.colName} k="name" sort={ovSort} style={{ ...thO, ...sticky(null, 2) }} />
+          <SortTh label={L.colProduct} k="product" sort={ovSort} style={thO} />
+          <th style={thO}>{L.colLevel}</th>
+          <SortTh label={L.colRegion} k="region" sort={ovSort} style={thO} />
+          <SortTh label={L.colBonus} k="bonus" sort={ovSort} style={thO} />
+          <SortTh label={L.colWorkers} k="workers" sort={ovSort} style={thO} />
+          <SortTh label={L.colTotalPP} k="pp" sort={ovSort} style={thO} />
+          <SortTh label={L.colRevenue} k="revenue" sort={ovSort} style={thO} />
+          <SortTh label={L.colCost} k="cost" sort={ovSort} style={thO} />
+          <SortTh label={L.colProfit} k="profit" sort={ovSort} style={thO} />
+          <th style={thO}>{L.colStatus}</th>
+        </tr></thead>
+        <tbody>
+          {ovSorted.map((r, i) => {
+            const id = r.comp._id;
+            const hasW = r.ws.length > 0;
+            const open = hasW && expandedCompany === id;
+            const detailsId = `${uid}-w-${id}`;
+            const tint = open ? C.accent + "12" : i % 2 ? C.rowAlt : null;
+            const toggle = () => setExpandedCompany(open ? null : id);
+            return <Fragment key={id}>
+              <tr onClick={hasW ? toggle : undefined} style={{ background: tint || "transparent", cursor: hasW ? "pointer" : "default" }}>
+                <td style={tdO(sticky(tint, 1, open ? C.accent : null))}>
+                  {hasW
+                    ? <button type="button" aria-expanded={open} aria-controls={detailsId} onClick={e => { e.stopPropagation(); toggle(); }} style={toggleBtn}>
+                        <span aria-hidden="true" style={{ fontSize: 11, color: C.accent, width: 12, flexShrink: 0 }}>{open ? "▼" : "▶"}</span>
+                        <span>{r.name}</span>
+                      </button>
+                    : <span style={{ display: "inline-block", paddingLeft: 18 }}>{r.name}</span>}
+                </td>
+                <td style={tdO()}>{itemName(r.comp.itemCode, L)}</td>
+                <td style={tdO(nowrap)}>
+                  <div style={{ color: C.accent }}>{L.levelEngine(r.comp.activeUpgradeLevels?.automatedEngine || 1)}</div>
+                  <div style={subText}>{L.levelStorage(r.comp.activeUpgradeLevels?.storage || 1)}</div>
+                </td>
+                <td style={tdO()}>
+                  <div style={{ fontSize: 13 }}>{getRegionName(r.comp)}</div>
+                  <div style={subText}>{getCountryName(r.comp.region)}</div>
+                </td>
+                <td style={tdO({ color: r.bonus > 0 ? C.green : C.textMuted, whiteSpace: "nowrap" })}>
+                  {r.bonus > 0 ? "+" + fmt(r.bonus, 2) + "%" : "-"}
+                </td>
+                <td style={tdO()}>{r.ws.length}</td>
+                <td style={tdO()}>
+                  <div style={{ fontWeight: 700, whiteSpace: "nowrap" }}>{fmt(r.ppDay, 1)}</div>
+                  {r.workerPPTotal > 0 && <div style={{ fontSize: 12, marginTop: 2 }}>{ppSplit(r.enginePP, r.workerPPTotal)}</div>}
+                </td>
+                <td style={tdO({ color: C.accent, whiteSpace: "nowrap" })}>{fmt(r.revenue, 2)} G</td>
+                <td style={tdO({ color: r.cost > 0 ? C.red : C.textMuted, whiteSpace: "nowrap" })}>
+                  {r.cost > 0 ? fmt(r.cost, 2) + " G" : "-"}
+                </td>
+                <td style={tdO({ color: r.profit >= 0 ? C.green : C.red, fontWeight: 700, whiteSpace: "nowrap" })}>
+                  {fmt(r.profit, 2)} G
+                </td>
+                <td style={tdO()}>{statusBadges(r)}</td>
+              </tr>
+              {hasW && (
+                <tr id={detailsId} hidden={!open}>
+                  <td colSpan={11} style={{ padding: 0, background: "rgba(0,0,0,0.2)" }}>
+                    {/* inline-size containment: the wide worker table scrolls here instead of widening the main table */}
+                    <div style={{ padding: "12px 20px 12px 36px", contain: "inline-size" }}>{renderWorkerDetails(r)}</div>
+                  </td>
+                </tr>
+              )}
+            </Fragment>;
+          })}
+        </tbody>
+      </table>
+    </div>;
+  }
+
+  // ── Overview: cards (phone) ──
+  function renderOverviewCards() {
+    return <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "0 12px 12px" }}>
+      {ovSorted.map(r => {
+        const id = r.comp._id;
+        const hasW = r.ws.length > 0;
+        const open = hasW && expandedCompany === id;
+        const detailsId = `${uid}-w-${id}`;
+        return <div key={id} style={{ ...mCard, borderColor: open ? C.accent + "66" : "rgba(255,255,255,0.08)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            <div style={{ minWidth: 0, flex: "1 1 150px" }}>
+              <div style={{ fontWeight: 700, fontSize: 16, color: C.text, overflowWrap: "anywhere" }}>{r.name}</div>
+              <div style={{ fontSize: 13, color: C.textDim, marginTop: 2 }}>{itemName(r.comp.itemCode, L)}</div>
+              <div style={subText}>{getRegionName(r.comp)} · {getCountryName(r.comp.region)}</div>
+            </div>
+            {statusBadges(r)}
+          </div>
+          <Stats min={120} items={[
+            { label: L.colBonus, value: r.bonus > 0 ? "+" + fmt(r.bonus, 2) + "%" : "-", color: r.bonus > 0 ? C.green : C.textMuted },
+            { label: L.colLevel, value: L.levelEngine(r.comp.activeUpgradeLevels?.automatedEngine || 1), sub: L.levelStorage(r.comp.activeUpgradeLevels?.storage || 1), color: C.accent },
+            { label: L.colWorkers, value: r.ws.length },
+            { label: L.colTotalPP, value: fmt(r.ppDay, 1), bold: true, sub: r.workerPPTotal > 0 ? ppSplit(r.enginePP, r.workerPPTotal) : null },
+            { label: L.colRevenue, value: fmt(r.revenue, 2) + " G", color: C.accent },
+            { label: L.colCost, value: r.cost > 0 ? fmt(r.cost, 2) + " G" : "-", color: r.cost > 0 ? C.red : C.textMuted },
+            { label: L.colProfit, value: fmt(r.profit, 2) + " G", color: r.profit >= 0 ? C.green : C.red, bold: true, big: true, full: true },
+          ]} />
+          {hasW && <>
+            <button type="button" aria-expanded={open} aria-controls={detailsId} onClick={() => setExpandedCompany(open ? null : id)} style={{
+              display: "flex", alignItems: "center", gap: 8, width: "100%", marginTop: 12, minHeight: 44, padding: "8px 12px", borderRadius: 8,
+              border: "1px solid " + C.accent + "44", background: open ? C.accent + "18" : "rgba(255,255,255,0.03)", color: C.accent,
+              fontFamily: F.h, fontSize: 14, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", textAlign: "left", cursor: "pointer",
+            }}>
+              <span aria-hidden="true" style={{ fontSize: 11 }}>{open ? "▼" : "▶"}</span>
+              {L.workerDetailsToggle(r.ws.length)}
+            </button>
+            <div id={detailsId} hidden={!open} style={{ marginTop: 10, padding: 10, borderRadius: 8, background: "rgba(0,0,0,0.2)" }}>
+              {renderWorkerDetailsCompact(r)}
+            </div>
+          </>}
+        </div>;
+      })}
+    </div>;
+  }
+
   return (
     <div>
       {/* User Input */}
-      <GlassCard style={{ padding: "20px 24px" }}>
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-          <div style={{ width: "100%", maxWidth: "600px" }}>
-            <div style={{ display: "flex", gap: 16, marginBottom: 12 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
-                  <Sec icon="&#128100;">{L.sectionPlayer}</Sec>
-                </div>
-                <Tip text={L.tipPlayerInput}>
-                  <input
-                    value={userInput} onChange={e => setUserInput(e.target.value)}
-                    onKeyDown={e => e.key === "Enter" && loadData()}
-                    placeholder={L.placeholderPlayer}
-                    style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 8, color: C.text, padding: "10px 14px", fontSize: 14, fontFamily: F.m, outline: "none", width: "100%", boxSizing: "border-box" }}
-                  />
-                </Tip>
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
-                  <Sec icon="&#128273;">{L.sectionApiKey}</Sec>
-                </div>
-                <Tip text={L.tipApiKey}>
-                  <input
-                    type="password"
-                    value={apiKey} onChange={e => setApiKey(e.target.value)}
-                    placeholder="wae_..."
-                    style={{ background: C.inputBg, border: "1px solid " + C.inputBorder, borderRadius: 8, color: C.text, padding: "10px 14px", fontSize: 14, fontFamily: F.m, outline: "none", width: "100%", boxSizing: "border-box" }}
-                  />
-                </Tip>
-                {!apiKey && <div style={{ fontSize: 11, color: C.accent, marginTop: 6, textAlign: "center" }}>{L.apiKeyRequiredForWorkers}</div>}
-              </div>
+      <GlassCard style={{ padding: isMobile ? "16px" : "20px 24px" }}>
+        <div style={{ width: "100%", maxWidth: 640, margin: "0 auto" }}>
+          <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", gap: isMobile ? 14 : 16, marginBottom: 16 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <label htmlFor={`${uid}-player`} style={fieldLabel}>
+                <span aria-hidden="true" style={{ fontSize: 18 }}>👤</span>{L.sectionPlayer}
+              </label>
+              <Tip text={L.tipPlayerInput} block>
+                <input
+                  id={`${uid}-player`}
+                  value={userInput} onChange={e => setUserInput(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && loadData()}
+                  placeholder={L.placeholderPlayer} autoComplete="off" spellCheck={false}
+                  style={inputStyle}
+                />
+              </Tip>
             </div>
-            <div style={{ display: "flex", justifyContent: "center" }}>
-              <Btn on big color={C.accent} onClick={loadData} disabled={loading || !userInput.trim()}>
-                {loading ? loadingMsg || L.loadingGeneric : L.btnLoadData}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <label htmlFor={`${uid}-apikey`} style={fieldLabel}>
+                <span aria-hidden="true" style={{ fontSize: 18 }}>🔑</span>{L.sectionApiKey}
+              </label>
+              <Tip text={L.tipApiKey} block>
+                <input
+                  id={`${uid}-apikey`}
+                  type="password"
+                  value={apiKey} onChange={e => setApiKey(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && loadData()}
+                  placeholder="wae_..." autoComplete="off" spellCheck={false}
+                  style={inputStyle}
+                />
+              </Tip>
+              {!apiKey && (
+                <div style={{ display: "flex", gap: 6, alignItems: "baseline", fontSize: 12, color: C.textDim, marginTop: 6, lineHeight: 1.4 }}>
+                  <span aria-hidden="true" style={{ color: C.textMuted }}>ⓘ</span>
+                  <span>{L.apiKeyRequiredForWorkers}</span>
+                </div>
+              )}
+            </div>
+          </div>
+          <div style={{ display: "flex", justifyContent: "center" }}>
+            <Btn on big color={C.accent} onClick={loadData}
+              disabled={!loading && !userInput.trim()}
+              aria-disabled={loading || undefined} aria-busy={loading || undefined}
+              style={loading ? { cursor: "progress" } : undefined}>
+              {loading ? <><span className="dash-spinner" aria-hidden="true" />{L.loadingGeneric}</> : L.btnLoadData}
+            </Btn>
+          </div>
+          {loading && phase && (
+            <ol aria-label={L.loadProgressLabel} style={{ listStyle: "none", margin: "14px 0 0", padding: 0, display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 6 }}>
+              {loadSteps.map((s, i) => {
+                const done = i < phase.step, cur = i === phase.step;
+                return <li key={i} aria-current={cur ? "step" : undefined} style={{
+                  padding: "3px 10px", borderRadius: 999, fontSize: 12, fontFamily: F.m, whiteSpace: "nowrap",
+                  border: "1px solid " + (cur ? C.accent + "88" : done ? C.green + "44" : "rgba(255,255,255,0.08)"),
+                  background: cur ? C.accent + "18" : "transparent",
+                  color: cur ? C.accent : done ? C.green : C.textMuted, fontWeight: cur ? 700 : 400,
+                }}>
+                  {done && <span aria-hidden="true">✓ </span>}
+                  {s}
+                  {done && <span className="sr-only"> ({L.loadStepDone})</span>}
+                </li>;
+              })}
+            </ol>
+          )}
+          <div role="status" aria-live="polite" style={{ textAlign: "center", fontSize: 12, fontFamily: F.m, color: loading && rateWait > 0 ? "#f97316" : C.textDim, marginTop: statusText ? 8 : 0 }}>
+            {statusText}
+          </div>
+          {error && (
+            <div role="alert" style={{ marginTop: 14, padding: "12px 14px", borderRadius: 8, border: "1px solid " + C.red + "55", background: C.red + "14", display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px 14px" }}>
+              <div style={{ flex: "1 1 240px", minWidth: 0, display: "flex", gap: 10, alignItems: "flex-start" }}>
+                <span aria-hidden="true" style={{ fontSize: 18, lineHeight: 1.2, color: C.red }}>⚠</span>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ color: C.red, fontSize: 14, lineHeight: 1.45 }}>{errorText}</div>
+                  {error.detail && <div style={{ color: C.textMuted, fontSize: 12, marginTop: 4, overflowWrap: "anywhere" }}>{L.errTechDetail(error.detail)}</div>}
+                </div>
+              </div>
+              <Btn on color={C.red} onClick={loadData} disabled={loading || !userInput.trim()}>
+                <span aria-hidden="true">↻ </span>{L.btnRetry}
               </Btn>
             </div>
-          </div>
+          )}
+          {userData && !loading && !error && (
+            <div style={{ marginTop: 12, fontSize: 12, fontFamily: F.m, color: C.green, textAlign: "center" }}>
+              {L.successLoaded(userData.username, companies.length)}
+              {ownerCountry && <span>{L.successCountry(ownerCountry.name)}</span>}
+              {loadedAt && <span style={{ color: C.textDim }}> · {L.pricesAsOf(fmtClock(loadedAt))}</span>}
+            </div>
+          )}
         </div>
-        {error && <div style={{ marginTop: 12, fontSize: 12, fontFamily: F.m, color: C.red, textAlign: "center" }}>{error}</div>}
-        {userData && !loading && (
-          <div style={{ marginTop: 12, fontSize: 12, fontFamily: F.m, color: C.green, textAlign: "center" }}>
-            {L.successLoaded(userData.username, companies.length)}
-            {ownerCountry && <span>{L.successCountry(ownerCountry.name)}</span>}
-          </div>
-        )}
       </GlassCard>
 
       {/* Warnings Banner */}
       {totalWarnings > 0 && (
-        <GlassCard glow="rgba(248,113,113,0.3)" style={{ borderColor: C.red + "44" }}>
+        <GlassCard glow="rgba(248,113,113,0.3)" style={{ borderColor: C.red + "44", ...cardPad }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <span style={{ fontSize: 24 }}>&#9888;</span>
+            <span aria-hidden="true" style={{ fontSize: 24, color: C.red }}>⚠</span>
             <div>
               <div style={{ fontFamily: F.h, fontSize: 15, fontWeight: 700, color: C.red, letterSpacing: "0.08em", textTransform: "uppercase" }}>
                 {L.warningsTitle(totalWarnings)}
               </div>
               <div style={{ fontSize: 12, color: C.textDim }}>
-                {enemyWarnings.length > 0 && <span>{L.warningEnemy(enemyWarnings.length)} &middot; </span>}
-                {wageWarnings.length > 0 && <span>{L.warningWage(wageWarnings.length)}</span>}
+                {[
+                  enemyWarnings.length > 0 && L.warningEnemy(enemyWarnings.length),
+                  wageWarnings.length > 0 && L.warningWage(wageWarnings.length),
+                ].filter(Boolean).join(" · ")}
               </div>
             </div>
           </div>
         </GlassCard>
       )}
 
-      {!hasData && !loading && (
+      {!hasData && !loading && !error && (
         <GlassCard>
-          <div style={{ textAlign: "center", color: C.textMuted, padding: "40px 0" }}>
-            {L.emptyState}
+          <div style={{ textAlign: "center", color: C.textDim, padding: isMobile ? "24px 0" : "40px 0" }}>
+            {userInput.trim() ? L.emptyStateReady : L.emptyState}
           </div>
         </GlassCard>
       )}
 
       {hasData && (
         <>
-          {/* Sub-Tab Navigation */}
-          <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
-            {[
-              { key: "overview", label: L.tabOverview, icon: "&#127981;" },
-              { key: "optimize", label: L.tabOptimize, icon: "&#128161;" },
-              { key: "market", label: L.tabMarket, icon: "&#128176;" },
-              { key: "optimizer_build", label: L.tabOptimizerBuild, icon: "&#127976;" },
-            ].map(t => (
-              <Btn key={t.key} on={subTab === t.key} onClick={() => setSubTab(t.key)} color={C.accent}>
-                <span dangerouslySetInnerHTML={{ __html: t.icon }} /> {t.label}
-              </Btn>
-            ))}
-            {bgProgress && (
-              <div style={{ flex: 1, minWidth: 280, display: "flex", flexDirection: "column", gap: 4, justifyContent: "center", ...glass(0.05, 8), padding: "8px 14px", borderRadius: 12 }}>
-                <style>{`@keyframes slowOrangeBlink { 0% { opacity: 1; background: #f97316; } 50% { opacity: 0.4; background: #f97316; } 100% { opacity: 1; background: #f97316; } }`}</style>
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700, whiteSpace: "nowrap" }}>
-                    {L.bgDataLabel}
+          {/* Sub-Tab Navigation (+ background progress) */}
+          <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", flexWrap: isMobile ? "nowrap" : "wrap", alignItems: isMobile ? "stretch" : "center", gap: 8, marginBottom: 14 }}>
+            <div role="tablist" aria-label={L.tabsLabel} className={isMobile ? "hscroll" : undefined}
+              style={isMobile ? { gap: 8, padding: 4, margin: -4, position: "relative" } : { display: "flex", flexWrap: "wrap", gap: 8, position: "relative" }}>
+              {TABS.map((t, i) => {
+                const sel = subTab === t.key;
+                return (
+                  <Btn key={t.key} id={tabId(t.key)} role="tab" aria-selected={sel} aria-controls={panelId} tabIndex={sel ? 0 : -1}
+                    on={sel} color={C.accent} onClick={() => setSubTab(t.key)} onKeyDown={e => onTabKeyDown(e, i)} style={{ flexShrink: 0 }}>
+                    <span aria-hidden="true">{t.icon}</span> {t.label}
+                  </Btn>
+                );
+              })}
+            </div>
+            {bgProgress && (() => {
+              const frac = bgProgress.loaded / Math.max(1, bgProgress.total);
+              const waiting = bgProgress.status === "waiting";
+              const col = waiting ? "#f97316" : C.green;
+              return (
+                <div style={{ flex: isMobile ? "none" : "1 1 280px", minWidth: 0, display: "flex", flexDirection: "column", gap: 4, justifyContent: "center", ...glass(0.05, 8), padding: "8px 14px", borderRadius: 12 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div id={`${uid}-bg`} style={{ fontSize: 12, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700, whiteSpace: "nowrap" }}>
+                      {L.bgDataLabel}
+                    </div>
+                    <div role="progressbar" aria-labelledby={`${uid}-bg`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(frac * 100)}
+                      style={{ flex: 1, height: 6, background: "rgba(255,255,255,0.1)", borderRadius: 3, overflow: "hidden" }}>
+                      <div style={{ width: `${frac * 100}%`, height: "100%", background: col, transition: "width 0.3s", animation: waiting ? "dashBlink 2s infinite" : "none" }} />
+                    </div>
+                    <div style={{ fontSize: 12, color: col, fontWeight: 700, minWidth: 32, textAlign: "right" }}>
+                      {Math.round(frac * 100)}%
+                    </div>
                   </div>
-                  <div style={{ flex: 1, height: 6, background: "rgba(255,255,255,0.1)", borderRadius: 3, overflow: "hidden" }}>
-                    <div style={{ width: `${(bgProgress.loaded / Math.max(1, bgProgress.total)) * 100}%`, height: "100%", background: bgProgress.status === "waiting" ? "#f97316" : C.green, transition: "width 0.3s", animation: bgProgress.status === "waiting" ? "slowOrangeBlink 2s infinite" : "none" }} />
-                  </div>
-                  <div style={{ fontSize: 11, color: bgProgress.status === "waiting" ? "#f97316" : C.green, fontWeight: 700, minWidth: 25, textAlign: "right" }}>
-                    {Math.round((bgProgress.loaded / Math.max(1, bgProgress.total)) * 100)}%
+                  <div style={{ fontSize: 12, lineHeight: 1.4, color: waiting ? "#f97316" : C.textMuted }}>
+                    {waiting ? L.bgWaiting : L.bgLoading}
                   </div>
                 </div>
-                <div style={{ fontSize: 10, color: bgProgress.status === "waiting" ? "#f97316" : C.textMuted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {bgProgress.status === "waiting" ? L.bgWaiting : L.bgLoading}
-                </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
+
+          <div role="tabpanel" id={panelId} aria-labelledby={tabId(subTab)} tabIndex={0} style={{ borderRadius: 12 }}>
 
           {/* ── OVERVIEW TAB ── */}
           {subTab === "overview" && (
-            <GlassCard style={{ padding: 0, overflow: "hidden" }}>
-              <div style={{ padding: "16px 20px 8px" }}>
-                <Sec icon="&#127981;">{L.sectionFactoryOverview(companies.length)}</Sec>
-                <div style={{ fontSize: 11, color: C.textMuted, marginTop: -10, marginBottom: 8 }}>{L.tipClickWorkerDetails}</div>
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 14 }}>
+                <Kpi label={L.colProfit} value={fmt(totals.profit, 2) + " G"} color={totals.profit >= 0 ? C.green : C.red} />
+                <Kpi label={L.colRevenue} value={fmt(totals.revenue, 2) + " G"} color={C.accent} />
+                <Kpi label={L.colCost} value={fmt(totals.cost, 2) + " G"} color={totals.cost > 0 ? C.red : C.text} />
+                <Kpi label={L.colTotalPP} value={fmt(totals.pp, 1)} sub={totals.workerPP > 0 ? ppSplit(totals.engine, totals.workerPP) : null} />
+                <Kpi label={L.kpiFactories} value={companies.length} />
+                <Kpi label={L.colWorkers} value={totals.workers} />
               </div>
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1000 }}>
-                  <thead><tr>
-                    <th style={TH}>{L.colName}</th>
-                    <th style={TH}>{L.colProduct}</th>
-                    <th style={TH}>{L.colEngine}</th>
-                    <th style={TH}>{L.colStorage}</th>
-                    <th style={TH}>{L.colRegion}</th>
-                    <th style={TH}>{L.colBonus}</th>
-                    <th style={TH}>{L.colWorkers}</th>
-                    <th style={TH}>{L.colEnginePP}</th>
-                    <th style={TH}>{L.colWorkerPP}</th>
-                    <th style={TH}>{L.colTotalPP}</th>
-                    <th style={TH}>{L.colRevenue}</th>
-                    <th style={TH}>{L.colCost}</th>
-                    <th style={TH}>{L.colProfit}</th>
-                    <th style={TH}>{L.colStatus}</th>
-                  </tr></thead>
-                  <tbody>
-                    {companies.map((comp, i) => {
-                      const compId = comp._id;
-                      const ws = workers[compId] || [];
-                      const bonus = getRegionBonus(comp);
-                      const enginePP = calcEnginePPDay(comp);
-                      const workerPPTotal = ws.reduce((sum, w) => sum + calcWorkerPPH(w, bonus) * 24, 0);
-                      const ppDay = enginePP + workerPPTotal;
-                      const revenue = calcDailyRevenue(comp);
-                      const cost = calcDailyCost(comp);
-                      const profit = calcDailyProfit(comp);
-                      const isEnemy = enemyWarnings.some(w => w.company._id === compId);
-                      const hasWageLoss = wageWarnings.some(w => w.company._id === compId);
-                      const isExpanded = expandedCompany === compId;
-
-                      return [
-                        <tr key={compId} onClick={() => setExpandedCompany(isExpanded ? null : compId)}
-                          style={{ background: i % 2 ? C.rowAlt : "transparent", cursor: ws.length > 0 ? "pointer" : "default",
-                            outline: isExpanded ? "1px solid " + C.accent + "44" : "none" }}>
-                          <td style={TD(false)}>
-                            {ws.length > 0 && <span style={{ marginRight: 6, fontSize: 10, color: C.accent }}>{isExpanded ? "\u25BC" : "\u25B6"}</span>}
-                            {comp.name || L.factoryFallback(i)}
-                          </td>
-                          <td style={TD(false)}>{comp.itemCode}</td>
-                          <td style={TD(true)}>Lv {comp.activeUpgradeLevels?.automatedEngine || 1}</td>
-                          <td style={TD(false)}>Lv {comp.activeUpgradeLevels?.storage || 1}</td>
-                          <td style={TD(false)}>
-                            <div style={{ fontSize: 13 }}>{getRegionName(comp)}</div>
-                            <div style={{ fontSize: 10, color: C.textMuted }}>{getCountryName(comp.region)}</div>
-                          </td>
-                          <td style={{ ...TD(false), color: bonus > 0 ? C.green : C.textMuted }}>
-                            {bonus > 0 ? "+" + fmt(bonus, 2) + "%" : "-"}
-                          </td>
-                          <td style={TD(false)}>{ws.length}</td>
-                          <td style={{ ...TD(false), color: C.blue }}>{fmt(enginePP, 1)}</td>
-                          <td style={{ ...TD(false), color: workerPPTotal > 0 ? C.purple : C.textMuted }}>
-                            {workerPPTotal > 0 ? fmt(workerPPTotal, 1) : "-"}
-                          </td>
-                          <td style={{ ...TD(false), fontWeight: 700 }}>{fmt(ppDay, 1)}</td>
-                          <td style={{ ...TD(false), color: C.accent }}>{fmt(revenue, 2)} G</td>
-                          <td style={{ ...TD(false), color: cost > 0 ? C.red : C.textMuted }}>
-                            {cost > 0 ? fmt(cost, 2) + " G" : "-"}
-                          </td>
-                          <td style={{ ...TD(false), color: profit >= 0 ? C.green : C.red, fontWeight: 700 }}>
-                            {fmt(profit, 2)} G
-                          </td>
-                          <td style={TD(false)}>
-                            {isEnemy && <Bdg color={C.red}>{L.badgeEnemy}</Bdg>}
-                            {hasWageLoss && <Bdg color="#ff9900">{L.badgeWageLoss}</Bdg>}
-                            {!getPPPerUnit(comp.itemCode) && <Bdg color={C.red}>{L.badgeConfigMissing}</Bdg>}
-                            {!isEnemy && !hasWageLoss && getPPPerUnit(comp.itemCode) && <Bdg color={C.green}>{L.badgeOk}</Bdg>}
-                          </td>
-                        </tr>,
-                        // Expanded worker details
-                        isExpanded && ws.length > 0 && (
-                          <tr key={compId + "-workers"}>
-                            <td colSpan={14} style={{ padding: 0, background: "rgba(0,0,0,0.2)" }}>
-                              <div style={{ padding: "12px 20px 12px 36px" }}>
-                                <div style={{ fontFamily: F.h, fontSize: 13, fontWeight: 700, color: C.accent, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8 }}>
-                                  {L.workerDetailsTitle(fmt(bonus, 2))}
-                                </div>
-                                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                                  <thead><tr>
-                                    <th style={{ ...TH, fontSize: 11 }}>{L.colName}</th>
-                                    <th style={{ ...TH, fontSize: 11 }}>{L.colEnergy}</th>
-                                    <th style={{ ...TH, fontSize: 11 }}>{L.colProduction}</th>
-                                    <th style={{ ...TH, fontSize: 11 }}>{L.colFidelity}</th>
-                                    <th style={{ ...TH, fontSize: 11 }}>{L.colWage}</th>
-                                    <th style={{ ...TH, fontSize: 11 }}>{L.colFormula}</th>
-                                    <th style={{ ...TH, fontSize: 11 }}>{L.colPPH}</th>
-                                    <th style={{ ...TH, fontSize: 11 }}>{L.colPPDay}</th>
-                                    <th style={{ ...TH, fontSize: 11 }}>{L.colCostDay}</th>
-                                  </tr></thead>
-                                  <tbody>
-                                    {ws.map((w, wi) => {
-                                      const wPPH = calcWorkerPPH(w, bonus);
-                                      const wPPDay = wPPH * 24;
-                                      const wBasePPH = calcWorkerBasePPH(w);
-                                      const wCostDay = calcWorkerCostPerH(w) * 24;
-                                      const fidelity = w.fidelity || 0;
-                                      return (
-                                        <tr key={wi} style={{ background: wi % 2 ? "rgba(255,255,255,0.02)" : "transparent" }}>
-                                          <td style={{ ...TD(false), fontSize: 13 }}>{w.username || "Arbeiter " + (wi+1)}</td>
-                                          <td style={{ ...TD(false), fontSize: 13 }}>
-                                            <span style={{ color: C.accent }}>{w.energy}</span>
-                                            <span style={{ color: C.textMuted, fontSize: 10 }}> (aktuell: {fmt(w.energyCurrent || 0, 1)})</span>
-                                          </td>
-                                          <td style={{ ...TD(false), fontSize: 13, color: C.blue }}>{w.productivity}</td>
-                                          <td style={{ ...TD(false), fontSize: 13, color: fidelity > 0 ? C.green : C.textMuted }}>
-                                            {fidelity > 0 ? "+" + fmt(fidelity, 0) + "%" : "-"}
-                                          </td>
-                                          <td style={{ ...TD(false), fontSize: 13 }}>
-                                            {fmt(w.wage || 0, 3)} G
-                                            <div style={{ fontSize: 9, color: C.textMuted }}>Basis: {fmt(wBasePPH, 2)} PP/h</div>
-                                          </td>
-                                          <td style={{ ...TD(false), fontSize: 10, color: C.textMuted, fontFamily: F.m, whiteSpace: "nowrap" }}>
-                                            {w.energy}/100*{w.productivity}*(1+{fmt(bonus,1)}%)*(1+{fmt(fidelity,0)}%)
-                                          </td>
-                                          <td style={{ ...TD(false), fontSize: 13, color: C.purple, fontWeight: 700 }}>{fmt(wPPH, 2)}</td>
-                                          <td style={{ ...TD(false), fontSize: 13, color: C.purple }}>{fmt(wPPDay, 1)}</td>
-                                          <td style={{ ...TD(false), fontSize: 13, color: wCostDay > 0 ? C.red : C.textMuted }}>
-                                            {wCostDay > 0 ? fmt(wCostDay, 2) + " G" : "-"}
-                                          </td>
-                                        </tr>
-                                      );
-                                    })}
-                                    <tr style={{ borderTop: "1px solid rgba(255,255,255,0.1)" }}>
-                                      <td colSpan={6} style={{ ...TD(false), fontSize: 12, fontWeight: 700, color: C.textDim, textAlign: "right" }}>{L.sumWorkers}</td>
-                                      <td style={{ ...TD(false), fontSize: 13, color: C.purple, fontWeight: 700 }}>{fmt(ws.reduce((s, w) => s + calcWorkerPPH(w, bonus), 0), 2)}</td>
-                                      <td style={{ ...TD(false), fontSize: 13, color: C.purple, fontWeight: 700 }}>{fmt(workerPPTotal, 1)}</td>
-                                      <td style={{ ...TD(false), fontSize: 13, color: C.red, fontWeight: 700 }}>{fmt(cost, 2)} G</td>
-                                    </tr>
-                                    <tr>
-                                      <td colSpan={6} style={{ ...TD(false), fontSize: 12, fontWeight: 700, color: C.textDim, textAlign: "right" }}>{L.engineRow(comp.activeUpgradeLevels?.automatedEngine || 1)}</td>
-                                      <td style={{ ...TD(false), fontSize: 13, color: C.blue, fontWeight: 700 }}>{fmt(enginePP / 24, 2)}</td>
-                                      <td style={{ ...TD(false), fontSize: 13, color: C.blue, fontWeight: 700 }}>{fmt(enginePP, 1)}</td>
-                                      <td style={{ ...TD(false), fontSize: 13, color: C.textMuted }}>-</td>
-                                    </tr>
-                                    <tr style={{ borderTop: "1px solid " + C.accent + "44" }}>
-                                      <td colSpan={6} style={{ ...TD(false), fontSize: 13, fontWeight: 700, color: C.accent, textAlign: "right" }}>{L.totalRow}</td>
-                                      <td style={{ ...TD(false), fontSize: 14, color: C.accent, fontWeight: 700 }}>{fmt(ppDay / 24, 2)}</td>
-                                      <td style={{ ...TD(false), fontSize: 14, color: C.accent, fontWeight: 700 }}>{fmt(ppDay, 1)}</td>
-                                      <td style={{ ...TD(false), fontSize: 13, color: C.red, fontWeight: 700 }}>{fmt(cost, 2)} G</td>
-                                    </tr>
-                                  </tbody>
-                                </table>
-                              </div>
-                            </td>
-                          </tr>
-                        ),
-                      ];
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              {/* Totals */}
-              <div style={{ padding: "12px 20px", borderTop: "1px solid rgba(255,255,255,0.08)", display: "flex", gap: 24, flexWrap: "wrap" }}>
-                <div><span style={{ color: C.textMuted, fontSize: 12 }}>{L.totalPPDay}</span> <span style={{ color: C.accent, fontWeight: 700, fontFamily: F.h, fontSize: 18 }}>{fmt(companies.reduce((s, c) => s + calcCompanyPPDay(c), 0), 1)}</span></div>
-                <div><span style={{ color: C.textMuted, fontSize: 12 }}>{L.totalRevenue}</span> <span style={{ color: C.accent, fontWeight: 700, fontFamily: F.h, fontSize: 18 }}>{fmt(companies.reduce((s, c) => s + calcDailyRevenue(c), 0), 2)} G</span></div>
-                <div><span style={{ color: C.textMuted, fontSize: 12 }}>{L.totalCost}</span> <span style={{ color: C.red, fontWeight: 700, fontFamily: F.h, fontSize: 18 }}>{fmt(companies.reduce((s, c) => s + calcDailyCost(c), 0), 2)} G</span></div>
-                <div><span style={{ color: C.textMuted, fontSize: 12 }}>{L.totalProfit}</span> <span style={{ color: C.green, fontWeight: 700, fontFamily: F.h, fontSize: 18 }}>{fmt(companies.reduce((s, c) => s + calcDailyProfit(c), 0), 2)} G</span></div>
-              </div>
-            </GlassCard>
+              <GlassCard style={{ padding: 0, overflow: "hidden" }}>
+                <div style={{ padding: isMobile ? "14px 14px 8px" : "16px 20px 8px" }}>
+                  <Sec icon="🏭">{L.sectionFactoryOverview(companies.length)}</Sec>
+                  {anyWorkers && !isMobile && <div style={{ fontSize: 12, color: C.textMuted, marginTop: -10, marginBottom: 8 }}>{L.tipClickWorkerDetails}</div>}
+                  {!anyWorkers && !apiKey.trim() && (
+                    <div style={{ fontSize: 12, color: C.textMuted, marginTop: -10, marginBottom: 8 }}>
+                      <span aria-hidden="true">ⓘ </span>{L.workerDetailsNeedApiKey}
+                    </div>
+                  )}
+                </div>
+                {isMobile ? renderOverviewCards() : renderOverviewTable()}
+              </GlassCard>
+            </>
           )}
 
           {/* ── OPTIMIZATION TAB ── */}
@@ -1121,17 +1550,17 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               {/* Enemy Warnings */}
               {enemyWarnings.length > 0 && (
-                <GlassCard glow="rgba(248,113,113,0.2)" style={{ borderColor: C.red + "33" }}>
-                  <Sec icon="&#9876;">{L.sectionEnemyWarnings(enemyWarnings.length)}</Sec>
+                <GlassCard glow="rgba(248,113,113,0.2)" style={{ borderColor: C.red + "33", ...cardPad }}>
+                  <Sec icon="⚔️">{L.sectionEnemyWarnings(enemyWarnings.length)}</Sec>
                   <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
                     {L.enemyWarningDesc(ownerCountry?.name)}
                   </div>
                   {enemyWarnings.map((w, i) => (
                     <div key={i} style={{ ...glass(0.08, 10), borderRadius: 8, padding: "12px 16px", marginBottom: 8, borderColor: C.red + "33" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <div>
-                          <span style={{ fontWeight: 700, color: C.text }}>{w.company.name || w.company.itemCode}</span>
-                          <span style={{ color: C.textMuted, marginLeft: 8 }}>({w.company.itemCode})</span>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                        <div style={{ minWidth: 0 }}>
+                          <span style={{ fontWeight: 700, color: C.text }}>{w.company.name || itemName(w.company.itemCode, L)}</span>
+                          <span style={{ color: C.textMuted, marginLeft: 8 }}>({itemName(w.company.itemCode, L)})</span>
                         </div>
                         <Bdg color={C.red}>{w.factoryCountry.name}</Bdg>
                       </div>
@@ -1145,44 +1574,52 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
 
               {/* Wage Loss Warnings */}
               {wageWarnings.length > 0 && (
-                <GlassCard glow="rgba(255,153,0,0.15)" style={{ borderColor: "#ff990033" }}>
-                  <Sec icon="&#128184;">{L.sectionWageWarnings(wageWarnings.length)}</Sec>
+                <GlassCard glow="rgba(255,153,0,0.15)" style={{ borderColor: "#ff990033", ...cardPad }}>
+                  <Sec icon="💸">{L.sectionWageWarnings(wageWarnings.length)}</Sec>
                   <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
                     {L.wageWarningDesc}
                   </div>
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead><tr>
-                      <th style={TH}>{L.colName}</th>
-                      <th style={TH}>{L.colWorkers}</th>
-                      <th style={TH}>{L.colWage}</th>
-                      <th style={TH}>{L.colMaxWage}</th>
-                      <th style={TH}>{L.colCost}</th>
-                      <th style={TH}>{L.colRevenue}</th>
-                      <th style={TH}>{L.colProfit}</th>
-                    </tr></thead>
-                    <tbody>
-                      {wageWarnings.map((w, i) => (
-                        <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
-                          <td style={TD(false)}>{w.company.name || w.company.itemCode}</td>
-                          <td style={TD(false)}>
-                            <div>{w.worker.username || w.worker.userId?.slice(0, 8) || L.workerFallback(0).replace(" 1","")}</div>
-                            <div style={{ fontSize: 10, color: C.textMuted }}>E:{w.worker.energy} P:{w.worker.productivity}</div>
-                          </td>
-                          <td style={{ ...TD(false), color: C.red }}>{fmt(w.worker.wage || 0, 3)} G</td>
-                          <td style={{ ...TD(false), color: C.green }}>{fmt(w.breakEvenWage, 3)} G</td>
-                          <td style={{ ...TD(false), color: C.red }}>{fmt(w.dailyWage, 2)} G</td>
-                          <td style={{ ...TD(false), color: C.green }}>{fmt(w.dailyContribution, 2)} G</td>
-                          <td style={{ ...TD(false), color: C.red, fontWeight: 700 }}>-{fmt(w.loss, 2)} G</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <div style={scrollX}>
+                    <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+                      <thead><tr>
+                        <th style={{ ...TH, ...sticky(null, 2) }}>{L.colName}</th>
+                        <th style={TH}>{L.colWorkers}</th>
+                        <th style={TH}>{L.colWage}</th>
+                        <th style={TH}>{L.colMaxWage}</th>
+                        <th style={TH}>{L.colCost}</th>
+                        <th style={TH}>{L.colRevenue}</th>
+                        <th style={TH}>{L.colProfit}</th>
+                      </tr></thead>
+                      <tbody>
+                        {wageWarnings.map((w, i) => {
+                          const tint = i % 2 ? C.rowAlt : null;
+                          return (
+                            <tr key={i} style={{ background: tint || "transparent" }}>
+                              <td style={{ ...TD(false), ...sticky(tint) }}>{w.company.name || itemName(w.company.itemCode, L)}</td>
+                              <td style={TD(false)}>
+                                <div>{w.worker.username || w.worker.userId?.slice(0, 8) || L.workerGeneric}</div>
+                                <div style={{ ...subText, whiteSpace: "nowrap" }}>{L.colEnergy} {w.worker.energy} · {L.colProduction} {w.worker.productivity}</div>
+                              </td>
+                              <td style={{ ...TD(false), color: C.red, ...nowrap }}>{fmt(w.worker.wage || 0, 3)} G</td>
+                              <td style={{ ...TD(false), color: C.green, ...nowrap }}>{fmt(w.breakEvenWage, 3)} G</td>
+                              <td style={{ ...TD(false), color: C.red, ...nowrap }}>{fmt(w.dailyWage, 2)} G</td>
+                              <td style={{ ...TD(false), color: C.green, ...nowrap }}>{fmt(w.dailyContribution, 2)} G</td>
+                              <td style={{ ...TD(false), color: C.red, fontWeight: 700, ...nowrap }}>-{fmt(w.loss, 2)} G</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </GlassCard>
               )}
 
               {/* Better Regions */}
-              <GlassCard glow={betterRegions.length > 0 ? C.greenGlow : undefined}>
-                <Sec icon="&#127758;">{L.sectionBetterRegions(betterRegions.length)}</Sec>
+              <GlassCard glow={betterRegions.length > 0 ? C.greenGlow : undefined} style={cardPad}>
+                <div style={headRow}>
+                  <Sec icon="🌎">{L.sectionBetterRegions(betterRegions.length)}</Sec>
+                  {provisional && <div style={{ marginBottom: 16 }}><ProvisionalBadge L={L} /></div>}
+                </div>
                 <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
                   {L.betterRegionsDesc}
                 </div>
@@ -1190,68 +1627,89 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                   <div style={{ padding: "16px", textAlign: "center", color: C.green, background: "rgba(0,255,0,0.05)", borderRadius: 8, border: "1px solid " + C.green + "44" }}>
                     {L.allOptimalRegions}
                   </div>
+                ) : isMobile ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {betterRegions.map((s, i) => (
+                      <div key={i} style={mCard}>
+                        <div style={{ fontWeight: 700, color: C.text, overflowWrap: "anywhere" }}>{s.company.name || itemName(s.company.itemCode, L)}</div>
+                        <div style={subText}>{itemName(s.company.itemCode, L)}</div>
+                        {fromTo(
+                          { label: L.colCurrent, main: s.currentRegion?.name || "?", sub: "+" + fmt(s.currentBonus, 1) + "%" },
+                          { label: L.colBestRegion, main: s.bestRegion?.name || "?", sub: "+" + fmt(s.bestBonus, 1) + "%" },
+                        )}
+                        <Stats min={120} items={[
+                          { label: L.colExtraGain, value: "+" + fmt(s.dailyGain, 2) + " G", color: C.green, bold: true },
+                          { label: L.colMoveCost, value: fmt(s.relocCost, 2) + " G", color: C.textDim },
+                          { label: L.colPayback, value: s.paybackDays === Infinity ? L.never : L.days(fmt(s.paybackDays, 1)), bold: true,
+                            color: s.paybackDays <= 7 ? C.green : s.paybackDays <= 30 ? C.accent : C.red },
+                        ]} />
+                      </div>
+                    ))}
+                  </div>
                 ) : (
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead><tr>
-                      <th style={TH}>{L.colName}</th>
-                      <th style={TH}>{L.colCurrent}</th>
-                      <th style={TH}></th>
-                      <th style={TH}>{L.colBestRegion}</th>
-                      <th style={TH}>{L.colExtraGain}</th>
-                      <th style={TH}>{L.colMoveCost}</th>
-                      <th style={TH}>{L.colPayback}</th>
-                    </tr></thead>
-                    <tbody>
-                      {betterRegions.map((s, i) => (
-                        <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
-                          <td style={TD(false)}>
-                            <div>{s.company.name || s.company.itemCode}</div>
-                            <div style={{ fontSize: 10, color: C.textMuted }}>{s.company.itemCode}</div>
-                          </td>
-                          <td style={TD(false)}>
-                            <div>{s.currentRegion?.name || "?"}</div>
-                            <div style={{ fontSize: 10, color: C.textMuted }}>+{fmt(s.currentBonus, 1)}%</div>
-                          </td>
-                          <td style={{ ...TD(false), color: C.accent, fontSize: 18 }}>&rarr;</td>
-                          <td style={TD(false)}>
-                            <div style={{ color: C.green }}>{s.bestRegion?.name || "?"}</div>
-                            <div style={{ fontSize: 10, color: C.green }}>+{fmt(s.bestBonus, 1)}%</div>
-                          </td>
-                          <td style={{ ...TD(false), color: C.green, fontWeight: 700 }}>+{fmt(s.dailyGain, 2)} G</td>
-                          <td style={{ ...TD(false), color: C.textDim }}>{fmt(s.relocCost, 2)} G</td>
-                          <td style={{ ...TD(false), fontWeight: 700, color: s.paybackDays <= 7 ? C.green : s.paybackDays <= 30 ? C.accent : C.red }}>
-                            {s.paybackDays === Infinity ? L.never : L.days(fmt(s.paybackDays, 1))}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <div style={scrollX}>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead><tr>
+                        <th style={TH}>{L.colName}</th>
+                        <th style={TH}>{L.colCurrent}</th>
+                        <th style={TH}></th>
+                        <th style={TH}>{L.colBestRegion}</th>
+                        <th style={TH}>{L.colExtraGain}</th>
+                        <th style={TH}>{L.colMoveCost}</th>
+                        <th style={TH}>{L.colPayback}</th>
+                      </tr></thead>
+                      <tbody>
+                        {betterRegions.map((s, i) => (
+                          <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
+                            <td style={TD(false)}>
+                              <div>{s.company.name || itemName(s.company.itemCode, L)}</div>
+                              <div style={subText}>{itemName(s.company.itemCode, L)}</div>
+                            </td>
+                            <td style={TD(false)}>
+                              <div>{s.currentRegion?.name || "?"}</div>
+                              <div style={subText}>+{fmt(s.currentBonus, 1)}%</div>
+                            </td>
+                            <td style={{ ...TD(false), color: C.accent, fontSize: 18 }}>&rarr;</td>
+                            <td style={TD(false)}>
+                              <div style={{ color: C.green }}>{s.bestRegion?.name || "?"}</div>
+                              <div style={{ fontSize: 12, color: C.green }}>+{fmt(s.bestBonus, 1)}%</div>
+                            </td>
+                            <td style={{ ...TD(false), color: C.green, fontWeight: 700, ...nowrap }}>+{fmt(s.dailyGain, 2)} G</td>
+                            <td style={{ ...TD(false), color: C.textDim, ...nowrap }}>{fmt(s.relocCost, 2)} G</td>
+                            <td style={{ ...TD(false), fontWeight: 700, whiteSpace: "nowrap", color: s.paybackDays <= 7 ? C.green : s.paybackDays <= 30 ? C.accent : C.red }}>
+                              {s.paybackDays === Infinity ? L.never : L.days(fmt(s.paybackDays, 1))}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
               </GlassCard>
 
               {/* Worker Optimization */}
               {workerOptimization.length > 0 && (
-                <GlassCard glow={C.blueGlow}>
-                  <Sec icon="&#128101;">{L.sectionWorkerOpt(workerOptimization.length)}</Sec>
+                <GlassCard glow={C.blueGlow} style={cardPad}>
+                  <Sec icon="👥">{L.sectionWorkerOpt(workerOptimization.length)}</Sec>
                   <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
                     {L.workerOptDesc}
                   </div>
                   {workerOptimization.map((s, i) => (
-                    <div key={i} style={{ ...glass(0.08, 10), borderRadius: 8, padding: "12px 16px", marginBottom: 8 }}>
+                    <div key={i} style={{ ...glass(0.08, 10), borderRadius: 8, padding: isMobile ? "12px" : "12px 16px", marginBottom: 8 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-                        <div>
-                          <span style={{ color: C.accent, fontWeight: 700 }}>{s.worker.username || L.workerFallback(0).replace(" 1","")}</span>
+                        <div style={{ minWidth: 0 }}>
+                          <span style={{ color: C.accent, fontWeight: 700 }}>{s.worker.username || L.workerGeneric}</span>
                           <span style={{ color: C.textDim, margin: "0 8px" }}>{L.wordFrom}</span>
-                          <span style={{ color: C.text, fontWeight: 600 }}>{s.fromCompany.name || s.fromCompany.itemCode}</span>
-                          <span style={{ color: C.textDim, fontSize: 12 }}> ({s.fromCompany.itemCode}, {fmt(s.currentNetPerDay, 2)} G/Tag)</span>
+                          <span style={{ color: C.text, fontWeight: 600 }}>{s.fromCompany.name || itemName(s.fromCompany.itemCode, L)}</span>
+                          <span style={{ color: C.textDim, fontSize: 12 }}> ({itemName(s.fromCompany.itemCode, L)}, {L.goldPerDay(fmt(s.currentNetPerDay, 2))})</span>
                           <span style={{ color: C.accent, margin: "0 10px", fontSize: 16 }}>&rarr;</span>
-                          <span style={{ color: C.green, fontWeight: 600 }}>{s.toCompany.name || s.toCompany.itemCode}</span>
-                          <span style={{ color: C.green, fontSize: 12 }}> ({s.toCompany.itemCode}, {fmt(s.newNetPerDay, 2)} G/Tag)</span>
+                          <span style={{ color: C.green, fontWeight: 600 }}>{s.toCompany.name || itemName(s.toCompany.itemCode, L)}</span>
+                          <span style={{ color: C.green, fontSize: 12 }}> ({itemName(s.toCompany.itemCode, L)}, {L.goldPerDay(fmt(s.newNetPerDay, 2))})</span>
                         </div>
-                        <Bdg color={C.green}>+{fmt(s.dailyGain, 2)} G/Tag</Bdg>
+                        <Bdg color={C.green}>{L.goldPerDay("+" + fmt(s.dailyGain, 2))}</Bdg>
                       </div>
                       <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(255,255,255,0.08)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 12 }}>
-                        <div style={{ color: C.textDim }}>
+                        <div style={{ color: C.textDim, minWidth: 0 }}>
                           {L.laborTax}{" "}
                           <span style={{ color: C.text }}>{fmt(s.fromTax * 100, 1)}%</span>
                           <span style={{ margin: "0 6px" }}>&rarr;</span>
@@ -1270,8 +1728,11 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
               )}
 
               {/* Global Optimization */}
-              <GlassCard glow={globalOptimization.length > 0 ? C.accentGlow : undefined}>
-                <Sec icon="&#128260;">{L.sectionGlobalOpt(globalOptimization.length)}</Sec>
+              <GlassCard glow={globalOptimization.length > 0 ? C.accentGlow : undefined} style={cardPad}>
+                <div style={headRow}>
+                  <Sec icon="🔄">{L.sectionGlobalOpt(globalOptimization.length)}</Sec>
+                  {provisional && <div style={{ marginBottom: 16 }}><ProvisionalBadge L={L} /></div>}
+                </div>
                 <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
                   {L.globalOptDesc}
                 </div>
@@ -1279,43 +1740,65 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                   <div style={{ padding: "16px", textAlign: "center", color: C.green, background: "rgba(0,255,0,0.05)", borderRadius: 8, border: "1px solid " + C.green + "44" }}>
                     {L.allOptimalGlobal}
                   </div>
+                ) : isMobile ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {globalOptimization.map((s, i) => (
+                      <div key={i} style={mCard}>
+                        <div style={{ fontWeight: 700, color: C.text, overflowWrap: "anywhere" }}>{s.company.name || L.factoryFallback(companies.indexOf(s.company))}</div>
+                        {fromTo(
+                          { label: L.colCurrent, main: itemName(s.currentItem, L), sub: `${s.currentRegion?.name || "?"} (+${fmt(s.currentBonus, 1)}%)` },
+                          { label: L.colGlobalRec, main: itemName(s.newItem, L), sub: `${s.newRegion?.name || "?"} (+${fmt(s.newBonus, 1)}%)` },
+                        )}
+                        <Stats min={120} items={[
+                          { label: L.colOldProfit, value: fmt(s.currentProfit, 2) + " G", color: C.textDim },
+                          { label: L.colNewProfit, value: fmt(s.newProfit, 2) + " G", color: C.green },
+                          { label: L.colExtraProfit, value: "+" + fmt(s.dailyGain, 2) + " G", color: C.green, bold: true },
+                          { label: L.colConcrete, value: s.concreteNeeded, sub: fmt(s.totalCost, 1) + " G", color: C.red },
+                          { label: L.colPayback, value: L.days(fmt(s.paybackDays, 1)), bold: true,
+                            color: s.paybackDays <= 2 ? C.green : s.paybackDays <= 7 ? C.accent : C.red },
+                        ]} />
+                      </div>
+                    ))}
+                  </div>
                 ) : (
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead><tr>
-                      <th style={TH}>{L.colName}</th>
-                      <th style={TH}>{L.colCurrent}</th>
-                      <th style={TH}></th>
-                      <th style={TH}>{L.colGlobalRec}</th>
-                      <th style={TH}>{L.colOldProfit}</th>
-                      <th style={TH}>{L.colNewProfit}</th>
-                      <th style={TH}>{L.colExtraProfit}</th>
-                      <th style={TH}>{L.colConcrete}</th>
-                      <th style={TH}>{L.colPayback}</th>
-                    </tr></thead>
-                    <tbody>
-                      {globalOptimization.map((s, i) => (
-                        <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
-                          <td style={TD(false)}>{s.company.name || "Fabrik"}</td>
-                          <td style={TD(false)}>
-                            <div>{s.currentItem}</div>
-                            <div style={{ fontSize: 10, color: C.textMuted }}>{s.currentRegion?.name} (+{fmt(s.currentBonus, 1)}%)</div>
-                          </td>
-                          <td style={{ ...TD(false), color: C.accent, fontSize: 18 }}>&rarr;</td>
-                          <td style={TD(false)}>
-                            <div style={{ color: C.green, fontWeight: 700 }}>{s.newItem}</div>
-                            <div style={{ fontSize: 10, color: C.green }}>{s.newRegion?.name} (+{fmt(s.newBonus, 1)}%)</div>
-                          </td>
-                          <td style={{ ...TD(false), color: C.textDim }}>{fmt(s.currentProfit, 2)} G</td>
-                          <td style={{ ...TD(false), color: C.green }}>{fmt(s.newProfit, 2)} G</td>
-                          <td style={{ ...TD(false), color: C.green, fontWeight: 700 }}>+{fmt(s.dailyGain, 2)} G</td>
-                          <td style={{ ...TD(false), color: C.red }}>{s.concreteNeeded} <span style={{fontSize:10}}>({fmt(s.totalCost, 1)} G)</span></td>
-                          <td style={{ ...TD(false), fontWeight: 700, color: s.paybackDays <= 2 ? C.green : s.paybackDays <= 7 ? C.accent : C.red }}>
-                            {L.days(fmt(s.paybackDays, 1))}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <div style={scrollX}>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead><tr>
+                        <th style={TH}>{L.colName}</th>
+                        <th style={TH}>{L.colCurrent}</th>
+                        <th style={TH}></th>
+                        <th style={TH}>{L.colGlobalRec}</th>
+                        <th style={TH}>{L.colOldProfit}</th>
+                        <th style={TH}>{L.colNewProfit}</th>
+                        <th style={TH}>{L.colExtraProfit}</th>
+                        <th style={TH}>{L.colConcrete}</th>
+                        <th style={TH}>{L.colPayback}</th>
+                      </tr></thead>
+                      <tbody>
+                        {globalOptimization.map((s, i) => (
+                          <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
+                            <td style={TD(false)}>{s.company.name || L.factoryFallback(companies.indexOf(s.company))}</td>
+                            <td style={TD(false)}>
+                              <div>{itemName(s.currentItem, L)}</div>
+                              <div style={subText}>{s.currentRegion?.name} (+{fmt(s.currentBonus, 1)}%)</div>
+                            </td>
+                            <td style={{ ...TD(false), color: C.accent, fontSize: 18 }}>&rarr;</td>
+                            <td style={TD(false)}>
+                              <div style={{ color: C.green, fontWeight: 700 }}>{itemName(s.newItem, L)}</div>
+                              <div style={{ fontSize: 12, color: C.green }}>{s.newRegion?.name} (+{fmt(s.newBonus, 1)}%)</div>
+                            </td>
+                            <td style={{ ...TD(false), color: C.textDim, ...nowrap }}>{fmt(s.currentProfit, 2)} G</td>
+                            <td style={{ ...TD(false), color: C.green, ...nowrap }}>{fmt(s.newProfit, 2)} G</td>
+                            <td style={{ ...TD(false), color: C.green, fontWeight: 700, ...nowrap }}>+{fmt(s.dailyGain, 2)} G</td>
+                            <td style={{ ...TD(false), color: C.red, ...nowrap }}>{s.concreteNeeded} <span style={{ fontSize: 12 }}>({fmt(s.totalCost, 1)} G)</span></td>
+                            <td style={{ ...TD(false), fontWeight: 700, whiteSpace: "nowrap", color: s.paybackDays <= 2 ? C.green : s.paybackDays <= 7 ? C.accent : C.red }}>
+                              {L.days(fmt(s.paybackDays, 1))}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
               </GlassCard>
             </div>
@@ -1324,75 +1807,87 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
           {/* ── MARKET TAB ── */}
           {subTab === "market" && (
             <GlassCard style={{ padding: 0, overflow: "hidden" }}>
-              <div style={{ padding: "16px 20px 8px" }}>
-                <Sec icon="&#128176;">{L.sectionMarket}</Sec>
+              <div style={{ padding: isMobile ? "14px 14px 8px" : "16px 20px 8px" }}>
+                <div style={headRow}>
+                  <Sec icon="💰">{L.sectionMarket}</Sec>
+                  {provisional && <div style={{ marginBottom: 16 }}><ProvisionalBadge L={L} /></div>}
+                </div>
                 <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
                   {L.marketDesc}
+                  {loadedAt && <span style={{ color: C.textMuted }}> · {L.pricesAsOf(fmtClock(loadedAt))}</span>}
                 </div>
               </div>
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+              <div style={scrollX}>
+                <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, minWidth: 900 }}>
                   <thead><tr>
-                    <th style={TH}>#</th>
-                    <th style={TH}>{L.colName}</th>
-                    <th style={TH}>{L.colType}</th>
-                    <th style={TH}>{L.colSellPerUnit}</th>
-                    <th style={TH}>{L.colMatCost}</th>
-                    <th style={TH}>{L.colMargin}</th>
-                    <th style={TH}>{L.colPPUnit}</th>
-                    <th style={TH}>{L.colBaseMarginPP}</th>
-                    <th style={TH}>{L.colMaxMarginPP}</th>
-                    <th style={TH}>{L.colYourFactories}</th>
-                    <th style={TH}>{L.colYourProfit}</th>
+                    {!isMobile && <th style={THs}>#</th>}
+                    <SortTh label={L.colName} k="name" sort={mkSort} style={{ ...THs, ...sticky(null, 2) }} />
+                    <SortTh label={L.colType} k="type" sort={mkSort} style={THs} />
+                    <SortTh label={L.colSellPerUnit} k="price" sort={mkSort} style={THs} />
+                    <SortTh label={L.colMatCost} k="material" sort={mkSort} style={THs} />
+                    <SortTh label={L.colMargin} k="margin" sort={mkSort} style={THs} />
+                    <SortTh label={L.colPPUnit} k="pp" sort={mkSort} style={THs} />
+                    <SortTh label={L.colBaseMarginPP} k="base" sort={mkSort} style={THs} />
+                    <SortTh k="max" sort={mkSort} style={THs} tip={provisional ? L.provisionalTip : undefined}
+                      label={provisional
+                        ? <>{L.colMaxMarginPP}<span style={{ display: "block", color: C.accent, fontSize: 12, letterSpacing: "0.06em" }}><span aria-hidden="true">⏳ </span>{L.provisional}</span></>
+                        : L.colMaxMarginPP} />
+                    <SortTh label={L.colYourFactories} k="factories" sort={mkSort} style={THs} />
+                    <SortTh label={L.colYourProfit} k="profit" sort={mkSort} style={THs} />
                   </tr></thead>
                   <tbody>
-                    {allProducts.map((p, i) => {
+                    {mkRows.map((p, i) => {
                       const isProducing = p.userCompanyCount > 0;
-                      const needsStr = p.needs ? Object.entries(p.needs).map(([k, v]) => v + "× " + k).join(", ") : null;
+                      const needsStr = p.needs ? Object.entries(p.needs).map(([k, v]) => v + "× " + itemName(k, L)).join(", ") : null;
+                      const tint = isProducing ? C.accent + "0a" : i % 2 ? C.rowAlt : null;
+                      const bar = isProducing ? C.accent : null;
+                      const rank = <span style={{ fontFamily: F.h, fontWeight: 700, color: p.rank <= 3 ? C.accent : C.textDim, fontSize: 16 }}>{p.rank}</span>;
                       return (
-                        <tr key={p.itemCode} style={{
-                          background: isProducing ? C.accent + "0a" : i % 2 ? C.rowAlt : "transparent",
-                          borderLeft: isProducing ? "3px solid " + C.accent : "3px solid transparent",
-                        }}>
-                          <td style={{ ...TD(false), fontFamily: F.h, fontWeight: 700, color: i < 3 ? C.accent : C.textDim, fontSize: 16 }}>
-                            {i + 1}
-                          </td>
-                          <td style={{ ...TD(false), fontWeight: 700 }}>
-                            {p.itemCode}
+                        <tr key={p.itemCode} style={{ background: tint || "transparent" }}>
+                          {!isMobile && <td style={{ ...TD(false), boxShadow: bar ? "inset 3px 0 0 " + bar : undefined }}>{rank}</td>}
+                          <td style={{ ...TD(false), fontWeight: 700, ...sticky(tint, 1, isMobile ? bar : null) }}>
+                            {isMobile
+                              ? <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                                  <span style={{ flex: "0 0 22px" }}>{rank}</span>
+                                  <span>{itemName(p.itemCode, L)}</span>
+                                </div>
+                              : itemName(p.itemCode, L)}
                           </td>
                           <td style={{ ...TD(false), fontSize: 12 }}>
                             <Bdg color={p.type === "raw" ? C.blue : C.purple}>{p.type === "raw" ? L.badgeRaw : L.badgeProduct}</Bdg>
                           </td>
-                          <td style={{ ...TD(false), color: C.accent }}>{fmt(p.price, 4)} G</td>
+                          <td style={{ ...TD(false), color: C.accent, ...nowrap }}>{fmt(p.price, 4)} G</td>
                           <td style={TD(false)}>
                             {p.materialCost > 0
                               ? <div>
-                                  <span style={{ color: C.red }}>{fmt(p.materialCost, 4)} G</span>
-                                  <div style={{ fontSize: 9, color: C.textMuted }}>{needsStr}</div>
+                                  <span style={{ color: C.red, ...nowrap }}>{fmt(p.materialCost, 4)} G</span>
+                                  <div style={subText}>{needsStr}</div>
                                 </div>
                               : <span style={{ color: C.textMuted }}>-</span>
                             }
                           </td>
-                          <td style={{ ...TD(false), color: p.netMargin > 0 ? C.green : C.red, fontWeight: 700 }}>
+                          <td style={{ ...TD(false), color: p.netMargin > 0 ? C.green : C.red, fontWeight: 700, ...nowrap }}>
                             {fmt(p.netMargin, 4)} G
                           </td>
                           <td style={TD(false)}>{p.pp}</td>
-                          <td style={{ ...TD(false), fontWeight: 700, color: C.textDim, fontSize: 13 }}>
+                          <td style={{ ...TD(false), fontWeight: 700, color: C.textDim, fontSize: 13, ...nowrap }}>
                             {fmt(p.goldPerPP, 4)} G
                           </td>
-                          <td style={{ ...TD(false), fontWeight: 700, color: i === 0 ? C.green : p.maxGoldPerPP > 0 ? C.text : C.red, fontSize: 15 }}>
-                            <div>{fmt(p.maxGoldPerPP, 4)} G</div>
-                            <div style={{ fontSize: 10, color: C.green }}>{p.bestRegionName} (+{fmt(p.maxBonus, 1)}%)</div>
+                          <td style={{ ...TD(false), fontWeight: 700, color: p.rank === 1 ? C.green : p.maxGoldPerPP > 0 ? C.text : C.red, fontSize: 15 }}>
+                            <div style={nowrap}>{fmt(p.maxGoldPerPP, 4)} G</div>
+                            <div style={{ fontSize: 12, fontWeight: 400, color: p.maxBonus > 0 ? C.green : C.textMuted }}>
+                              {p.maxBonus > 0 ? `${p.bestRegionName} (+${fmt(p.maxBonus, 1)}%)` : "–"}
+                            </div>
                           </td>
                           <td style={TD(false)}>
                             {isProducing
-                              ? <span style={{ color: C.accent }}>{L.factoriesCount(p.userCompanyCount)}</span>
+                              ? <span style={{ color: C.accent, ...nowrap }}>{L.factoriesCount(p.userCompanyCount)}</span>
                               : <span style={{ color: C.textMuted }}>-</span>
                             }
                           </td>
                           <td style={TD(false)}>
                             {isProducing
-                              ? <span style={{ color: p.userTotalProfit >= 0 ? C.green : C.red, fontWeight: 700 }}>
+                              ? <span style={{ color: p.userTotalProfit >= 0 ? C.green : C.red, fontWeight: 700, ...nowrap }}>
                                   {p.userTotalProfit >= 0 ? "+" : ""}{fmt(p.userTotalProfit, 2)} G
                                 </span>
                               : <span style={{ color: C.textMuted }}>-</span>
@@ -1408,9 +1903,10 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
           )}
 
           {/* ── OPTIMIZER BUILD TAB ── */}
-          {subTab === "optimizer_build" && optimizerProps && (
+          {subTab === "build" && optimizerProps && (
             <FactoryOptimizer theme={theme} setTheme={setTheme} optData={optimizerProps} lang={lang} />
           )}
+          </div>
         </>
       )}
     </div>
