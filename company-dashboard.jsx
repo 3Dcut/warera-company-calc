@@ -377,6 +377,24 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
     return num(country?.taxes?.income, 0);
   }
 
+  // Income tax costs employees 1 happiness per percent, i.e. 1 % output. Output factor when
+  // employees move from one region's country to another's.
+  function taxHappinessFactor(fromRegionId, toRegionId) {
+    const delta = (getIncomeTaxPct(fromRegionId) - getIncomeTaxPct(toRegionId)) * RULES.taxHappinessPerPercent;
+    return Math.max(0, 1 + delta / 100);
+  }
+
+  // A battle in the region costs every employee 5 happiness and carries a 1 % death risk.
+  function hasActiveBattle(comp) {
+    return !!regions[comp.region]?.activeBattle;
+  }
+
+  // Concrete needed to move the company: v0.27 granted everyone one free move (company.freeMoves).
+  function getMoveConcreteCost(comp) {
+    const moveCost = gameConfig?.company?.moveCost || 5;
+    return num(comp.freeMoves, 0) > 0 ? 0 : moveCost;
+  }
+
   // A region is a core region of the owner's country when it originally belonged to it.
   function isCoreRegionId(regionId) {
     const region = regions[regionId];
@@ -530,22 +548,25 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
     return warnings.sort((a, b) => b.loss - a.loss);
   }
 
-  // Companies with employees outside the owner's core regions: moving home gives +5 %.
+  // Companies with employees outside the owner's core regions: moving home gives +5 % and
+  // changes the income tax the employees feel (1 % tax = -1 happiness).
   function getCoreRegionSuggestions() {
     const suggestions = [];
     const betonPrice = getItemPrice("concrete") || 1;
-    const moveCost = gameConfig?.company?.moveCost || 5;
     const homeRegion = getSuggestedHomeRegion();
+    if (!homeRegion) return suggestions;
 
     for (const comp of companies) {
       if (isCoreRegion(comp) || !hasEmployees(comp)) continue;
       const goldPerPP = calcGoldPerPP(comp.itemCode);
-      const empPPDay = calcEmployeesPPDay(comp);
-      const empGoldDay = empPPDay * goldPerPP;
-      const dailyGain = empGoldDay * (coreFactor(true) - 1);
-      // Moving the company costs concrete and -10 happiness for 7 days (= -10 % employee output).
-      const happinessLoss = empGoldDay * coreFactor(true) * (RULES.companyMoveHappinessPenalty / 100) * RULES.movePenaltyDays;
-      const relocCost = moveCost * betonPrice + happinessLoss;
+      const empGoldDay = calcEmployeesPPDay(comp) * goldPerPP;
+      const newEmpGoldDay = empGoldDay * coreFactor(true) * taxHappinessFactor(comp.region, homeRegion._id);
+      const dailyGain = newEmpGoldDay - empGoldDay;
+      // Moving the company costs concrete (unless a free move is left) and -10 happiness for 7 days.
+      const happinessLoss = newEmpGoldDay * (RULES.companyMoveHappinessPenalty / 100) * RULES.movePenaltyDays;
+      const concreteNeeded = getMoveConcreteCost(comp);
+      const concreteCost = concreteNeeded * betonPrice;
+      const relocCost = concreteCost + happinessLoss;
       const paybackDays = dailyGain > 0 ? relocCost / dailyGain : Infinity;
       suggestions.push({
         company: comp,
@@ -553,9 +574,12 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
         homeRegion,
         dailyGain,
         relocCost,
-        concreteCost: moveCost * betonPrice,
+        concreteNeeded,
+        concreteCost,
         happinessLoss,
         paybackDays,
+        fromTax: getIncomeTaxPct(comp.region),
+        toTax: getIncomeTaxPct(homeRegion._id),
       });
     }
     return suggestions.sort((a, b) => a.paybackDays - b.paybackDays);
@@ -616,7 +640,6 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
     if (!gameConfig) return [];
     const allProducts = getAllProductsRanked();
     const betonPrice = getItemPrice("concrete") || 1;
-    const moveCost = gameConfig.company?.moveCost || 5;
     const changeCost = gameConfig.company?.changeItemCost || 5;
     const homeRegion = getSuggestedHomeRegion();
 
@@ -639,14 +662,15 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       for (const prod of allProducts) {
         for (const opt of regionOptions) {
           if (prod.itemCode === currentItem && !opt.move) continue;
-          const newEmpPP = empPP / coreFactor(currentCore) * coreFactor(opt.isCore);
+          const taxFactor = opt.move ? taxHappinessFactor(comp.region, opt.region._id) : 1;
+          const newEmpPP = empPP / coreFactor(currentCore) * coreFactor(opt.isCore) * taxFactor;
           const newRevenue = (enginePP + newEmpPP) * prod.goldPerPP;
           const newProfit = newRevenue - cost;
           const dailyGain = newProfit - currentProfit;
 
           if (dailyGain > bestDailyGain) {
             let concreteNeeded = 0;
-            if (opt.move) concreteNeeded += moveCost;
+            if (opt.move) concreteNeeded += getMoveConcreteCost(comp);
             if (prod.itemCode !== currentItem) concreteNeeded += changeCost;
             const totalCost = concreteNeeded * betonPrice;
             const paybackDays = totalCost / dailyGain;
@@ -661,6 +685,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
               newItem: prod.itemCode,
               newRegion: opt.region,
               newCore: opt.isCore,
+              moveFree: opt.move && getMoveConcreteCost(comp) === 0,
               newProfit,
               dailyGain,
               totalCost,
@@ -696,7 +721,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
         for (const toComp of companies) {
           if (toComp._id === fromComp._id) continue;
           if (getEmployees(toComp).length >= getEmployeeCap(toComp)) continue; // break room full
-          const newPPDay = ppDay / coreFactor(fromCore) * coreFactor(isCoreRegion(toComp));
+          const newPPDay = ppDay / coreFactor(fromCore) * coreFactor(isCoreRegion(toComp)) * taxHappinessFactor(fromComp.region, toComp.region);
           const netPerDay = newPPDay * calcGoldPerPP(toComp.itemCode) - costDay;
           if (netPerDay > bestNetPerDay) {
             bestNetPerDay = netPerDay;
@@ -902,6 +927,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                       const cost = calcDailyCost(comp);
                       const profit = calcDailyProfit(comp);
                       const isEnemy = enemyWarnings.some(w => w.company._id === compId);
+                      const inBattle = hasActiveBattle(comp);
                       const hasWageLoss = wageWarnings.some(w => w.company._id === compId);
                       const rosterError = rosterMeta[compId]?.error;
                       const rosterMissing = rosterError === "NOT_AVAILABLE";
@@ -922,7 +948,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                           <td style={TD(false)}>Lv {comp.activeUpgradeLevels?.storage || 1}</td>
                           <td style={TD(false)}>
                             <div style={{ fontSize: 13 }}>{getRegionName(comp)}</div>
-                            <div style={{ fontSize: 10, color: C.textMuted }}>{getCountryName(comp.region)}</div>
+                            <div style={{ fontSize: 10, color: C.textMuted }}>{getCountryName(comp.region)} &middot; {L.taxShort(fmt(getIncomeTaxPct(comp.region), 0))}</div>
                           </td>
                           <td style={{ ...TD(false), color: core ? C.green : C.textMuted }}>
                             {core ? L.coreYes : L.coreNo}
@@ -944,10 +970,11 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                           </td>
                           <td style={TD(false)}>
                             {isEnemy && <Bdg color={C.red}>{L.badgeEnemy}</Bdg>}
+                            {inBattle && <Tip text={L.tipBattle}><span><Bdg color="#ff9900">{L.badgeBattle}</Bdg></span></Tip>}
                             {hasWageLoss && <Bdg color="#ff9900">{L.badgeWageLoss}</Bdg>}
                             {rosterFailed && <Bdg color="#ff9900">{L.badgeRosterFailed}</Bdg>}
                             {!getPPPerUnit(comp.itemCode) && <Bdg color={C.red}>{L.badgeConfigMissing}</Bdg>}
-                            {!isEnemy && !hasWageLoss && !rosterFailed && getPPPerUnit(comp.itemCode) && <Bdg color={C.green}>{L.badgeOk}</Bdg>}
+                            {!isEnemy && !inBattle && !hasWageLoss && !rosterFailed && getPPPerUnit(comp.itemCode) && <Bdg color={C.green}>{L.badgeOk}</Bdg>}
                           </td>
                         </tr>,
                         // Expanded employee details
@@ -1077,6 +1104,14 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
           {/* ── OPTIMIZATION TAB ── */}
           {subTab === "optimize" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              {/* Employee features wait for official API support */}
+              {rosterUnavailable && (
+                <GlassCard style={{ borderColor: C.accent + "44" }}>
+                  <Sec icon="&#9203;">{L.sectionEmployeePending}</Sec>
+                  <div style={{ fontSize: 12, color: C.textDim }}>{L.employeeFeaturesPending}</div>
+                </GlassCard>
+              )}
+
               {/* Enemy Warnings */}
               {enemyWarnings.length > 0 && (
                 <GlassCard glow="rgba(248,113,113,0.2)" style={{ borderColor: C.red + "33" }}>
@@ -1147,9 +1182,15 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                   {L.coreRegionsDesc}
                 </div>
                 {coreSuggestions.length === 0 ? (
-                  <div style={{ padding: "16px", textAlign: "center", color: C.green, background: "rgba(0,255,0,0.05)", borderRadius: 8, border: "1px solid " + C.green + "44" }}>
-                    {L.allCoreRegions}
-                  </div>
+                  rosterUnavailable ? (
+                    <div style={{ padding: "16px", textAlign: "center", color: C.textDim, background: "rgba(255,255,255,0.03)", borderRadius: 8, border: "1px solid rgba(255,255,255,0.08)" }}>
+                      {L.employeeFeaturesPendingShort}
+                    </div>
+                  ) : (
+                    <div style={{ padding: "16px", textAlign: "center", color: C.green, background: "rgba(0,255,0,0.05)", borderRadius: 8, border: "1px solid " + C.green + "44" }}>
+                      {L.allCoreRegions}
+                    </div>
+                  )
                 ) : (
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead><tr>
@@ -1170,16 +1211,16 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                           </td>
                           <td style={TD(false)}>
                             <div>{s.currentRegion?.name || "?"}</div>
-                            <div style={{ fontSize: 10, color: C.textMuted }}>{getCountryName(s.company.region)}</div>
+                            <div style={{ fontSize: 10, color: C.textMuted }}>{getCountryName(s.company.region)} &middot; {L.taxShort(fmt(s.fromTax, 0))}</div>
                           </td>
                           <td style={{ ...TD(false), color: C.accent, fontSize: 18 }}>&rarr;</td>
                           <td style={TD(false)}>
                             <div style={{ color: C.green }}>{s.homeRegion?.name || ownerCountry?.name || "?"}</div>
-                            <div style={{ fontSize: 10, color: C.green }}>{L.coreYes}</div>
+                            <div style={{ fontSize: 10, color: C.green }}>{L.coreYes} &middot; {L.taxShort(fmt(s.toTax, 0))}</div>
                           </td>
-                          <td style={{ ...TD(false), color: C.green, fontWeight: 700 }}>+{fmt(s.dailyGain, 2)} G</td>
+                          <td style={{ ...TD(false), color: s.dailyGain >= 0 ? C.green : C.red, fontWeight: 700 }}>{s.dailyGain >= 0 ? "+" : ""}{fmt(s.dailyGain, 2)} G</td>
                           <td style={{ ...TD(false), color: C.textDim }}>
-                            <div>{fmt(s.relocCost, 2)} G</div>
+                            <div>{fmt(s.relocCost, 2)} G{s.concreteNeeded === 0 && <span style={{ color: C.green, fontSize: 10, marginLeft: 6 }}>{L.freeMove}</span>}</div>
                             <div style={{ fontSize: 10, color: C.textMuted }}>{L.moveCostBreakdown(fmt(s.concreteCost, 2), fmt(s.happinessLoss, 2))}</div>
                           </td>
                           <td style={{ ...TD(false), fontWeight: 700, color: s.paybackDays <= 7 ? C.green : s.paybackDays <= 30 ? C.accent : C.red }}>
@@ -1271,7 +1312,10 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                           <td style={{ ...TD(false), color: C.textDim }}>{fmt(s.currentProfit, 2)} G</td>
                           <td style={{ ...TD(false), color: C.green }}>{fmt(s.newProfit, 2)} G</td>
                           <td style={{ ...TD(false), color: C.green, fontWeight: 700 }}>+{fmt(s.dailyGain, 2)} G</td>
-                          <td style={{ ...TD(false), color: C.red }}>{s.concreteNeeded} <span style={{fontSize:10}}>({fmt(s.totalCost, 1)} G)</span></td>
+                          <td style={{ ...TD(false), color: s.concreteNeeded > 0 ? C.red : C.green }}>
+                            {s.concreteNeeded} <span style={{fontSize:10}}>({fmt(s.totalCost, 1)} G)</span>
+                            {s.moveFree && <div style={{ fontSize: 10, color: C.green }}>{L.freeMove}</div>}
+                          </td>
                           <td style={{ ...TD(false), fontWeight: 700, color: s.paybackDays <= 2 ? C.green : s.paybackDays <= 7 ? C.accent : C.red }}>
                             {L.days(fmt(s.paybackDays, 1))}
                           </td>
