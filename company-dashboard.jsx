@@ -27,7 +27,34 @@ function getInitialApiKey() {
   try { return localStorage.getItem("warera_api_key") || ""; } catch { return ""; }
 }
 
+// ── Employee rules (WarEra v0.27) ──
+// These constants live in the game client, not in gameConfig.getGameConfig.
+// They are only used when the API does not deliver its own estimate for an employee.
+const RULES = {
+  outputDivisor: 4,              // PP per hour = production stat / 4
+  happinessNeutral: 50,
+  happinessPercentPerPoint: 1,   // each point above/below 50 = ±1 % output
+  managementPercentPerPoint: 2,  // owner + manager management, +2 % per point
+  coreRegionBonusPercent: 5,     // company in a core region of the owner's country
+  moveHappinessPenalty: 5,       // employee moved between own companies (7 days)
+  companyMoveHappinessPenalty: 10, // company moved to another region (7 days)
+  movePenaltyDays: 7,
+  taxHappinessPerPercent: 1,     // each 1 % income tax = -1 happiness
+};
+
+// Only procedures documented in the official WarEra API (https://api2.warera.io/docs,
+// spec at https://api2.warera.io/openapi.json) may be called, with or without the personal
+// API key. Internal game endpoints such as employee.getCompanyRoster are off limits.
+// As of v0.27 the public API publishes no employee data at all. Once WarEra documents an
+// employee endpoint, put its procedure name here; until then employees stay unavailable.
+const OFFICIAL_EMPLOYEE_ROSTER_ENDPOINT = null;
+
 // ── Helpers ──
+function num(v, d = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+}
+
 async function resolveUser(input) {
   try {
     const u = await apiCall("user.getUserLite", { userId: input });
@@ -54,55 +81,86 @@ async function batchParallel(ids, fn, concurrency = 2) {
   return results;
 }
 
-function calcTotalBonus(region, itemCode, country, gameConfig, countryEthics) {
-  if (!gameConfig) return 0;
-  let bonus = 0;
-
-  const isIndustrialTarget = ['steel', 'concrete', 'oil', 'lightAmmo', 'ammo', 'heavyAmmo', 'lead', 'petroleum', 'iron', 'limestone', 'wood'].includes(itemCode);
-  const isAgrarianTarget = ['coca', 'grain', 'livestock', 'fish'].includes(itemCode);
-  const indVal = countryEthics?.industrialism || 0;
-
-  // 1. Party Ethics Bonus
-  if (indVal === 1 && isIndustrialTarget) {
-    bonus += 10;
-  } else if (indVal >= 2 && isIndustrialTarget) {
-    bonus += 30;
-  }
-
-  if (indVal === -1 && isAgrarianTarget) {
-    bonus += 10;
-  } else if (indVal <= -2 && isAgrarianTarget) {
-    bonus += 30;
-  }
-
-  // 2. Country specialization bonus
-  // Agrar 2 (industrialism <= -2) deactivates the country specialization completely
-  if (indVal > -2) {
-    if (country?.specializedItem === itemCode) {
-      if (country?.strategicResources?.bonuses?.productionPercent) {
-        bonus += country.strategicResources.bonuses.productionPercent;
-      }
-    }
-  }
-
-  if (!region) return bonus;
-
-
-
-  // 4. Actual Deposit Bonus
-  const depositItem = region.deposit?.type || region.deposit;
-  if (depositItem === itemCode) {
-    const depositBonus = region.deposit?.bonusPercent || gameConfig.company?.depositResourceBonus || 30;
-    // "Fanatischer Industrieller" (>= 2) deactivates natural deposits
-    if (indVal < 2) {
-      bonus += depositBonus;
-    }
-  }
-
-  return bonus;
+// Parse whatever employee.getCompanyRoster returns into { employees, cap }.
+function parseRoster(r) {
+  if (!r) return { employees: [], cap: null };
+  const list = Array.isArray(r) ? r : (r.employees || r.items || r.roster || []);
+  const cap = typeof r?.hourly?.cap === "number" ? r.hourly.cap : (typeof r?.cap === "number" ? r.cap : null);
+  return { employees: (Array.isArray(list) ? list : []).filter(isActiveEmployee), cap };
 }
 
-let currentBgFetch = 0;
+function isActiveEmployee(emp) {
+  return !!emp && !emp.leftAt;
+}
+
+// Effective stat value (production / luck / responsibility) of an employee.
+function statValue(emp, stat) {
+  const b = emp?.breakdown?.[stat];
+  if (typeof b === "number") return b;
+  if (b && typeof b === "object") {
+    for (const k of ["total", "value", "effective", "current"]) if (typeof b[k] === "number") return b[k];
+  }
+  const base = emp?.base?.[stat] ?? emp?.stats?.[stat] ?? emp?.[stat];
+  return num(base, 0);
+}
+
+function empHappiness(emp) {
+  const hb = emp?.happinessBreakdown;
+  if (typeof hb === "number") return hb;
+  if (hb && typeof hb.value === "number") return hb.value;
+  if (typeof emp?.happiness === "number") return emp.happiness;
+  return RULES.happinessNeutral;
+}
+
+function empTraits(emp) {
+  const t = emp?.traits;
+  if (!Array.isArray(t)) return [];
+  return t.map(x => (typeof x === "string" ? x : x?.code || x?.trait?.code || "")).filter(Boolean);
+}
+
+function empToolInfo(emp) {
+  const t = emp?.tool;
+  if (!t) return null;
+  if (typeof t === "string") return { code: t, bonus: null, durability: null, maxDurability: null };
+  const code = t.itemCode || t.code || t.item?.code || t.type || "tool";
+  const bonus = [t.production, t.stats?.production, t.productionPercent, t.bonus].find(v => typeof v === "number");
+  return {
+    code,
+    bonus: typeof bonus === "number" ? bonus : null,
+    durability: typeof t.durability === "number" ? t.durability : null,
+    maxDurability: typeof t.maxDurability === "number" ? t.maxDurability : null,
+  };
+}
+
+function empWagePerHour(emp) {
+  for (const v of [emp?.estimate?.wage, emp?.hourlyWage, emp?.wage]) if (typeof v === "number") return v;
+  return 0;
+}
+
+function empHasEstimate(emp) {
+  return typeof emp?.estimate?.production === "number";
+}
+
+function coreFactor(isCore) {
+  return 1 + (isCore ? RULES.coreRegionBonusPercent : 0) / 100;
+}
+
+// PP per hour of one employee. Uses the game's own estimate when present,
+// otherwise the public formula: Production/4 × happiness × management × core region × tool.
+function calcEmployeePPH(emp, ctx) {
+  if (empHasEstimate(emp)) return Math.max(0, emp.estimate.production);
+  const prod = statValue(emp, "production");
+  const base = prod / RULES.outputDivisor;
+  const happiness = 1 + (empHappiness(emp) - RULES.happinessNeutral) * RULES.happinessPercentPerPoint / 100;
+  const mgmt = 1 + (ctx?.managementPoints || 0) * RULES.managementPercentPerPoint / 100;
+  const core = coreFactor(ctx?.isCore);
+  const tool = 1 + (empToolInfo(emp)?.bonus || 0) / 100;
+  return Math.max(0, base * happiness * mgmt * core * tool);
+}
+
+function formatTraitName(code) {
+  return String(code).toLowerCase().replace(/_/g, " ");
+}
 
 export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   setThemeVars(theme);
@@ -118,15 +176,13 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   // Loaded data
   const [userData, setUserData] = useState(null);
   const [companies, setCompanies] = useState([]);
-  const [workers, setWorkers] = useState({}); // companyId -> workers[]
-  const [regions, setRegions] = useState({}); // regionId -> region
-  const [countries, setCountries] = useState({}); // countryId -> country
-  const [prices, setPrices] = useState({}); // itemCode -> number
+  const [employees, setEmployees] = useState({});     // companyId -> employee[]
+  const [rosterMeta, setRosterMeta] = useState({});   // companyId -> { cap, error }
+  const [regions, setRegions] = useState({});         // regionId -> region
+  const [countries, setCountries] = useState({});     // countryId -> country
+  const [prices, setPrices] = useState({});           // itemCode -> number
   const [ownerCountry, setOwnerCountry] = useState(null);
-  const [allRegions, setAllRegions] = useState({});
   const [gameConfig, setGameConfig] = useState(null);
-  const [partyEthics, setPartyEthics] = useState({}); // countryId -> { industrialism, ... }
-  const [bgProgress, setBgProgress] = useState(null);
 
   const [subTab, setSubTab] = useState("overview");
   const [expandedCompany, setExpandedCompany] = useState(null);
@@ -202,7 +258,6 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       setUserData(user);
       setPrices(pricesData || {});
       setGameConfig(configData);
-      console.log("GAMECONFIG", JSON.stringify(configData));
 
       // Build region lookup (object keyed by _id)
       const regMap = {};
@@ -210,13 +265,11 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
         if (Array.isArray(regionsData)) {
           for (const r of regionsData) if (r?._id) regMap[r._id] = r;
         } else {
-          // Already keyed by ID
           for (const [k, r] of Object.entries(regionsData)) {
             regMap[r?._id || k] = r;
           }
         }
       }
-      setAllRegions(regMap);
       setRegions(regMap);
 
       // Build country lookup
@@ -227,8 +280,6 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       }
       setCountries(cntMap);
 
-
-
       // Phase 2: Load companies
       setLoadingMsg(L.loadingFactories);
       const userId = user._id || user.id || user.userId;
@@ -236,59 +287,43 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       const companyIds = companiesResp?.items || [];
       if (!companyIds.length) throw new Error("Keine Fabriken gefunden");
 
-      // Phase 3: Load company details + workers in parallel
+      // Phase 3: Load company details (documented) and, only if WarEra has published one,
+      // the employee roster of each company. See OFFICIAL_EMPLOYEE_ROSTER_ENDPOINT.
       setLoadingMsg(L.loadingFactoriesN(companyIds.length));
       const companyDetails = await batchParallel(companyIds, async (cid) => {
-        const [comp, wrk] = await Promise.all([
+        const [comp, roster] = await Promise.all([
           apiCall("company.getById", { companyId: cid }),
-          apiCall("worker.getWorkers", { companyId: cid }).catch(() => ({ workers: [] })),
+          OFFICIAL_EMPLOYEE_ROSTER_ENDPOINT
+            ? apiCall(OFFICIAL_EMPLOYEE_ROSTER_ENDPOINT, { companyId: cid }).then(r => ({ ok: true, data: r })).catch(e => ({ ok: false, error: e?.message || "ERROR" }))
+            : Promise.resolve({ ok: false, error: "NOT_AVAILABLE" }),
         ]);
-        return { comp, workers: Array.isArray(wrk) ? wrk : (wrk?.workers || wrk?.items || []) };
+        return { comp, roster };
       });
 
       const comps = [];
-      const workersMap = {};
-      const allWorkerUserIds = new Set();
+      const empMap = {};
+      const metaMap = {};
       let totalCompaniesValue = 0;
-      for (const { comp, workers: w } of companyDetails) {
+      for (const { comp, roster } of companyDetails) {
+        if (!comp?._id) continue;
         const id = comp._id;
         comps.push(comp);
         totalCompaniesValue += (comp.estimatedValue || 0);
-        const wArr = Array.isArray(w) ? w : [];
-        workersMap[id] = wArr;
-        for (const wr of wArr) if (wr.user) allWorkerUserIds.add(wr.user);
-      }
-
-      // Phase 3b: Load worker user profiles to get energy/production skills
-      if (allWorkerUserIds.size > 0) {
-        setLoadingMsg(L.loadingWorkerProfiles(allWorkerUserIds.size));
-        const userProfiles = await batchParallel([...allWorkerUserIds], async (uid) => {
-          try {
-            const u = await apiCall("user.getUserLite", { userId: uid });
-            return { uid, user: u };
-          } catch { return { uid, user: null }; }
-        });
-        const profileMap = {};
-        for (const { uid, user: u } of userProfiles) if (u) profileMap[uid] = u;
-
-        // Enrich workers with energy/productivity from user profiles
-        for (const wArr of Object.values(workersMap)) {
-          for (const wr of wArr) {
-            const profile = profileMap[wr.user];
-            if (profile) {
-              wr.energy = profile.skills?.energy?.value || 0;
-              wr.energyCurrent = profile.skills?.energy?.currentBarValue || 0;
-              wr.productivity = profile.skills?.production?.value || 0;
-              wr.username = profile.username;
-            }
-          }
+        if (roster.ok) {
+          const parsed = parseRoster(roster.data);
+          empMap[id] = parsed.employees;
+          metaMap[id] = { cap: parsed.cap, error: null };
+        } else {
+          empMap[id] = [];
+          metaMap[id] = { cap: null, error: roster.error };
         }
       }
 
       setCompanies(comps);
-      setWorkers(workersMap);
+      setEmployees(empMap);
+      setRosterMeta(metaMap);
 
-      // Phase 3c: Calculate Liquid Assets (Geld + Items + Waffen) based on liquid_assets.py
+      // Phase 3b: Calculate Liquid Assets (Geld + Items + Waffen)
       setLoadingMsg(L.loadingLiquid);
       const wealthRanking = await apiCall("ranking.getRanking", { rankingType: "userWealth", limit: 100, skip: 0 }).catch(() => null);
       let totalWealth = 0;
@@ -299,64 +334,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       const liquidAssets = totalWealth > 0 ? Math.max(0, totalWealth - totalCompaniesValue) : 0;
       setUserData(prev => ({ ...prev, liquidAssets, totalWealth, totalCompaniesValue }));
 
-      // Phase 4: Load Party Ethics for factories' countries
-      setLoadingMsg(L.loadingPartyEthics);
-      const relevantCountryIds = new Set();
-      for (const comp of comps) {
-        const reg = regMap[comp.region];
-        if (reg?.country) relevantCountryIds.add(reg.country);
-      }
-      const ethicsMap = {};
-      const relevantCountriesToFetch = Object.values(cntMap).filter(c => c.rulingParty && relevantCountryIds.has(c._id));
-      if (relevantCountriesToFetch.length > 0) {
-        const partyResults = await batchParallel(relevantCountriesToFetch, async (c) => {
-          try {
-            const p = await apiCall("party.getById", { partyId: c.rulingParty });
-            return { countryId: c._id, ethics: p?.ethics || null };
-          } catch { return { countryId: c._id, ethics: null }; }
-        });
-        for (const { countryId, ethics } of partyResults) {
-          if (ethics) ethicsMap[countryId] = ethics;
-        }
-      }
-      setPartyEthics(ethicsMap);
-
-      // Background Phase: Load remaining party ethics
-      const thisBgFetch = ++currentBgFetch;
-      const remainingCountriesToFetch = Object.values(cntMap).filter(c => c.rulingParty && !relevantCountryIds.has(c._id));
-      if (remainingCountriesToFetch.length > 0) {
-        setBgProgress({ loaded: 0, total: remainingCountriesToFetch.length });
-        (async () => {
-          let loaded = 0;
-          const queue = [...remainingCountriesToFetch];
-          const worker = async () => {
-            while (queue.length > 0) {
-              if (thisBgFetch !== currentBgFetch) break; // aborted
-              const c = queue[0];
-              let retryDelay = 0;
-              try {
-                const p = await apiCall("party.getById", { partyId: c.rulingParty });
-                if (p?.ethics && thisBgFetch === currentBgFetch) {
-                  setPartyEthics(prev => ({ ...prev, [c._id]: p.ethics }));
-                }
-                queue.shift();
-                loaded++;
-                if (thisBgFetch === currentBgFetch) setBgProgress({ loaded, total: remainingCountriesToFetch.length, status: "loading" });
-              } catch (e) {
-                retryDelay = 5000;
-                if (thisBgFetch === currentBgFetch) setBgProgress(prev => prev ? { ...prev, status: "waiting" } : prev);
-              }
-              await new Promise(res => setTimeout(res, retryDelay || 10));
-            }
-          };
-          await Promise.all([worker(), worker()]);
-          if (thisBgFetch === currentBgFetch) setBgProgress(null);
-        })();
-      } else {
-        setBgProgress(null);
-      }
-
-      // Phase 5: Load owner's country for enemy check
+      // Phase 4: Load owner's country for enemy check
       setLoadingMsg(L.loadingDiplomacy);
       const ownerCountryId = user.country; // field is "country" on user object
       if (ownerCountryId && cntMap[ownerCountryId]) {
@@ -376,21 +354,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
     setLoading(false);
   }
 
-  // ── Calculations ──
-  function getRegionBonus(comp) {
-    const region = regions[comp.region];
-    const country = getCountryForRegion(comp.region);
-    const ethics = country?._id ? partyEthics[country._id] : null;
-    return calcTotalBonus(region, comp.itemCode, country, gameConfig, ethics);
-  }
-
-  function getWorkTaxRate(comp) {
-    // WarEra delivers income tax as a percent (e.g. 1 = 1%); normalize to fraction.
-    const country = getCountryForRegion(comp.region);
-    const pct = Number(country?.taxes?.income) || 0;
-    return pct / 100;
-  }
-
+  // ── Lookups ──
   function getRegionName(comp) {
     const region = regions[comp.region];
     return region?.name || L.unknown;
@@ -407,44 +371,90 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
     return country?.name || "?";
   }
 
-  function calcEnginePPDay(comp) {
-    const engineLevel = comp.activeUpgradeLevels?.automatedEngine || 1;
-    const bonus = getRegionBonus(comp);
-    return engineLevel * 24 * (1 + bonus / 100);
+  // Income tax of the country a region belongs to, in percent (e.g. 5 = 5 %).
+  function getIncomeTaxPct(regionId) {
+    const country = getCountryForRegion(regionId);
+    return num(country?.taxes?.income, 0);
   }
 
-  function calcWorkerPPH(worker, bonus) {
-    const energy = worker.energy || 0;
-    const productivity = worker.productivity || 0;
-    const fidelity = worker.fidelity || 0;
-    // energy/10 * production_skill per 10h → energy/100 * production_skill per hour
-    const basePP = (energy / 100) * productivity;
-    return basePP * (1 + bonus / 100) * (1 + fidelity / 100);
+  // A region is a core region of the owner's country when it originally belonged to it.
+  function isCoreRegionId(regionId) {
+    const region = regions[regionId];
+    const home = userData?.country;
+    if (!region || !home) return false;
+    return (region.initialCountry || region.country) === home;
+  }
+
+  function isCoreRegion(comp) {
+    return isCoreRegionId(comp.region);
+  }
+
+  // Best core region to move a company to: owned by the home country, highest development.
+  function getSuggestedHomeRegion() {
+    const home = userData?.country;
+    if (!home) return null;
+    let best = null;
+    for (const region of Object.values(regions)) {
+      if ((region.initialCountry || region.country) !== home) continue;
+      if (region.country !== home) continue; // currently occupied by someone else
+      if (!best || num(region.development) > num(best.development)) best = region;
+    }
+    return best;
+  }
+
+  function getEmployees(comp) {
+    return employees[comp._id] || [];
+  }
+
+  function getEmployeeCap(comp) {
+    const metaCap = rosterMeta[comp._id]?.cap;
+    if (typeof metaCap === "number") return metaCap;
+    const lvl = comp.activeUpgradeLevels?.breakRoom || 1;
+    const cfgCap = gameConfig?.upgradesConfig?.breakRoom?.levels?.[lvl]?.stats?.maxWorkers;
+    return typeof cfgCap === "number" ? cfgCap : lvl;
+  }
+
+  function getOwnerManagementPoints() {
+    const m = userData?.skills?.management;
+    if (!m) return 0;
+    for (const v of [m.total, m.value]) if (typeof v === "number") return v;
+    return 0;
+  }
+
+  // A hired manager would add their own management points, but manager contracts are not
+  // part of the official API, so only the owner's management counts here.
+  function empCtx(comp) {
+    return {
+      isCore: isCoreRegion(comp),
+      managementPoints: getOwnerManagementPoints(),
+    };
+  }
+
+  // ── Calculations ──
+  // Deposits are disabled since v0.27 and region bonuses are gone: the engine makes level × 24 PP a day.
+  function calcEnginePPDay(comp) {
+    const engineLevel = comp.activeUpgradeLevels?.automatedEngine || 1;
+    return engineLevel * 24;
+  }
+
+  function calcEmployeePPDay(emp, comp) {
+    return calcEmployeePPH(emp, empCtx(comp)) * 24;
+  }
+
+  function calcEmployeesPPDay(comp) {
+    return getEmployees(comp).reduce((sum, e) => sum + calcEmployeePPDay(e, comp), 0);
   }
 
   function calcCompanyPPDay(comp) {
-    const bonus = getRegionBonus(comp);
-    const enginePP = calcEnginePPDay(comp);
-    const compId = comp._id;
-    const ws = workers[compId] || [];
-    const workerPP = ws.reduce((sum, w) => sum + calcWorkerPPH(w, bonus) * 24, 0);
-    return enginePP + workerPP;
+    return calcEnginePPDay(comp) + calcEmployeesPPDay(comp);
   }
 
-  function calcWorkerBasePPH(w) {
-    // Base PP per hour BEFORE bonuses/fidelity
-    return ((w.energy || 0) / 100) * (w.productivity || 0);
-  }
-
-  function calcWorkerCostPerH(w) {
-    // Wage is per PP produced (before bonuses), not per hour
-    return calcWorkerBasePPH(w) * (w.wage || 0);
+  function calcEmployeeCostDay(emp) {
+    return empWagePerHour(emp) * 24;
   }
 
   function calcDailyCost(comp) {
-    const compId = comp._id;
-    const ws = workers[compId] || [];
-    return ws.reduce((sum, w) => sum + calcWorkerCostPerH(w) * 24, 0);
+    return getEmployees(comp).reduce((sum, e) => sum + calcEmployeeCostDay(e), 0);
   }
 
   function getItemPrice(itemCode) {
@@ -482,43 +492,37 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   }
 
   function calcDailyRevenue(comp) {
-    const ppPerUnit = getPPPerUnit(comp.itemCode);
-    if (!ppPerUnit) return 0;
-    const ppDay = calcCompanyPPDay(comp);
-    const margin = calcNetMarginPerUnit(comp.itemCode);
-    const revenue = (ppDay / ppPerUnit) * margin;
-    console.log(`[Revenue] ${comp.itemCode} | ppDay=${ppDay.toFixed(1)} | ppPerUnit=${ppPerUnit} | margin=${margin.toFixed(3)} | revenue=${revenue.toFixed(2)}`);
-    return revenue;
+    return calcCompanyPPDay(comp) * calcGoldPerPP(comp.itemCode);
   }
 
   function calcDailyProfit(comp) {
     return calcDailyRevenue(comp) - calcDailyCost(comp);
   }
 
+  function calcEmployeeNetDay(emp, comp) {
+    return calcEmployeePPDay(emp, comp) * calcGoldPerPP(comp.itemCode) - calcEmployeeCostDay(emp);
+  }
+
+  function hasEmployees(comp) {
+    return getEmployees(comp).length > 0;
+  }
+
   // ── Optimization Analysis ──
   function getWageLossWarnings() {
     const warnings = [];
     for (const comp of companies) {
-      const compId = comp._id;
-      const ws = workers[compId] || [];
-      const bonus = getRegionBonus(comp);
-      const ppPerUnit = getPPPerUnit(comp.itemCode);
-      const margin = calcNetMarginPerUnit(comp.itemCode);
-      for (const w of ws) {
-        const workerPPDay = calcWorkerPPH(w, bonus) * 24;
-        const unitsPerDay = ppPerUnit ? workerPPDay / ppPerUnit : 0;
-        const dailyContribution = unitsPerDay * margin;
-        const dailyWage = calcWorkerCostPerH(w) * 24;
+      const goldPerPP = calcGoldPerPP(comp.itemCode);
+      for (const emp of getEmployees(comp)) {
+        const dailyContribution = calcEmployeePPDay(emp, comp) * goldPerPP;
+        const dailyWage = calcEmployeeCostDay(emp);
         if (dailyWage > dailyContribution && dailyWage > 0) {
-          const wBasePPH = calcWorkerBasePPH(w);
-          const breakEvenWage = wBasePPH > 0 ? dailyContribution / (wBasePPH * 24) : 0;
           warnings.push({
             company: comp,
-            worker: w,
+            employee: emp,
             dailyWage,
             dailyContribution,
             loss: dailyWage - dailyContribution,
-            breakEvenWage,
+            breakEvenWagePerH: dailyContribution / 24,
           });
         }
       }
@@ -526,55 +530,33 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
     return warnings.sort((a, b) => b.loss - a.loss);
   }
 
-  function getBetterRegions() {
+  // Companies with employees outside the owner's core regions: moving home gives +5 %.
+  function getCoreRegionSuggestions() {
     const suggestions = [];
     const betonPrice = getItemPrice("concrete") || 1;
     const moveCost = gameConfig?.company?.moveCost || 5;
+    const homeRegion = getSuggestedHomeRegion();
 
     for (const comp of companies) {
-      const currentBonus = getRegionBonus(comp);
-      const itemCode = comp.itemCode;
-      const ppPerUnit = getPPPerUnit(itemCode);
-      const price = getItemPrice(itemCode);
-      const currentPPDay = calcCompanyPPDay(comp);
-
-      let bestRegion = null;
-      let bestBonus = currentBonus;
-
-      for (const region of Object.values(allRegions)) {
-        const regionCountry = countries[region.country] || null;
-        const regionEthics = regionCountry?._id ? partyEthics[regionCountry._id] : null;
-        const regionBonus = calcTotalBonus(region, itemCode, regionCountry, gameConfig, regionEthics);
-        if (regionBonus > bestBonus) {
-          bestBonus = regionBonus;
-          bestRegion = region;
-        }
-      }
-
-      if (bestRegion && bestBonus > currentBonus) {
-        const engineLevel = comp.activeUpgradeLevels?.automatedEngine || 1;
-        const newEnginePP = engineLevel * 24 * (1 + bestBonus / 100);
-        const compId = comp._id;
-        const ws = workers[compId] || [];
-        const newWorkerPP = ws.reduce((sum, w) => sum + calcWorkerPPH(w, bestBonus) * 24, 0);
-        const newPPDay = newEnginePP + newWorkerPP;
-        const ppDayGain = newPPDay - currentPPDay;
-        const unitsGain = ppDayGain / ppPerUnit;
-        const dailyGain = unitsGain * price;
-        const relocCost = moveCost * betonPrice;
-        const paybackDays = dailyGain > 0 ? relocCost / dailyGain : Infinity;
-
-        suggestions.push({
-          company: comp,
-          currentRegion: regions[comp.region],
-          currentBonus,
-          bestRegion,
-          bestBonus,
-          dailyGain,
-          relocCost,
-          paybackDays,
-        });
-      }
+      if (isCoreRegion(comp) || !hasEmployees(comp)) continue;
+      const goldPerPP = calcGoldPerPP(comp.itemCode);
+      const empPPDay = calcEmployeesPPDay(comp);
+      const empGoldDay = empPPDay * goldPerPP;
+      const dailyGain = empGoldDay * (coreFactor(true) - 1);
+      // Moving the company costs concrete and -10 happiness for 7 days (= -10 % employee output).
+      const happinessLoss = empGoldDay * coreFactor(true) * (RULES.companyMoveHappinessPenalty / 100) * RULES.movePenaltyDays;
+      const relocCost = moveCost * betonPrice + happinessLoss;
+      const paybackDays = dailyGain > 0 ? relocCost / dailyGain : Infinity;
+      suggestions.push({
+        company: comp,
+        currentRegion: regions[comp.region],
+        homeRegion,
+        dailyGain,
+        relocCost,
+        concreteCost: moveCost * betonPrice,
+        happinessLoss,
+        paybackDays,
+      });
     }
     return suggestions.sort((a, b) => a.paybackDays - b.paybackDays);
   }
@@ -586,19 +568,17 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
 
     const warnings = [];
     for (const comp of companies) {
-      const compId = comp._id;
-      const ws = workers[compId] || [];
-      if (!ws.length) continue;
+      const emps = getEmployees(comp);
+      if (!emps.length) continue;
 
       const factoryCountry = getCountryForRegion(comp.region);
       if (!factoryCountry) continue;
-      const factoryCountryId = factoryCountry._id;
 
-      if (warsWith.includes(factoryCountryId)) {
+      if (warsWith.includes(factoryCountry._id)) {
         warnings.push({
           company: comp,
           factoryCountry,
-          workerCount: ws.length,
+          employeeCount: emps.length,
         });
       }
     }
@@ -617,180 +597,133 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       const netMargin = price - materialCost;
       const goldPerPP = netMargin / pp;
       const needs = item.productionNeeds || null;
-      // Check if user produces this
       const userComps = companies.filter(c => c.itemCode === code);
-      // Calculate maximum possible global efficiency
-      let maxBonus = 0;
-      let bestRegionName = "N/A";
-      for (const regionId of Object.keys(regions)) {
-        const region = regions[regionId];
-        const country = getCountryForRegion(regionId);
-        const cEthics = country?._id ? partyEthics[country._id] : null;
-        const bonus = calcTotalBonus(region, code, country, gameConfig, cEthics);
-        if (bonus > maxBonus) {
-          maxBonus = bonus;
-          bestRegionName = region.name;
-        }
-      }
-      const maxGoldPerPP = goldPerPP * (1 + maxBonus / 100);
 
       products.push({
         itemCode: code, type: item.type, price: price, pp, materialCost, netMargin, goldPerPP, needs,
-        maxBonus, maxGoldPerPP, bestRegionName,
+        maxGoldPerPP: goldPerPP, // kept for the factory optimizer; regions give no product bonus anymore
         userCompanyCount: userComps.length,
         userTotalProfit: userComps.reduce((s, c) => s + calcDailyProfit(c), 0),
         userTotalRevenue: userComps.reduce((s, c) => s + calcDailyRevenue(c), 0),
         userTotalCost: userComps.reduce((s, c) => s + calcDailyCost(c), 0),
       });
     }
-    return products.sort((a, b) => b.maxGoldPerPP - a.maxGoldPerPP);
+    return products.sort((a, b) => b.goldPerPP - a.goldPerPP);
   }
 
+  // Product change (+5 concrete) and/or move into a core region (+5 concrete).
   function getGlobalOptimization() {
     if (!gameConfig) return [];
     const allProducts = getAllProductsRanked();
     const betonPrice = getItemPrice("concrete") || 1;
     const moveCost = gameConfig.company?.moveCost || 5;
     const changeCost = gameConfig.company?.changeItemCost || 5;
-    
+    const homeRegion = getSuggestedHomeRegion();
+
     const suggestions = [];
-    
+
     for (const comp of companies) {
       const currentItem = comp.itemCode;
-      const currentRegion = comp.region;
-      const currentBonus = getRegionBonus(comp);
-      const currentRevenue = calcDailyRevenue(comp);
-      const currentCost = calcDailyCost(comp);
-      const currentProfit = currentRevenue - currentCost;
-      const engineLevel = comp.activeUpgradeLevels?.automatedEngine || 1;
-      const compId = comp._id;
-      const ws = workers[compId] || [];
-      
+      const currentCore = isCoreRegion(comp);
+      const currentProfit = calcDailyProfit(comp);
+      const enginePP = calcEnginePPDay(comp);
+      const empPP = calcEmployeesPPDay(comp);
+      const cost = calcDailyCost(comp);
+
       let bestDailyGain = 0;
       let bestSuggestion = null;
-      
+
+      const regionOptions = [{ region: regions[comp.region], isCore: currentCore, move: false }];
+      if (!currentCore && homeRegion && empPP > 0) regionOptions.push({ region: homeRegion, isCore: true, move: true });
+
       for (const prod of allProducts) {
-        for (const regionId of Object.keys(regions)) {
-          if (prod.itemCode === currentItem && regionId === currentRegion) continue;
-          
-          const region = regions[regionId];
-          const country = getCountryForRegion(regionId);
-          const optEthics = country?._id ? partyEthics[country._id] : null;
-          const newBonus = calcTotalBonus(region, prod.itemCode, country, gameConfig, optEthics);
-          
-          const newEnginePP = engineLevel * 24 * (1 + newBonus / 100);
-          // Assuming workers are fired and re-hired? No, workers move with the factory (is loyalty kept? Let's assume yes).
-          const newWorkerPP = ws.reduce((sum, w) => {
-            const basePPH = calcWorkerBasePPH(w);
-            return sum + basePPH * (1 + newBonus / 100) * (1 + (w.fidelity || 0) / 100) * 24;
-          }, 0);
-          const newTotalPP = newEnginePP + newWorkerPP;
-          const newRevenue = (newTotalPP / prod.pp) * prod.netMargin;
-          const newCost = ws.reduce((sum, w) => sum + calcWorkerCostPerH(w) * 24, 0);
-          const newProfit = newRevenue - newCost;
+        for (const opt of regionOptions) {
+          if (prod.itemCode === currentItem && !opt.move) continue;
+          const newEmpPP = empPP / coreFactor(currentCore) * coreFactor(opt.isCore);
+          const newRevenue = (enginePP + newEmpPP) * prod.goldPerPP;
+          const newProfit = newRevenue - cost;
           const dailyGain = newProfit - currentProfit;
-          
+
           if (dailyGain > bestDailyGain) {
             let concreteNeeded = 0;
-            if (regionId !== currentRegion) concreteNeeded += moveCost;
+            if (opt.move) concreteNeeded += moveCost;
             if (prod.itemCode !== currentItem) concreteNeeded += changeCost;
-            
             const totalCost = concreteNeeded * betonPrice;
             const paybackDays = totalCost / dailyGain;
-            
+
             bestDailyGain = dailyGain;
             bestSuggestion = {
               company: comp,
               currentItem,
-              currentRegion: regions[currentRegion],
-              currentBonus,
+              currentRegion: regions[comp.region],
+              currentCore,
               currentProfit,
               newItem: prod.itemCode,
-              newRegion: region,
-              newBonus,
+              newRegion: opt.region,
+              newCore: opt.isCore,
               newProfit,
               dailyGain,
               totalCost,
               concreteNeeded,
-              paybackDays
+              paybackDays,
             };
           }
         }
       }
-      if (bestSuggestion) {
-        suggestions.push(bestSuggestion);
-      }
+      if (bestSuggestion) suggestions.push(bestSuggestion);
     }
     return suggestions.sort((a, b) => a.paybackDays - b.paybackDays);
   }
 
-  function getWorkerOptimization() {
-    // For each worker, find the factory (among user's factories) where they'd generate most net profit
+  // For each employee: the own company where they would earn the most net gold.
+  function getEmployeeOptimization() {
     if (!gameConfig) return [];
     const suggestions = [];
 
-    // Build a list of all workers with their current factory
-    const allWorkers = [];
-    for (const comp of companies) {
-      const ws = workers[comp._id] || [];
-      for (const w of ws) {
-        allWorkers.push({ worker: w, currentCompany: comp });
-      }
-    }
+    for (const fromComp of companies) {
+      const fromCore = isCoreRegion(fromComp);
+      const fromGoldPerPP = calcGoldPerPP(fromComp.itemCode);
+      const fromTax = getIncomeTaxPct(fromComp.region);
+      for (const emp of getEmployees(fromComp)) {
+        const ppDay = calcEmployeePPDay(emp, fromComp);
+        const costDay = calcEmployeeCostDay(emp); // wage is set by the employee, same everywhere
+        const currentNetPerDay = ppDay * fromGoldPerPP - costDay;
 
-    for (const { worker, currentCompany } of allWorkers) {
-      const currentBonus = getRegionBonus(currentCompany);
-      const currentPPPerUnit = getPPPerUnit(currentCompany.itemCode);
-      const currentPrice = getItemPrice(currentCompany.itemCode);
-      const basePPH = calcWorkerBasePPH(worker);
-      const fidelity = worker.fidelity || 0;
+        let bestComp = null;
+        let bestNetPerDay = currentNetPerDay;
+        let bestPPDay = ppDay;
 
-      const currentPPH = basePPH * (1 + currentBonus / 100) * (1 + fidelity / 100);
-      const currentMargin = calcNetMarginPerUnit(currentCompany.itemCode);
-      const currentRevPerH = currentPPPerUnit ? (currentPPH / currentPPPerUnit) * currentMargin : 0;
-      const costPerH = basePPH * (worker.wage || 0); // same everywhere
-      const currentNetPerH = currentRevPerH - costPerH;
-
-      let bestFactory = null;
-      let bestNetPerH = currentNetPerH;
-
-      for (const comp of companies) {
-        if (comp._id === currentCompany._id) continue;
-        const bonus = getRegionBonus(comp);
-        const ppPerUnit = getPPPerUnit(comp.itemCode);
-        const margin = calcNetMarginPerUnit(comp.itemCode);
-
-        const pph = basePPH * (1 + bonus / 100) * (1 + fidelity / 100);
-        const revPerH = ppPerUnit ? (pph / ppPerUnit) * margin : 0;
-        const netPerH = revPerH - costPerH;
-
-        if (netPerH > bestNetPerH) {
-          bestNetPerH = netPerH;
-          bestFactory = comp;
+        for (const toComp of companies) {
+          if (toComp._id === fromComp._id) continue;
+          if (getEmployees(toComp).length >= getEmployeeCap(toComp)) continue; // break room full
+          const newPPDay = ppDay / coreFactor(fromCore) * coreFactor(isCoreRegion(toComp));
+          const netPerDay = newPPDay * calcGoldPerPP(toComp.itemCode) - costDay;
+          if (netPerDay > bestNetPerDay) {
+            bestNetPerDay = netPerDay;
+            bestComp = toComp;
+            bestPPDay = newPPDay;
+          }
         }
-      }
 
-      if (bestFactory) {
-        const dailyGain = (bestNetPerH - currentNetPerH) * 24;
-        const fromTax = getWorkTaxRate(currentCompany);
-        const toTax = getWorkTaxRate(bestFactory);
-        const grossWagePerH = costPerH; // basePPH * wage, factory-independent
-        const workerNetWageFromPerDay = grossWagePerH * (1 - fromTax) * 24;
-        const workerNetWageToPerDay = grossWagePerH * (1 - toTax) * 24;
-        const workerWageGainPerDay = workerNetWageToPerDay - workerNetWageFromPerDay;
-        suggestions.push({
-          worker,
-          fromCompany: currentCompany,
-          toCompany: bestFactory,
-          currentNetPerDay: currentNetPerH * 24,
-          newNetPerDay: bestNetPerH * 24,
-          dailyGain,
-          fromTax,
-          toTax,
-          workerNetWageFromPerDay,
-          workerNetWageToPerDay,
-          workerWageGainPerDay,
-        });
+        if (bestComp) {
+          const toTax = getIncomeTaxPct(bestComp.region);
+          // Moving costs -5 happiness for 7 days (= -5 % output), tax difference changes happiness permanently.
+          const moveLoss = bestPPDay * calcGoldPerPP(bestComp.itemCode) * (RULES.moveHappinessPenalty / 100) * RULES.movePenaltyDays;
+          const dailyGain = bestNetPerDay - currentNetPerDay;
+          suggestions.push({
+            employee: emp,
+            fromCompany: fromComp,
+            toCompany: bestComp,
+            currentNetPerDay,
+            newNetPerDay: bestNetPerDay,
+            dailyGain,
+            moveLoss,
+            paybackDays: dailyGain > 0 ? moveLoss / dailyGain : Infinity,
+            fromTax,
+            toTax,
+            happinessDelta: (fromTax - toTax) * RULES.taxHappinessPerPercent,
+          });
+        }
       }
     }
     return suggestions.sort((a, b) => b.dailyGain - a.dailyGain);
@@ -803,11 +736,16 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
 
   const enemyWarnings = hasData ? getEnemyWarnings() : [];
   const wageWarnings = hasData ? getWageLossWarnings() : [];
-  const betterRegions = hasData ? getBetterRegions() : [];
+  const coreSuggestions = hasData ? getCoreRegionSuggestions() : [];
   const allProducts = hasData ? getAllProductsRanked() : [];
   const globalOptimization = hasData ? getGlobalOptimization() : [];
-  const workerOptimization = hasData ? getWorkerOptimization() : [];
+  const employeeOptimization = hasData ? getEmployeeOptimization() : [];
   const totalWarnings = enemyWarnings.length + wageWarnings.length;
+
+  const rosterUnavailable = hasData && companies.some(c => rosterMeta[c._id]?.error === "NOT_AVAILABLE");
+  const rosterFailedCount = hasData ? companies.filter(c => rosterMeta[c._id]?.error && rosterMeta[c._id].error !== "NOT_AVAILABLE").length : 0;
+  const totalEmployees = hasData ? companies.reduce((s, c) => s + getEmployees(c).length, 0) : 0;
+  const anyEstimateMissing = hasData && companies.some(c => getEmployees(c).some(e => !empHasEstimate(e)));
 
   const optimizerProps = hasData ? {
     liquidAssets: userData?.liquidAssets || 0,
@@ -816,20 +754,13 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
     prices: prices,
     bestProduct: allProducts[0],
     facs: companies.map(c => {
-      const bonus = getRegionBonus(c);
-      const baseGoldPerPP = calcGoldPerPP(c.itemCode);
-      const goldPerPPWithBonus = baseGoldPerPP * (1 + bonus / 100);
+      const goldPerPP = calcGoldPerPP(c.itemCode);
       return {
         level: c.activeUpgradeLevels?.automatedEngine || 1,
         name: c.name || c.itemCode,
         item: c.itemCode,
-        goldPerLevelPerDay: 24 * goldPerPPWithBonus,
-        workerGoldPerDay: (workers[c._id] || []).reduce((sum, w) => {
-          const wPPDay = calcWorkerPPH(w, bonus) * 24;
-          const wGoldDaily = wPPDay * baseGoldPerPP;
-          const wWageDaily = calcWorkerCostPerH(w) * 24;
-          return sum + (wGoldDaily - wWageDaily);
-        }, 0)
+        goldPerLevelPerDay: 24 * goldPerPP,
+        workerGoldPerDay: calcEmployeesPPDay(c) * goldPerPP - calcDailyCost(c),
       };
     })
   } : null;
@@ -881,6 +812,10 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
           <div style={{ marginTop: 12, fontSize: 12, fontFamily: F.m, color: C.green, textAlign: "center" }}>
             {L.successLoaded(userData.username, companies.length)}
             {ownerCountry && <span>{L.successCountry(ownerCountry.name)}</span>}
+            {hasData && !rosterUnavailable && rosterFailedCount === 0 && <span>{L.successEmployees(totalEmployees)}</span>}
+            {rosterFailedCount > 0 && <div style={{ color: C.accent, marginTop: 4 }}>{L.rosterFailed(rosterFailedCount)}</div>}
+            {rosterUnavailable && <div style={{ color: C.accent, marginTop: 4 }}>{L.rosterUnavailable}</div>}
+            {anyEstimateMissing && <div style={{ color: C.textMuted, marginTop: 4 }}>{L.estimateFallbackNote}</div>}
           </div>
         )}
       </GlassCard>
@@ -925,25 +860,6 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                 <span dangerouslySetInnerHTML={{ __html: t.icon }} /> {t.label}
               </Btn>
             ))}
-            {bgProgress && (
-              <div style={{ flex: 1, minWidth: 280, display: "flex", flexDirection: "column", gap: 4, justifyContent: "center", ...glass(0.05, 8), padding: "8px 14px", borderRadius: 12 }}>
-                <style>{`@keyframes slowOrangeBlink { 0% { opacity: 1; background: #f97316; } 50% { opacity: 0.4; background: #f97316; } 100% { opacity: 1; background: #f97316; } }`}</style>
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div style={{ fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700, whiteSpace: "nowrap" }}>
-                    {L.bgDataLabel}
-                  </div>
-                  <div style={{ flex: 1, height: 6, background: "rgba(255,255,255,0.1)", borderRadius: 3, overflow: "hidden" }}>
-                    <div style={{ width: `${(bgProgress.loaded / Math.max(1, bgProgress.total)) * 100}%`, height: "100%", background: bgProgress.status === "waiting" ? "#f97316" : C.green, transition: "width 0.3s", animation: bgProgress.status === "waiting" ? "slowOrangeBlink 2s infinite" : "none" }} />
-                  </div>
-                  <div style={{ fontSize: 11, color: bgProgress.status === "waiting" ? "#f97316" : C.green, fontWeight: 700, minWidth: 25, textAlign: "right" }}>
-                    {Math.round((bgProgress.loaded / Math.max(1, bgProgress.total)) * 100)}%
-                  </div>
-                </div>
-                <div style={{ fontSize: 10, color: bgProgress.status === "waiting" ? "#f97316" : C.textMuted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {bgProgress.status === "waiting" ? L.bgWaiting : L.bgLoading}
-                </div>
-              </div>
-            )}
           </div>
 
           {/* ── OVERVIEW TAB ── */}
@@ -951,7 +867,9 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
             <GlassCard style={{ padding: 0, overflow: "hidden" }}>
               <div style={{ padding: "16px 20px 8px" }}>
                 <Sec icon="&#127981;">{L.sectionFactoryOverview(companies.length)}</Sec>
-                <div style={{ fontSize: 11, color: C.textMuted, marginTop: -10, marginBottom: 8 }}>{L.tipClickWorkerDetails}</div>
+                <div style={{ fontSize: 11, color: C.textMuted, marginTop: -10, marginBottom: 8 }}>
+                  {rosterUnavailable ? L.engineOnlyNote : L.tipClickWorkerDetails}
+                </div>
               </div>
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1000 }}>
@@ -961,7 +879,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                     <th style={TH}>{L.colEngine}</th>
                     <th style={TH}>{L.colStorage}</th>
                     <th style={TH}>{L.colRegion}</th>
-                    <th style={TH}>{L.colBonus}</th>
+                    <th style={TH}><Tip text={L.tipCore}><span>{L.colCore}</span></Tip></th>
                     <th style={TH}>{L.colWorkers}</th>
                     <th style={TH}>{L.colEnginePP}</th>
                     <th style={TH}>{L.colWorkerPP}</th>
@@ -974,24 +892,29 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                   <tbody>
                     {companies.map((comp, i) => {
                       const compId = comp._id;
-                      const ws = workers[compId] || [];
-                      const bonus = getRegionBonus(comp);
+                      const emps = getEmployees(comp);
+                      const cap = getEmployeeCap(comp);
+                      const core = isCoreRegion(comp);
                       const enginePP = calcEnginePPDay(comp);
-                      const workerPPTotal = ws.reduce((sum, w) => sum + calcWorkerPPH(w, bonus) * 24, 0);
-                      const ppDay = enginePP + workerPPTotal;
+                      const empPPTotal = calcEmployeesPPDay(comp);
+                      const ppDay = enginePP + empPPTotal;
                       const revenue = calcDailyRevenue(comp);
                       const cost = calcDailyCost(comp);
                       const profit = calcDailyProfit(comp);
                       const isEnemy = enemyWarnings.some(w => w.company._id === compId);
                       const hasWageLoss = wageWarnings.some(w => w.company._id === compId);
+                      const rosterError = rosterMeta[compId]?.error;
+                      const rosterMissing = rosterError === "NOT_AVAILABLE";
+                      const rosterFailed = rosterError && !rosterMissing;
+                      const canExpand = emps.length > 0;
                       const isExpanded = expandedCompany === compId;
 
                       return [
-                        <tr key={compId} onClick={() => setExpandedCompany(isExpanded ? null : compId)}
-                          style={{ background: i % 2 ? C.rowAlt : "transparent", cursor: ws.length > 0 ? "pointer" : "default",
+                        <tr key={compId} onClick={() => canExpand && setExpandedCompany(isExpanded ? null : compId)}
+                          style={{ background: i % 2 ? C.rowAlt : "transparent", cursor: canExpand ? "pointer" : "default",
                             outline: isExpanded ? "1px solid " + C.accent + "44" : "none" }}>
                           <td style={TD(false)}>
-                            {ws.length > 0 && <span style={{ marginRight: 6, fontSize: 10, color: C.accent }}>{isExpanded ? "\u25BC" : "\u25B6"}</span>}
+                            {canExpand && <span style={{ marginRight: 6, fontSize: 10, color: C.accent }}>{isExpanded ? "▼" : "▶"}</span>}
                             {comp.name || L.factoryFallback(i)}
                           </td>
                           <td style={TD(false)}>{comp.itemCode}</td>
@@ -1001,13 +924,15 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                             <div style={{ fontSize: 13 }}>{getRegionName(comp)}</div>
                             <div style={{ fontSize: 10, color: C.textMuted }}>{getCountryName(comp.region)}</div>
                           </td>
-                          <td style={{ ...TD(false), color: bonus > 0 ? C.green : C.textMuted }}>
-                            {bonus > 0 ? "+" + fmt(bonus, 2) + "%" : "-"}
+                          <td style={{ ...TD(false), color: core ? C.green : C.textMuted }}>
+                            {core ? L.coreYes : L.coreNo}
                           </td>
-                          <td style={TD(false)}>{ws.length}</td>
+                          <td style={{ ...TD(false), color: rosterMissing ? C.textMuted : C.text }}>
+                            {rosterMissing ? "?" : emps.length}/{cap}
+                          </td>
                           <td style={{ ...TD(false), color: C.blue }}>{fmt(enginePP, 1)}</td>
-                          <td style={{ ...TD(false), color: workerPPTotal > 0 ? C.purple : C.textMuted }}>
-                            {workerPPTotal > 0 ? fmt(workerPPTotal, 1) : "-"}
+                          <td style={{ ...TD(false), color: empPPTotal > 0 ? C.purple : C.textMuted }}>
+                            {empPPTotal > 0 ? fmt(empPPTotal, 1) : "-"}
                           </td>
                           <td style={{ ...TD(false), fontWeight: 700 }}>{fmt(ppDay, 1)}</td>
                           <td style={{ ...TD(false), color: C.accent }}>{fmt(revenue, 2)} G</td>
@@ -1020,80 +945,113 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                           <td style={TD(false)}>
                             {isEnemy && <Bdg color={C.red}>{L.badgeEnemy}</Bdg>}
                             {hasWageLoss && <Bdg color="#ff9900">{L.badgeWageLoss}</Bdg>}
+                            {rosterFailed && <Bdg color="#ff9900">{L.badgeRosterFailed}</Bdg>}
                             {!getPPPerUnit(comp.itemCode) && <Bdg color={C.red}>{L.badgeConfigMissing}</Bdg>}
-                            {!isEnemy && !hasWageLoss && getPPPerUnit(comp.itemCode) && <Bdg color={C.green}>{L.badgeOk}</Bdg>}
+                            {!isEnemy && !hasWageLoss && !rosterFailed && getPPPerUnit(comp.itemCode) && <Bdg color={C.green}>{L.badgeOk}</Bdg>}
                           </td>
                         </tr>,
-                        // Expanded worker details
-                        isExpanded && ws.length > 0 && (
-                          <tr key={compId + "-workers"}>
+                        // Expanded employee details
+                        isExpanded && canExpand && (
+                          <tr key={compId + "-employees"}>
                             <td colSpan={14} style={{ padding: 0, background: "rgba(0,0,0,0.2)" }}>
                               <div style={{ padding: "12px 20px 12px 36px" }}>
                                 <div style={{ fontFamily: F.h, fontSize: 13, fontWeight: 700, color: C.accent, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8 }}>
-                                  {L.workerDetailsTitle(fmt(bonus, 2))}
+                                  {L.employeeDetailsTitle(emps.length, cap)}
+                                  <span style={{ color: core ? C.green : C.textMuted, marginLeft: 12, fontSize: 11 }}>{core ? L.coreDetailYes : L.coreDetailNo}</span>
                                 </div>
                                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                                   <thead><tr>
-                                    <th style={{ ...TH, fontSize: 11 }}>{L.colName}</th>
-                                    <th style={{ ...TH, fontSize: 11 }}>{L.colEnergy}</th>
-                                    <th style={{ ...TH, fontSize: 11 }}>{L.colProduction}</th>
-                                    <th style={{ ...TH, fontSize: 11 }}>{L.colFidelity}</th>
-                                    <th style={{ ...TH, fontSize: 11 }}>{L.colWage}</th>
-                                    <th style={{ ...TH, fontSize: 11 }}>{L.colFormula}</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>{L.colEmployee}</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>{L.colStats}</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>{L.colHappiness}</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>{L.colTraits}</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>{L.colTool}</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>{L.colPotential}</th>
                                     <th style={{ ...TH, fontSize: 11 }}>{L.colPPH}</th>
                                     <th style={{ ...TH, fontSize: 11 }}>{L.colPPDay}</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>{L.colWageH}</th>
                                     <th style={{ ...TH, fontSize: 11 }}>{L.colCostDay}</th>
+                                    <th style={{ ...TH, fontSize: 11 }}>{L.colNetDay}</th>
                                   </tr></thead>
                                   <tbody>
-                                    {ws.map((w, wi) => {
-                                      const wPPH = calcWorkerPPH(w, bonus);
-                                      const wPPDay = wPPH * 24;
-                                      const wBasePPH = calcWorkerBasePPH(w);
-                                      const wCostDay = calcWorkerCostPerH(w) * 24;
-                                      const fidelity = w.fidelity || 0;
+                                    {emps.map((emp, ei) => {
+                                      const pph = calcEmployeePPH(emp, empCtx(comp));
+                                      const ppDayE = pph * 24;
+                                      const wageH = empWagePerHour(emp);
+                                      const costDay = wageH * 24;
+                                      const netDay = calcEmployeeNetDay(emp, comp);
+                                      const happiness = empHappiness(emp);
+                                      const traits = empTraits(emp);
+                                      const tool = empToolInfo(emp);
+                                      const potential = typeof emp.potential === "number" ? emp.potential : null;
+                                      const potentialMax = typeof emp.potentialMax === "number" ? emp.potentialMax : null;
+                                      const happinessColor = happiness >= 50 ? C.green : happiness >= 30 ? C.accent : C.red;
                                       return (
-                                        <tr key={wi} style={{ background: wi % 2 ? "rgba(255,255,255,0.02)" : "transparent" }}>
-                                          <td style={{ ...TD(false), fontSize: 13 }}>{w.username || "Arbeiter " + (wi+1)}</td>
+                                        <tr key={emp._id || ei} style={{ background: ei % 2 ? "rgba(255,255,255,0.02)" : "transparent" }}>
                                           <td style={{ ...TD(false), fontSize: 13 }}>
-                                            <span style={{ color: C.accent }}>{w.energy}</span>
-                                            <span style={{ color: C.textMuted, fontSize: 10 }}> (aktuell: {fmt(w.energyCurrent || 0, 1)})</span>
+                                            {emp.name || L.employeeFallback(ei)}
+                                            {typeof emp.age === "number" && <span style={{ color: C.textMuted, fontSize: 10, marginLeft: 6 }}>{L.ageLabel(emp.age)}</span>}
                                           </td>
-                                          <td style={{ ...TD(false), fontSize: 13, color: C.blue }}>{w.productivity}</td>
-                                          <td style={{ ...TD(false), fontSize: 13, color: fidelity > 0 ? C.green : C.textMuted }}>
-                                            {fidelity > 0 ? "+" + fmt(fidelity, 0) + "%" : "-"}
+                                          <td style={{ ...TD(false), fontSize: 13, whiteSpace: "nowrap" }}>
+                                            <span style={{ color: C.blue }}>{fmt(statValue(emp, "production"), 0)}</span>
+                                            <span style={{ color: C.textMuted }}> / </span>
+                                            <span style={{ color: C.accent }}>{fmt(statValue(emp, "luck"), 0)}</span>
+                                            <span style={{ color: C.textMuted }}> / </span>
+                                            <span style={{ color: C.purple }}>{fmt(statValue(emp, "responsibility"), 0)}</span>
                                           </td>
-                                          <td style={{ ...TD(false), fontSize: 13 }}>
-                                            {fmt(w.wage || 0, 3)} G
-                                            <div style={{ fontSize: 9, color: C.textMuted }}>Basis: {fmt(wBasePPH, 2)} PP/h</div>
+                                          <td style={{ ...TD(false), fontSize: 13, color: happinessColor }}>{fmt(happiness, 0)}</td>
+                                          <td style={{ ...TD(false), fontSize: 11, color: C.textDim }}>
+                                            {traits.length ? traits.map(formatTraitName).join(", ") : <span style={{ color: C.textMuted }}>-</span>}
                                           </td>
-                                          <td style={{ ...TD(false), fontSize: 10, color: C.textMuted, fontFamily: F.m, whiteSpace: "nowrap" }}>
-                                            {w.energy}/100*{w.productivity}*(1+{fmt(bonus,1)}%)*(1+{fmt(fidelity,0)}%)
+                                          <td style={{ ...TD(false), fontSize: 11, color: C.textDim }}>
+                                            {tool ? (
+                                              <div>
+                                                <div>{tool.code}{tool.bonus != null && <span style={{ color: C.green }}> +{fmt(tool.bonus, 0)}%</span>}</div>
+                                                {tool.durability != null && <div style={{ fontSize: 9, color: C.textMuted }}>{fmt(tool.durability, 0)}{tool.maxDurability != null ? "/" + fmt(tool.maxDurability, 0) : ""} h</div>}
+                                              </div>
+                                            ) : <span style={{ color: C.textMuted }}>-</span>}
                                           </td>
-                                          <td style={{ ...TD(false), fontSize: 13, color: C.purple, fontWeight: 700 }}>{fmt(wPPH, 2)}</td>
-                                          <td style={{ ...TD(false), fontSize: 13, color: C.purple }}>{fmt(wPPDay, 1)}</td>
-                                          <td style={{ ...TD(false), fontSize: 13, color: wCostDay > 0 ? C.red : C.textMuted }}>
-                                            {wCostDay > 0 ? fmt(wCostDay, 2) + " G" : "-"}
+                                          <td style={{ ...TD(false), fontSize: 13, color: C.textDim }}>
+                                            {potential != null ? `${potential}${potentialMax != null ? "/" + potentialMax : ""}` : "-"}
+                                          </td>
+                                          <td style={{ ...TD(false), fontSize: 13, color: C.purple, fontWeight: 700 }}>
+                                            {fmt(pph, 2)}
+                                            {!empHasEstimate(emp) && <span title={L.estimateFallbackNote} style={{ color: C.textMuted, fontSize: 9, marginLeft: 4 }}>~</span>}
+                                          </td>
+                                          <td style={{ ...TD(false), fontSize: 13, color: C.purple }}>{fmt(ppDayE, 1)}</td>
+                                          <td style={{ ...TD(false), fontSize: 13 }}>{fmt(wageH, 3)} G</td>
+                                          <td style={{ ...TD(false), fontSize: 13, color: costDay > 0 ? C.red : C.textMuted }}>
+                                            {costDay > 0 ? fmt(costDay, 2) + " G" : "-"}
+                                          </td>
+                                          <td style={{ ...TD(false), fontSize: 13, color: netDay >= 0 ? C.green : C.red, fontWeight: 700 }}>
+                                            {fmt(netDay, 2)} G
                                           </td>
                                         </tr>
                                       );
                                     })}
                                     <tr style={{ borderTop: "1px solid rgba(255,255,255,0.1)" }}>
-                                      <td colSpan={6} style={{ ...TD(false), fontSize: 12, fontWeight: 700, color: C.textDim, textAlign: "right" }}>{L.sumWorkers}</td>
-                                      <td style={{ ...TD(false), fontSize: 13, color: C.purple, fontWeight: 700 }}>{fmt(ws.reduce((s, w) => s + calcWorkerPPH(w, bonus), 0), 2)}</td>
-                                      <td style={{ ...TD(false), fontSize: 13, color: C.purple, fontWeight: 700 }}>{fmt(workerPPTotal, 1)}</td>
+                                      <td colSpan={6} style={{ ...TD(false), fontSize: 12, fontWeight: 700, color: C.textDim, textAlign: "right" }}>{L.sumEmployees}</td>
+                                      <td style={{ ...TD(false), fontSize: 13, color: C.purple, fontWeight: 700 }}>{fmt(empPPTotal / 24, 2)}</td>
+                                      <td style={{ ...TD(false), fontSize: 13, color: C.purple, fontWeight: 700 }}>{fmt(empPPTotal, 1)}</td>
+                                      <td style={{ ...TD(false), fontSize: 13, color: C.textMuted }}>-</td>
                                       <td style={{ ...TD(false), fontSize: 13, color: C.red, fontWeight: 700 }}>{fmt(cost, 2)} G</td>
+                                      <td style={{ ...TD(false), fontSize: 13, color: C.textMuted }}>-</td>
                                     </tr>
                                     <tr>
                                       <td colSpan={6} style={{ ...TD(false), fontSize: 12, fontWeight: 700, color: C.textDim, textAlign: "right" }}>{L.engineRow(comp.activeUpgradeLevels?.automatedEngine || 1)}</td>
                                       <td style={{ ...TD(false), fontSize: 13, color: C.blue, fontWeight: 700 }}>{fmt(enginePP / 24, 2)}</td>
                                       <td style={{ ...TD(false), fontSize: 13, color: C.blue, fontWeight: 700 }}>{fmt(enginePP, 1)}</td>
                                       <td style={{ ...TD(false), fontSize: 13, color: C.textMuted }}>-</td>
+                                      <td style={{ ...TD(false), fontSize: 13, color: C.textMuted }}>-</td>
+                                      <td style={{ ...TD(false), fontSize: 13, color: C.textMuted }}>-</td>
                                     </tr>
                                     <tr style={{ borderTop: "1px solid " + C.accent + "44" }}>
                                       <td colSpan={6} style={{ ...TD(false), fontSize: 13, fontWeight: 700, color: C.accent, textAlign: "right" }}>{L.totalRow}</td>
                                       <td style={{ ...TD(false), fontSize: 14, color: C.accent, fontWeight: 700 }}>{fmt(ppDay / 24, 2)}</td>
                                       <td style={{ ...TD(false), fontSize: 14, color: C.accent, fontWeight: 700 }}>{fmt(ppDay, 1)}</td>
+                                      <td style={{ ...TD(false), fontSize: 13, color: C.textMuted }}>-</td>
                                       <td style={{ ...TD(false), fontSize: 13, color: C.red, fontWeight: 700 }}>{fmt(cost, 2)} G</td>
+                                      <td style={{ ...TD(false), fontSize: 14, color: profit >= 0 ? C.green : C.red, fontWeight: 700 }}>{fmt(profit, 2)} G</td>
                                     </tr>
                                   </tbody>
                                 </table>
@@ -1136,7 +1094,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                         <Bdg color={C.red}>{w.factoryCountry.name}</Bdg>
                       </div>
                       <div style={{ fontSize: 12, color: C.red, marginTop: 4 }}>
-                        {L.enemyWorkerWarning(w.workerCount)}
+                        {L.enemyWorkerWarning(w.employeeCount)}
                       </div>
                     </div>
                   ))}
@@ -1153,8 +1111,8 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead><tr>
                       <th style={TH}>{L.colName}</th>
-                      <th style={TH}>{L.colWorkers}</th>
-                      <th style={TH}>{L.colWage}</th>
+                      <th style={TH}>{L.colEmployee}</th>
+                      <th style={TH}>{L.colWageH}</th>
                       <th style={TH}>{L.colMaxWage}</th>
                       <th style={TH}>{L.colCost}</th>
                       <th style={TH}>{L.colRevenue}</th>
@@ -1165,11 +1123,13 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                         <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
                           <td style={TD(false)}>{w.company.name || w.company.itemCode}</td>
                           <td style={TD(false)}>
-                            <div>{w.worker.username || w.worker.userId?.slice(0, 8) || L.workerFallback(0).replace(" 1","")}</div>
-                            <div style={{ fontSize: 10, color: C.textMuted }}>E:{w.worker.energy} P:{w.worker.productivity}</div>
+                            <div>{w.employee.name || L.employeeFallback(i)}</div>
+                            <div style={{ fontSize: 10, color: C.textMuted }}>
+                              P:{fmt(statValue(w.employee, "production"), 0)} · {L.colHappiness} {fmt(empHappiness(w.employee), 0)}
+                            </div>
                           </td>
-                          <td style={{ ...TD(false), color: C.red }}>{fmt(w.worker.wage || 0, 3)} G</td>
-                          <td style={{ ...TD(false), color: C.green }}>{fmt(w.breakEvenWage, 3)} G</td>
+                          <td style={{ ...TD(false), color: C.red }}>{fmt(empWagePerHour(w.employee), 3)} G</td>
+                          <td style={{ ...TD(false), color: C.green }}>{fmt(w.breakEvenWagePerH, 3)} G</td>
                           <td style={{ ...TD(false), color: C.red }}>{fmt(w.dailyWage, 2)} G</td>
                           <td style={{ ...TD(false), color: C.green }}>{fmt(w.dailyContribution, 2)} G</td>
                           <td style={{ ...TD(false), color: C.red, fontWeight: 700 }}>-{fmt(w.loss, 2)} G</td>
@@ -1180,15 +1140,15 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                 </GlassCard>
               )}
 
-              {/* Better Regions */}
-              <GlassCard glow={betterRegions.length > 0 ? C.greenGlow : undefined}>
-                <Sec icon="&#127758;">{L.sectionBetterRegions(betterRegions.length)}</Sec>
+              {/* Core region check */}
+              <GlassCard glow={coreSuggestions.length > 0 ? C.greenGlow : undefined}>
+                <Sec icon="&#127968;">{L.sectionCoreRegions(coreSuggestions.length)}</Sec>
                 <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
-                  {L.betterRegionsDesc}
+                  {L.coreRegionsDesc}
                 </div>
-                {betterRegions.length === 0 ? (
+                {coreSuggestions.length === 0 ? (
                   <div style={{ padding: "16px", textAlign: "center", color: C.green, background: "rgba(0,255,0,0.05)", borderRadius: 8, border: "1px solid " + C.green + "44" }}>
-                    {L.allOptimalRegions}
+                    {L.allCoreRegions}
                   </div>
                 ) : (
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -1196,13 +1156,13 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                       <th style={TH}>{L.colName}</th>
                       <th style={TH}>{L.colCurrent}</th>
                       <th style={TH}></th>
-                      <th style={TH}>{L.colBestRegion}</th>
+                      <th style={TH}>{L.colHomeRegion}</th>
                       <th style={TH}>{L.colExtraGain}</th>
                       <th style={TH}>{L.colMoveCost}</th>
                       <th style={TH}>{L.colPayback}</th>
                     </tr></thead>
                     <tbody>
-                      {betterRegions.map((s, i) => (
+                      {coreSuggestions.map((s, i) => (
                         <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
                           <td style={TD(false)}>
                             <div>{s.company.name || s.company.itemCode}</div>
@@ -1210,15 +1170,18 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                           </td>
                           <td style={TD(false)}>
                             <div>{s.currentRegion?.name || "?"}</div>
-                            <div style={{ fontSize: 10, color: C.textMuted }}>+{fmt(s.currentBonus, 1)}%</div>
+                            <div style={{ fontSize: 10, color: C.textMuted }}>{getCountryName(s.company.region)}</div>
                           </td>
                           <td style={{ ...TD(false), color: C.accent, fontSize: 18 }}>&rarr;</td>
                           <td style={TD(false)}>
-                            <div style={{ color: C.green }}>{s.bestRegion?.name || "?"}</div>
-                            <div style={{ fontSize: 10, color: C.green }}>+{fmt(s.bestBonus, 1)}%</div>
+                            <div style={{ color: C.green }}>{s.homeRegion?.name || ownerCountry?.name || "?"}</div>
+                            <div style={{ fontSize: 10, color: C.green }}>{L.coreYes}</div>
                           </td>
                           <td style={{ ...TD(false), color: C.green, fontWeight: 700 }}>+{fmt(s.dailyGain, 2)} G</td>
-                          <td style={{ ...TD(false), color: C.textDim }}>{fmt(s.relocCost, 2)} G</td>
+                          <td style={{ ...TD(false), color: C.textDim }}>
+                            <div>{fmt(s.relocCost, 2)} G</div>
+                            <div style={{ fontSize: 10, color: C.textMuted }}>{L.moveCostBreakdown(fmt(s.concreteCost, 2), fmt(s.happinessLoss, 2))}</div>
+                          </td>
                           <td style={{ ...TD(false), fontWeight: 700, color: s.paybackDays <= 7 ? C.green : s.paybackDays <= 30 ? C.accent : C.red }}>
                             {s.paybackDays === Infinity ? L.never : L.days(fmt(s.paybackDays, 1))}
                           </td>
@@ -1229,39 +1192,39 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                 )}
               </GlassCard>
 
-              {/* Worker Optimization */}
-              {workerOptimization.length > 0 && (
+              {/* Employee Optimization */}
+              {employeeOptimization.length > 0 && (
                 <GlassCard glow={C.blueGlow}>
-                  <Sec icon="&#128101;">{L.sectionWorkerOpt(workerOptimization.length)}</Sec>
+                  <Sec icon="&#128101;">{L.sectionEmployeeOpt(employeeOptimization.length)}</Sec>
                   <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
-                    {L.workerOptDesc}
+                    {L.employeeOptDesc}
                   </div>
-                  {workerOptimization.map((s, i) => (
+                  {employeeOptimization.map((s, i) => (
                     <div key={i} style={{ ...glass(0.08, 10), borderRadius: 8, padding: "12px 16px", marginBottom: 8 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                         <div>
-                          <span style={{ color: C.accent, fontWeight: 700 }}>{s.worker.username || L.workerFallback(0).replace(" 1","")}</span>
+                          <span style={{ color: C.accent, fontWeight: 700 }}>{s.employee.name || L.employeeFallback(i)}</span>
                           <span style={{ color: C.textDim, margin: "0 8px" }}>{L.wordFrom}</span>
                           <span style={{ color: C.text, fontWeight: 600 }}>{s.fromCompany.name || s.fromCompany.itemCode}</span>
-                          <span style={{ color: C.textDim, fontSize: 12 }}> ({s.fromCompany.itemCode}, {fmt(s.currentNetPerDay, 2)} G/Tag)</span>
+                          <span style={{ color: C.textDim, fontSize: 12 }}> ({s.fromCompany.itemCode}, {fmt(s.currentNetPerDay, 2)} G/d)</span>
                           <span style={{ color: C.accent, margin: "0 10px", fontSize: 16 }}>&rarr;</span>
                           <span style={{ color: C.green, fontWeight: 600 }}>{s.toCompany.name || s.toCompany.itemCode}</span>
-                          <span style={{ color: C.green, fontSize: 12 }}> ({s.toCompany.itemCode}, {fmt(s.newNetPerDay, 2)} G/Tag)</span>
+                          <span style={{ color: C.green, fontSize: 12 }}> ({s.toCompany.itemCode}, {fmt(s.newNetPerDay, 2)} G/d)</span>
                         </div>
-                        <Bdg color={C.green}>+{fmt(s.dailyGain, 2)} G/Tag</Bdg>
+                        <Bdg color={C.green}>+{fmt(s.dailyGain, 2)} G/d</Bdg>
                       </div>
                       <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(255,255,255,0.08)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 12 }}>
                         <div style={{ color: C.textDim }}>
-                          {L.laborTax}{" "}
-                          <span style={{ color: C.text }}>{fmt(s.fromTax * 100, 1)}%</span>
+                          {L.incomeTax}{" "}
+                          <span style={{ color: C.text }}>{fmt(s.fromTax, 1)}%</span>
                           <span style={{ margin: "0 6px" }}>&rarr;</span>
-                          <span style={{ color: s.toTax <= s.fromTax ? C.green : C.red }}>{fmt(s.toTax * 100, 1)}%</span>
+                          <span style={{ color: s.toTax <= s.fromTax ? C.green : C.red }}>{fmt(s.toTax, 1)}%</span>
                           <span style={{ marginLeft: 8, color: C.textDim }}>
-                            {L.netWageLine(fmt(s.workerNetWageFromPerDay, 2), fmt(s.workerNetWageToPerDay, 2))}
+                            {L.movePenaltyLine(fmt(s.moveLoss, 2), s.paybackDays === Infinity ? L.never : L.days(fmt(s.paybackDays, 1)))}
                           </span>
                         </div>
-                        <Bdg color={s.workerWageGainPerDay >= 0 ? C.green : C.red}>
-                          {L.workerGainBadge((s.workerWageGainPerDay >= 0 ? "+" : "") + fmt(s.workerWageGainPerDay, 2))}
+                        <Bdg color={s.happinessDelta >= 0 ? C.green : C.red}>
+                          {L.happinessDeltaBadge((s.happinessDelta >= 0 ? "+" : "") + fmt(s.happinessDelta, 0))}
                         </Bdg>
                       </div>
                     </div>
@@ -1298,12 +1261,12 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                           <td style={TD(false)}>{s.company.name || "Fabrik"}</td>
                           <td style={TD(false)}>
                             <div>{s.currentItem}</div>
-                            <div style={{ fontSize: 10, color: C.textMuted }}>{s.currentRegion?.name} (+{fmt(s.currentBonus, 1)}%)</div>
+                            <div style={{ fontSize: 10, color: C.textMuted }}>{s.currentRegion?.name} ({s.currentCore ? L.coreYes : L.coreNo})</div>
                           </td>
                           <td style={{ ...TD(false), color: C.accent, fontSize: 18 }}>&rarr;</td>
                           <td style={TD(false)}>
                             <div style={{ color: C.green, fontWeight: 700 }}>{s.newItem}</div>
-                            <div style={{ fontSize: 10, color: C.green }}>{s.newRegion?.name} (+{fmt(s.newBonus, 1)}%)</div>
+                            <div style={{ fontSize: 10, color: C.green }}>{s.newRegion?.name} ({s.newCore ? L.coreYes : L.coreNo})</div>
                           </td>
                           <td style={{ ...TD(false), color: C.textDim }}>{fmt(s.currentProfit, 2)} G</td>
                           <td style={{ ...TD(false), color: C.green }}>{fmt(s.newProfit, 2)} G</td>
@@ -1341,7 +1304,6 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                     <th style={TH}>{L.colMargin}</th>
                     <th style={TH}>{L.colPPUnit}</th>
                     <th style={TH}>{L.colBaseMarginPP}</th>
-                    <th style={TH}>{L.colMaxMarginPP}</th>
                     <th style={TH}>{L.colYourFactories}</th>
                     <th style={TH}>{L.colYourProfit}</th>
                   </tr></thead>
@@ -1377,12 +1339,8 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                             {fmt(p.netMargin, 4)} G
                           </td>
                           <td style={TD(false)}>{p.pp}</td>
-                          <td style={{ ...TD(false), fontWeight: 700, color: C.textDim, fontSize: 13 }}>
+                          <td style={{ ...TD(false), fontWeight: 700, color: i === 0 ? C.green : p.goldPerPP > 0 ? C.text : C.red, fontSize: 15 }}>
                             {fmt(p.goldPerPP, 4)} G
-                          </td>
-                          <td style={{ ...TD(false), fontWeight: 700, color: i === 0 ? C.green : p.maxGoldPerPP > 0 ? C.text : C.red, fontSize: 15 }}>
-                            <div>{fmt(p.maxGoldPerPP, 4)} G</div>
-                            <div style={{ fontSize: 10, color: C.green }}>{p.bestRegionName} (+{fmt(p.maxBonus, 1)}%)</div>
                           </td>
                           <td style={TD(false)}>
                             {isProducing
