@@ -119,9 +119,14 @@ export function Inp({ label, value, onChange, step = 1, suffix, tip }) {
 export function Bdg({ color, children }) {
   return <span style={{ display: "inline-block", padding: "3px 10px", borderRadius: 4, fontSize: 13, fontWeight: 700, fontFamily: F.h, background: color + "25", color, border: "1px solid " + color + "44", letterSpacing: "0.06em", textTransform: "uppercase", textShadow: "0 0 8px " + color + "44" }}>{children}</span>;
 }
-export function Tip({ text, children, pos = "top" }) {
+// wrap: long texts break into lines instead of running off the screen.
+export function Tip({ text, children, pos = "top", wrap }) {
   if (!text) return children;
-  return <span className="tip-wrap">{children}<span className="tip-box" style={pos === "bottom" ? { bottom: "auto", top: "calc(100% + 8px)" } : {}}>{text}</span></span>;
+  const style = {
+    ...(pos === "bottom" ? { bottom: "auto", top: "calc(100% + 8px)" } : {}),
+    ...(wrap ? { whiteSpace: "normal", width: "min(420px, 90vw)" } : {}),
+  };
+  return <span className="tip-wrap">{children}<span className="tip-box" style={style}>{text}</span></span>;
 }
 export function Btn({ on, color, children, onClick, big, disabled }) {
   const c = color || C.accent;
@@ -140,17 +145,25 @@ export const getTD = (hl) => ({ padding: "8px 14px", borderBottom: "1px solid rg
 // ── API ──
 const API_BASE = "https://api2.warera.io/trpc/";
 
+// Personal API key sent with every call. The dashboard sets it from its key input, so the key
+// that is sent is always the one the user sees; until then the stored key is used.
+let activeApiKey = null;
+export function setActiveApiKey(key) {
+  activeApiKey = (key || "").trim();
+}
+
+function getActiveApiKey() {
+  if (activeApiKey !== null) return activeApiKey;
+  try { return localStorage.getItem("warera_api_key")?.trim() || ""; } catch { return ""; }
+}
+
 export async function apiCall(endpoint, body, maxRetries = 3) {
   let attempt = 0;
   while (true) {
     const headers = { "Content-Type": "application/json" };
-    try {
-      const apiKey = localStorage.getItem("warera_api_key");
-      if (apiKey) {
-        headers["Authorization"] = `Bearer ${apiKey.trim()}`;
-        headers["x-api-key"] = apiKey.trim();
-      }
-    } catch {}
+    // The game's API token settings say to send the token in the X-API-Key header.
+    const apiKey = getActiveApiKey();
+    if (apiKey) headers["X-API-Key"] = apiKey;
 
     const r = await fetch(API_BASE + endpoint, {
       method: "POST", headers,
