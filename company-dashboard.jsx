@@ -43,11 +43,11 @@ const RULES = {
   coreRegionBonusPercent: 5,     // company in a core region of the owner's country
   specializationPercentPerDay: 1, // +1 % per day worked in a good, kept per good ...
   specializationMaxPercent: 20,  // ... up to +20 %
-  responsibilityFullAt: 10,      // Responsibility blocks min(1, R/10) of every happiness loss
+  responsibilityHappinessPerPoint: 3, // v0.27.3: +3 base happiness per Responsibility point
   loyalLossMultiplier: 0.5,      // trait "loyal" halves happiness losses
   taxShyPercentPerTaxPercent: 1, // trait "taxShy": -1 % output per 1 % income tax ...
   taxShyMaxPercent: 30,          // ... down to -30 %
-  moveHappinessPenalty: 5,       // employee moved between own companies (7 days)
+  moveHappinessPenalty: 0,       // v0.27.3: transfers between own companies are free (was -5 for 7 days)
   companyMoveHappinessPenalty: 10, // company moved to another region (7 days, not on a free move)
   movePenaltyDays: 7,
   taxHappinessPerPercent: 1,     // each 1 % income tax = -1 happiness
@@ -85,18 +85,18 @@ const TRAITS = {
 // (move penalty 7 days, specialization at most 20 days to its cap, burnout 60 days).
 const TRANSITION_DAYS = 61;
 
-// Only procedures documented in the official WarEra API (https://api2.warera.io/docs,
-// spec at https://api2.warera.io/openapi.json) may be called, with or without the personal
-// API key. WarEra v0.27.2 announced that API keys can now read your own employees and their
-// events (https://app.warera.io/article/6ae2608f707baf45eebf26c5), but the spec does not list
-// those procedures yet, so both entries stay null until it does. The game client reads them as:
+// WarEra v0.27.2 opened the employee procedures to personal API keys
+// (https://app.warera.io/article/6ae2608f707baf45eebf26c5). The official Swagger
+// (api2.warera.io/docs, spec version 0.17.4-beta) lags behind the live API; the community
+// API explorer at https://warera.realmarijn.nl/api-explorer documents the full surface and
+// confirms both procedure names (checked 2026-11-06):
 //   employees: "employee.getMyEmployees" - no input; one flat array with the employees of all
 //              the key owner's companies, each linked by `company` (company id).
 //   events:    "employeeEvent.getMine"   - no input; array of events, company in cast[0].company.
 // Both return only the key owner's own data, so they are only called with an API key.
 const OFFICIAL_EMPLOYEE_ENDPOINTS = {
-  employees: null,
-  events: null,
+  employees: "employee.getMyEmployees",
+  events: "employeeEvent.getMine",
 };
 
 // ── Helpers ──
@@ -172,16 +172,19 @@ function hasLeft(emp) {
   return !!emp?.leftAt;
 }
 
-// Stat before the floor of 1: base + training + revealed flat trait effects.
-// null while the game still hides the stat (it shows "?").
+// Stat before the floor of 1: base + training + flat (non-percent) contributions. The live API
+// (v0.27.2+, verified 2026-11-06) delivers a full breakdown for every employee and has no
+// `revealed` gate any more; percent:true contributions (e.g. specialization) are production-bonus
+// percents, not stat points. null only for shapes that still hide the stat.
 function rawStatValue(emp, stat) {
-  if (!emp?.revealed?.[stat]) return null;
   const b = emp?.breakdown?.[stat];
   if (b && typeof b === "object") {
-    return (Array.isArray(b.contributions) ? b.contributions : []).reduce(
-      (s, c) => (c?.revealed && !c.percent ? s + num(c.delta) : s),
-      num(b.base) + num(b.trained));
+    const flat = (Array.isArray(b.contributions) ? b.contributions : []).reduce(
+      (s, c) => (c && !c.percent && c.revealed !== false ? s + num(c.delta) : s), 0);
+    if (typeof b.base === "number" || typeof b.trained === "number") return num(b.base) + num(b.trained) + flat;
+    if (typeof b.total === "number") return b.total;
   }
+  if (emp?.revealed && !emp.revealed[stat]) return null; // old gated shape
   const base = emp?.base?.[stat];
   return typeof base === "number" ? base : null;
 }
@@ -203,17 +206,20 @@ function empQuitChance(emp) {
   return typeof q === "number" && q > 0 ? q : 0;
 }
 
-// Revealed trait codes. Hidden traits are only counted, like in the game.
+// Trait codes. The live API (v0.27.3+) sends every trait with its code in the open; an entry
+// counts as hidden only without a code or with an explicit revealed:false (old shape).
 function empTraits(emp) {
-  const list = (Array.isArray(emp?.traits) ? emp.traits : []).filter(t => t && typeof t.code === "string");
+  const list = (Array.isArray(emp?.traits) ? emp.traits : []).filter(t => t && typeof t === "object");
+  const visible = list.filter(t => typeof t.code === "string" && t.revealed !== false);
   return {
-    revealed: list.filter(t => t.revealed).map(t => t.code),
-    hiddenCount: list.filter(t => !t.revealed).length,
+    revealed: visible.map(t => t.code),
+    hiddenCount: list.length - visible.length,
   };
 }
 
 function revealedTraits(emp) {
-  return (Array.isArray(emp?.traits) ? emp.traits : []).filter(t => t && t.revealed && typeof t.code === "string");
+  return (Array.isArray(emp?.traits) ? emp.traits : [])
+    .filter(t => t && typeof t.code === "string" && t.revealed !== false);
 }
 
 function hasRevealedTrait(emp, code) {
@@ -310,11 +316,11 @@ function baseEmployeePPH(emp, ctx) {
   return num(statValue(emp, "production"), 0) / RULES.outputDivisor;
 }
 
-// Share of a happiness loss that reaches the employee: Responsibility blocks min(1, R/10) of it
-// and the loyal trait halves it. A hidden Responsibility counts as 0.
+// Share of a happiness loss that reaches the employee. Since v0.27.3 Responsibility no longer
+// dampens losses (it adds +3 base happiness per point instead, which the API already includes in
+// happinessBreakdown.value); only the loyal trait halves losses (shown as `mitigated`).
 function happinessLossFactor(emp) {
-  const shield = Math.min(1, Math.max(0, num(statValue(emp, "responsibility"), 0)) / RULES.responsibilityFullAt);
-  return (1 - shield) * (hasRevealedTrait(emp, "loyal") ? RULES.loyalLossMultiplier : 1);
+  return hasRevealedTrait(emp, "loyal") ? RULES.loyalLossMultiplier : 1;
 }
 
 function taxShyPercent(emp, taxPct) {
