@@ -40,7 +40,7 @@ import {
 } from "./employee-model.js";
 import {
   OPT_DEFAULTS, buildWorkforceModel, optimizeDistribution, buildMoveSequence, evaluatePlan, adviseAll,
-  trainingEV, candidateValue, minCandidate, managerROI, toolboxBalance,
+  trainingEV, candidateValue, minCandidate, managerROI, toolboxBalance, toolboxValueEstimate,
 } from "./employee-optimizer.js";
 
 // ── Constants ──
@@ -378,6 +378,7 @@ function EmpDetail({ r, ctx }) {
 export default function WorkforceTab({
   L, theme, firmsInput, employeesByCompany, employeeStatus, events, eventStatus, summary, ppm, ppmEstimated,
   userSkills, prodSkillLevel, apiKeySet, onReload, reloading, getEmployeeStateText,
+  scrapPrice = 0, // market price of "scraps" (tools destroy into scraps → toolbox scrap floor)
 }) {
   if (theme) setThemeVars(theme);
   const isMobile = useIsMobile();
@@ -551,6 +552,7 @@ export default function WorkforceTab({
       case "paused": return { text: L.bPaused, color: C.textDim };
       case "toolBroken": return { text: L.bToolBroken, color: ORANGE };
       case "toolMismatch": return { text: L.bToolMismatch, color: ORANGE };
+      case "toolReturns": return { text: L.bToolReturns, color: C.textDim };
       case "loss": return { text: L.bLoss, color: C.red };
       case "trainToday": return { text: L.bTrainToday, color: C.blue };
       case "uncertain": return { text: L.bUncertain, color: C.purple };
@@ -1513,7 +1515,11 @@ export default function WorkforceTab({
                         {r.emp?.name || r.id}
                         {isNum(r.emp?.age) && <span style={{ color: C.textMuted, fontSize: 10, marginLeft: 6 }}>{L.ageLabel(r.emp.age)}</span>}
                       </div>
-                      <div style={mutedText}>{firmLabel(r.firmId)}</div>
+                      <div style={mutedText}>
+                        {String(index.empById.get(r.id)?.firmId) !== String(r.firmId)
+                          ? <>{firmLabel(index.empById.get(r.id)?.firmId)} <span style={{ color: C.accent }}>&rarr; {firmLabel(r.firmId)}</span></>
+                          : firmLabel(r.firmId)}
+                      </div>
                     </div>
                     {p.verdict}
                   </div>
@@ -1556,7 +1562,14 @@ export default function WorkforceTab({
                           {isNum(r.emp?.age) && <span style={{ color: C.textMuted, fontSize: 10, marginLeft: 6 }}>{L.ageLabel(r.emp.age)}</span>}
                           {traitChips(r.emp)}
                         </td>
-                        <td style={{ ...TD(false), fontSize: 13 }}>{firmLabel(r.firmId)}</td>
+                        <td style={{ ...TD(false), fontSize: 13 }}>
+                          {String(index.empById.get(r.id)?.firmId) !== String(r.firmId) ? (
+                            <>
+                              <div style={{ color: C.textDim }}>{firmLabel(index.empById.get(r.id)?.firmId)}</div>
+                              <div style={{ color: C.accent, fontSize: 11 }}>&rarr; {firmLabel(r.firmId)}</div>
+                            </>
+                          ) : firmLabel(r.firmId)}
+                        </td>
                         <td style={{ ...TD(false), fontSize: 13, whiteSpace: "nowrap" }}>{p.net}</td>
                         <td style={{ ...TD(false), fontSize: 13, whiteSpace: "nowrap" }}>{p.remaining}</td>
                         <td style={{ ...TD(false), fontSize: 13 }}>{p.potential}</td>
@@ -1670,6 +1683,25 @@ export default function WorkforceTab({
               <NumInput value={settings.toolboxValue} step={0.5} onChange={v => updateSettings({ toolboxValue: v })} />
             </Field>
           </div>
+          {(() => {
+            // Derived value: scrap floor (tradable scraps) vs utility on this roster.
+            const est = model ? safe(() => toolboxValueEstimate(model, summary, scrapPrice)).value : null;
+            if (!est) return null;
+            return (
+              <div style={{ ...dimText, marginTop: 4, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <Tip text={L.toolboxEstTip} wrap>
+                  <span style={{ cursor: "help" }}>
+                    {L.toolboxEstLine(est.scrapKnown ? fmt(est.scrapPerBox, 2) : "?", fmt(est.utilityPerBox, 2))} &#9432;
+                  </span>
+                </Tip>
+                {Math.abs(n0(settings.toolboxValue) - est.suggested) > 0.005 && (est.scrapKnown || est.state === "deficit") && (
+                  <Btn color={C.green} onClick={() => updateSettings({ toolboxValue: Math.round(est.suggested * 100) / 100 })}>
+                    {L.toolboxEstApply(fmt(est.suggested, 2))}
+                  </Btn>
+                )}
+              </div>
+            );
+          })()}
         </GlassCard>
 
         <GlassCard>

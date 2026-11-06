@@ -749,9 +749,9 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
               place, day: d, neutral, steady: !!steady, transferred: false,
               happinessDelta: !steady && d < RULES.movePenaltyDays ? penalty : 0,
             };
-            const kept = projectEmployeePPH(emp, ctx, { ...common, toolReturned: false }, nowMs);
-            const returned = projectEmployeePPH(emp, ctx, { ...common, toolReturned: true }, nowMs);
-            const after = Math.max(kept, returned);
+            // Unfitting tools go back to the inventory automatically (game behavior), which
+            // also flips handy off / improviser on.
+            const after = projectEmployeePPH(emp, ctx, { ...common, toolReturned: true }, nowMs);
             return s + (after * prod.goldPerPP - stay * currentGoldPerPP) * 24;
           }, 0);
           const dailyGain = gainOnDay(TRANSITION_DAYS);
@@ -760,22 +760,10 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       }
       if (!best) continue;
 
-      // Does the recommendation assume taking an unfitting tool off in the game? (M28: the
-      // better of keeping it idle vs returning it counts; returning needs a manual step.)
-      const bestPlace = {
-        itemCode: best.prod.itemCode, itemType: best.prod.type, isCore: best.opt.isCore,
-        ...(best.opt.move ? {
-          taxPct: getIncomeTaxPct(best.opt.region._id),
-          regionCountry: best.opt.region.country ?? null,
-          regionInitialCountry: best.opt.region.initialCountry ?? best.opt.region.country ?? null,
-        } : {}),
-      };
+      // Will the game auto-return tools on this product change? (Informational hint only.)
       const toolRemove = best.prod.itemCode !== currentItem && emps.some(emp => {
         const tool = empToolInfo(emp);
-        if (!tool || toolFitsGood(tool, best.prod.itemCode)) return false;
-        const common = { place: bestPlace, day: TRANSITION_DAYS, neutral: neutralOf.get(emp), steady: true, transferred: false };
-        return projectEmployeePPH(emp, ctx, { ...common, toolReturned: true }, nowMs)
-          > projectEmployeePPH(emp, ctx, { ...common, toolReturned: false }, nowMs);
+        return !!tool && !toolFitsGood(tool, best.prod.itemCode);
       });
 
       let concreteNeeded = 0;
@@ -1302,6 +1290,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
               onReload={reloadEmployees}
               reloading={reloading}
               getEmployeeStateText={getEmployeeStateText}
+              scrapPrice={getItemPrice("scraps")}
             />
           )}
 

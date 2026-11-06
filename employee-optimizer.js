@@ -1153,7 +1153,10 @@ export function adviseAll(model, assignment, optsIn = {}) {
     const grossMarginal = (dayWith - dayWithout) / w0;
     const marginalDay = grossMarginal - 24 * emp.wageH;
 
-    const tOwn = { nowMs, d: 0, moved: false };
+    // The advisor judges the plan target state: the moved flag makes an auto-returned tool
+    // correctly lose its bonus (and enables improviser). No steady here — netNow and the loss
+    // badge mirror TODAY's numbers, as shown in the game.
+    const tOwn = { nowMs, d: 0, moved: firm.id !== emp.firmId };
     const ownPPH = pphAt(emp.raw, emp.neutral, firm.place, others.map(id => model.emps.get(id).raw), tOwn);
     const netNow = 24 * (firm.g * ownPPH - emp.wageH);
     const coworkerDeltaDay = grossMarginal - 24 * firm.g * ownPPH;
@@ -1237,8 +1240,13 @@ export function adviseAll(model, assignment, optsIn = {}) {
     if (netNow < 0) badges.push("loss");
     if (trainableToday) badges.push("trainToday");
     const tool = empToolInfo(emp.raw);
+    // A persistently mismatched tool cannot exist in-game (moves auto-return it); the badge
+    // against the CURRENT firm stays only as a defensive catch. A plan move into a firm the
+    // tool does not fit means the game will return it to the inventory → "toolReturns".
+    const curFirm = model.firms.get(emp.firmId);
     if (tool?.broken) badges.push("toolBroken");
-    else if (tool && !toolFitsGood(tool, firm.itemCode)) badges.push("toolMismatch");
+    else if (tool && curFirm && !toolFitsGood(tool, curFirm.itemCode)) badges.push("toolMismatch");
+    else if (tool && firm.id !== emp.firmId && !toolFitsGood(tool, firm.itemCode)) badges.push("toolReturns");
     if (emp.uncertain) badges.push("uncertain");
 
     // First retirement event: stay chance and per-event cost.
@@ -1317,6 +1325,49 @@ export function managerROI({ ppp, g, roster = [], rate, sumP = 0 }) {
   const recommendation = perPointNetH > 0 ? "max"
     : (careH > 2 * Math.abs(perPointNetH) ? "min" : null);
   return { perPointGainH, perPointNetH, careH, byPoints, breakEvenRate: perPointGainH, breakEvenSumP, recommendation };
+}
+
+// ── Toolbox value estimate ─────────────────────────────────────────────────
+// A toolbox cannot be traded, so its gold value is derived: the SCRAP floor (destroy the rolled
+// tool → scraps × market price; same for everyone) and the UTILITY value (expected production
+// bonus over the tool's ~500 worked hours on THIS roster; different per account). With a
+// surplus the marginal box is only worth its scraps; with a deficit it fills an empty slot.
+const TOOL_DROP = [
+  { r: "common", p: 0.35, bonus: 4.5 },     // bonus = mean of the rarity's roll range
+  { r: "uncommon", p: 0.37, bonus: 9.5 },
+  { r: "rare", p: 0.20, bonus: 16.5 },
+  { r: "epic", p: 0.065, bonus: 25.5 },
+  { r: "legendary", p: 0.013, bonus: 38 },
+  { r: "mythic", p: 0.002, bonus: 55.5 },
+];
+const TOOL_LIFE_HOURS = 500;
+// Dismantling a tool yields floor(base + bonus × durability/maxDurability) scraps (client
+// module 76609: base/bonus = 2/4, 6/12, 18/36, 54/108, 162/324, 486/972). A box opened and
+// dismantled FRESH therefore yields base+bonus — that is the realizable scrap floor.
+export const TOOL_SCRAP_FRESH = { common: 6, uncommon: 18, rare: 54, epic: 162, legendary: 486, mythic: 1458 };
+
+export function toolboxValueEstimate(model, summary, scrapPrice = 0) {
+  const expScraps = TOOL_DROP.reduce((s, d) => s + d.p * num(TOOL_SCRAP_FRESH[d.r], 0), 0); // ≈ 39.3
+  const scrapPerBox = expScraps * Math.max(0, num(scrapPrice, 0));
+  const expBonus = TOOL_DROP.reduce((s, d) => s + d.p * d.bonus, 0); // ≈ 10.65 %
+  let vSum = 0, users = 0;
+  for (const e of model.emps.values()) {
+    const firm = model.firms.get(e.firmId);
+    if (!firm) continue;
+    if (!Object.values(TOOL_FAMILY_GOODS).some(goods => goods.includes(firm.itemCode))) continue;
+    users++;
+    const baseP = Math.max(RULES.minStat, num(rawStatValue(e.raw, "production"), RULES.minStat));
+    vSum += (baseP / RULES.outputDivisor) * firm.g;
+  }
+  const avgPPHValue = users ? vSum / users : 0;
+  const utilityPerBox = (expBonus / 100) * avgPPHValue * TOOL_LIFE_HOURS;
+  const bal = toolboxBalance(summary, model);
+  const suggested = bal.state === "deficit" ? Math.max(scrapPerBox, utilityPerBox) : scrapPerBox;
+  return {
+    scrapPerBox, utilityPerBox, suggested,
+    expBonusPct: expBonus, expScraps, state: bal.state, toolUsers: users,
+    scrapKnown: expScraps > 0,
+  };
 }
 
 // ── Toolbox balance ────────────────────────────────────────────────────────
