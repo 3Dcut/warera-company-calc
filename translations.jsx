@@ -482,6 +482,15 @@ export const TRANSLATIONS = {
     actualAllHint: "Nur abgeschlossene Tage ohne Training oder Umsetzung vergleichen; die Daten laufen etwa 1 Tag hinterher.",
     warningWageLink: (n) => `${n} Mitarbeiter kosten mehr als sie bringen – zum Mitarbeiter-Check`,
     globalOptRemoveTool: "Unpassendes Werkzeug im Spiel abnehmen (im Mehrgewinn eingerechnet)",
+    planSplitMAE: (ma, ae) => `davon Mitarbeiter ${ma} G/Tag · Motor (AE) ${ae} G/Tag`,
+    planFirmAE: (a, b) => `AE-Bonus: ${a} → ${b} G`,
+    planGraphTitle: "Tausch-Netz",
+    planGraphHint: "Jeder Pfeil ist ein Mitarbeiter-Zug; der Wert ist sein eigener Mehrgewinn/Tag am Ziel (dauerhaft, inkl. Kollegen-Effekten). Farben gruppieren Ringtausche, der Punkt wandert in Zugrichtung. AE am Knoten = Motor-Bonus durch talksToMachines.",
+    planGraphRing: (i, g) => `Ring ${i}: ${g} G/Tag`,
+    planGraphSingles: n => n === 1 ? "1 Einzelzug" : `${n} Einzelzüge`,
+    planGraphAE: g => `AE ${g} G`,
+    coreStayBadge: "BLEIBEN",
+    coreStayTip: "Kein Umzugsvorschlag: Der Heimzug würde dauerhaft Gewinn kosten (z. B. entfällt ein Auslands-Trait wie expat). Die Zeile steht nur zur Info hier.",
 
     // ── B. Ergänzungen (nicht in §8, von workforce-tab.jsx benötigt) ──
     wfCalcError: (m) => `Berechnung fehlgeschlagen: ${m}`,
@@ -963,6 +972,15 @@ export const TRANSLATIONS = {
     actualAllHint: "Only compare completed days without training or moves; the data lags about 1 day behind.",
     warningWageLink: (n) => `${n} employees cost more than they earn – go to the employee check`,
     globalOptRemoveTool: "Take the unfitting tool off in the game (included in the extra gain)",
+    planSplitMAE: (ma, ae) => `of which employees ${ma} G/day · engine (AE) ${ae} G/day`,
+    planFirmAE: (a, b) => `AE bonus: ${a} → ${b} G`,
+    planGraphTitle: "Swap network",
+    planGraphHint: "Each arrow is one employee move; the value is their own steady gain/day at the target (coworker effects included). Colors group ring swaps, the dot travels in move direction. AE at a node = engine bonus from talksToMachines.",
+    planGraphRing: (i, g) => `Ring ${i}: ${g} G/day`,
+    planGraphSingles: n => n === 1 ? "1 single move" : `${n} single moves`,
+    planGraphAE: g => `AE ${g} G`,
+    coreStayBadge: "STAY",
+    coreStayTip: "Not a recommendation: moving home would cost profit for good (e.g. an abroad trait like expat would be lost). The row is here for information only.",
 
     // ── B. Additions (not in §8, needed by workforce-tab.jsx) ──
     wfCalcError: (m) => `Calculation failed: ${m}`,
@@ -1444,6 +1462,15 @@ export const TRANSLATIONS = {
     actualAllHint: "Jämför bara avslutade dagar utan träning eller flytt; datan ligger ungefär 1 dag efter.",
     warningWageLink: (n) => `${n} anställda kostar mer än de ger – till personalkontrollen`,
     globalOptRemoveTool: "Ta av det opassande verktyget i spelet (inräknat i extravinsten)",
+    planSplitMAE: (ma, ae) => `varav anställda ${ma} G/dag · motor (AE) ${ae} G/dag`,
+    planFirmAE: (a, b) => `AE-bonus: ${a} → ${b} G`,
+    planGraphTitle: "Bytesnätverk",
+    planGraphHint: "Varje pil är en anställd som flyttar; värdet är den egna varaktiga vinsten/dag på målet (inklusive kollegeeffekter). Färger grupperar ringbyten, punkten vandrar i flyttriktningen. AE vid en nod = motorbonus från talksToMachines.",
+    planGraphRing: (i, g) => `Ring ${i}: ${g} G/dag`,
+    planGraphSingles: n => n === 1 ? "1 enskild flytt" : `${n} enskilda flyttar`,
+    planGraphAE: g => `AE ${g} G`,
+    coreStayBadge: "STANNA",
+    coreStayTip: "Ingen rekommendation: en flytt hem skulle varaktigt kosta vinst (t.ex. försvinner en utlandsegenskap som expat). Raden visas bara som information.",
 
     // ── B. Tillägg (inte i §8, behövs av workforce-tab.jsx) ──
     wfCalcError: (m) => `Beräkningen misslyckades: ${m}`,

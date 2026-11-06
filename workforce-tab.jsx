@@ -1047,6 +1047,150 @@ export default function WorkforceTab({
     );
   }
 
+  // ─── Tausch-Netz: firms as nodes on a circle, one arrow per moved employee, the employee's
+  // own steady gain on each edge; ring colors group the swap cycles, AE chips mark firms whose
+  // talksToMachines engine bonus appears or disappears. Pure SVG, no dependencies.
+  function renderRingGraph() {
+    const nv = v => (Number.isFinite(Number(v)) ? Number(v) : 0);
+    const movers = Object.keys(assignment).filter(id => String(assignment[id]) !== String(currentAssign[id]));
+    if (movers.length === 0) return null;
+    const own = new Map((planEval?.perEmp || []).map(p => [String(p.id), nv(p.ownDelta)]));
+    const cycleOf = new Map();
+    const cycleMeta = new Map(); // cycleId -> { gain, order }
+    for (const s of steps) {
+      if (s.cycleId == null) continue;
+      for (const eid of [s.empId, s.withEmpId]) if (eid != null) cycleOf.set(String(eid), s.cycleId);
+      if (!cycleMeta.has(s.cycleId)) cycleMeta.set(s.cycleId, { gain: nv(s.cycleGainDay), order: cycleMeta.size });
+    }
+    const edges = movers.map(id => ({
+      id: String(id),
+      from: String(currentAssign[id]),
+      to: String(assignment[id]),
+      gain: own.has(String(id)) ? own.get(String(id)) : null,
+      cycle: cycleOf.has(String(id)) ? cycleOf.get(String(id)) : null,
+    }));
+
+    // Node order: each ring's firms consecutively in flow order, singles appended.
+    const placed = [];
+    const seenF = new Set();
+    const push = f => { if (f && !seenF.has(f)) { seenF.add(f); placed.push(f); } };
+    const grouped = new Map();
+    for (const e of edges) {
+      const k = e.cycle != null ? `c${e.cycle}` : `s${e.id}`;
+      if (!grouped.has(k)) grouped.set(k, []);
+      grouped.get(k).push(e);
+    }
+    for (const list of grouped.values()) {
+      const nextOf = new Map(list.map(e => [e.from, e.to]));
+      let cur = list[0].from;
+      for (let i = 0; i <= list.length && cur != null && !seenF.has(cur); i++) { push(cur); cur = nextOf.get(cur); }
+      for (const e of list) { push(e.from); push(e.to); }
+    }
+    const nN = placed.length;
+    if (nN < 2) return null;
+
+    const W = 660, H = 440, cx = W / 2, cy = H / 2;
+    const RAD = 150;
+    const pos = new Map(placed.map((f, i) => {
+      const ang = -Math.PI / 2 + (2 * Math.PI * i) / nN;
+      return [f, { x: cx + RAD * Math.cos(ang), y: cy + RAD * Math.sin(ang), ang }];
+    }));
+    const palette = [C.accent, C.blue, C.purple, C.green, ORANGE, "#f87171"];
+    const colorOf = e => (e.cycle != null ? palette[cycleMeta.get(e.cycle).order % palette.length] : C.textDim);
+    const engineByFirm = new Map((planEval?.perFirm || []).map(p => [String(p.id), nv(p.engineAfterDay) - nv(p.engineBeforeDay)]));
+    const halo = { paintOrder: "stroke", stroke: "rgba(10,14,26,0.92)", strokeWidth: 3.5, strokeLinejoin: "round" };
+
+    const edgeEls = edges.map((e, i) => {
+      const A = pos.get(e.from), B = pos.get(e.to);
+      if (!A || !B) return null;
+      const dx = B.x - A.x, dy = B.y - A.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const nx = dy / len, ny = -dx / len; // right of travel → opposing arrows separate
+      const bulge = Math.min(56, Math.max(16, len * 0.22));
+      const mx = (A.x + B.x) / 2 + nx * bulge, my = (A.y + B.y) / 2 + ny * bulge;
+      const trim = (P, Q, r) => {
+        const l = Math.hypot(Q.x - P.x, Q.y - P.y) || 1;
+        return { x: P.x + ((Q.x - P.x) / l) * r, y: P.y + ((Q.y - P.y) / l) * r };
+      };
+      const S = trim(A, { x: mx, y: my }, 13);
+      const E = trim(B, { x: mx, y: my }, 16);
+      const d = `M ${S.x.toFixed(1)} ${S.y.toFixed(1)} Q ${mx.toFixed(1)} ${my.toFixed(1)} ${E.x.toFixed(1)} ${E.y.toFixed(1)}`;
+      // Manual arrowhead at E, oriented along the curve end tangent (control → end).
+      const tx = E.x - mx, ty = E.y - my;
+      const tl = Math.hypot(tx, ty) || 1;
+      const ux = tx / tl, uy = ty / tl;
+      const head = `${E.x},${E.y} ${(E.x - 8 * ux + 3.4 * uy).toFixed(1)},${(E.y - 8 * uy - 3.4 * ux).toFixed(1)} ${(E.x - 8 * ux - 3.4 * uy).toFixed(1)},${(E.y - 8 * uy + 3.4 * ux).toFixed(1)}`;
+      // Label at the curve midpoint, nudged along the bulge normal.
+      const lmx = 0.25 * S.x + 0.5 * mx + 0.25 * E.x + nx * 11;
+      const lmy = 0.25 * S.y + 0.5 * my + 0.25 * E.y + ny * 11;
+      const col = colorOf(e);
+      const gainCol = e.gain == null ? C.textMuted : e.gain >= 0 ? C.green : C.red;
+      return (
+        <g key={e.id}>
+          <path d={d} fill="none" stroke={col} strokeWidth="1.8" opacity="0.85" />
+          <polygon points={head} fill={col} opacity="0.95" />
+          <circle r="3.2" fill={col} opacity="0.9">
+            <animateMotion dur={`${4 + (i % 3)}s`} begin={`${(i * 0.7).toFixed(1)}s`} repeatCount="indefinite" path={d} />
+          </circle>
+          <text x={lmx} y={lmy - 5} textAnchor="middle" fontSize="10" fontFamily={F.m} fill={C.textDim} style={halo}>
+            {empName(e.id)}
+          </text>
+          <text x={lmx} y={lmy + 7} textAnchor="middle" fontSize="10" fontWeight="700" fontFamily={F.m} fill={gainCol} style={halo}>
+            {e.gain == null ? "±?" : `${e.gain >= 0 ? "+" : ""}${fmt(e.gain, 2)} G`}
+          </text>
+        </g>
+      );
+    });
+
+    const nodeEls = placed.map(f => {
+      const P = pos.get(f);
+      const firm = firmOf(f);
+      const cos = Math.cos(P.ang);
+      const anchor = cos > 0.35 ? "start" : cos < -0.35 ? "end" : "middle";
+      const lx = cx + (RAD + 20) * Math.cos(P.ang);
+      const ly = cy + (RAD + 20) * Math.sin(P.ang);
+      const engD = engineByFirm.get(String(f)) || 0;
+      const yBase = ly + (Math.sin(P.ang) > 0.4 ? 10 : 0);
+      return (
+        <g key={f}>
+          <circle cx={P.x} cy={P.y} r="9" fill="rgba(255,255,255,0.07)" stroke={C.accent} strokeWidth="1.4" />
+          <text x={lx} y={yBase} textAnchor={anchor} fontSize="11" fontWeight="700" fontFamily={F.h} fill={C.text} style={halo}>
+            {firm?.name || f}
+          </text>
+          <text x={lx} y={yBase + 11} textAnchor={anchor} fontSize="9" fontFamily={F.m} fill={C.textMuted} style={halo}>
+            {firm?.itemCode || ""}
+          </text>
+          {Math.abs(engD) > 0.005 && (
+            <text x={lx} y={yBase + 22} textAnchor={anchor} fontSize="9" fontWeight="700" fontFamily={F.m} fill={engD > 0 ? C.green : C.red} style={halo}>
+              {L.planGraphAE(`${engD > 0 ? "+" : ""}${fmt(engD, 2)}`)}
+            </text>
+          )}
+        </g>
+      );
+    });
+
+    const rings = [...cycleMeta.entries()].sort((a, b) => a[1].order - b[1].order);
+    const singles = edges.filter(e => e.cycle == null).length;
+    return (
+      <GlassCard>
+        <Sec icon="&#128279;">{L.planGraphTitle}</Sec>
+        <div style={{ ...mutedText, marginBottom: 8 }}>{L.planGraphHint}</div>
+        <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }}>
+          {edgeEls}
+          {nodeEls}
+        </svg>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginTop: 4 }}>
+          {rings.map(([cid, m], k) => (
+            <span key={cid} style={{ fontSize: 11, fontFamily: F.m, color: palette[m.order % palette.length] }}>
+              &#9679; {L.planGraphRing(k + 1, `${m.gain >= 0 ? "+" : ""}${fmt(m.gain, 2)}`)}
+            </span>
+          ))}
+          {singles > 0 && <span style={{ ...mutedText, fontSize: 11 }}>{L.planGraphSingles(singles)}</span>}
+        </div>
+      </GlassCard>
+    );
+  }
+
   // ═════════ View: Verteilung (§7.4) ═════════
   function renderPlan() {
     if (!model) return <GlassCard>{greenBox(L.noEmployees)}</GlassCard>;
@@ -1096,6 +1240,11 @@ export default function WorkforceTab({
               {L.planBeforeAfter(fmt(before, 2), fmt(after, 2), fmt(planDailyGain, 2), fmt(pct, 1))}
             </div>
           )}
+          {planEval && (
+            <div style={{ ...dimText, marginBottom: 6 }}>
+              {L.planSplitMAE(fmt(n0(pe.employeesDailyGain, planDailyGain - n0(pe.engineDailyGain)), 2), fmt(n0(pe.engineDailyGain), 2))}
+            </div>
+          )}
           {planEval && steps.length > 0 && (
             <div style={{ ...dimText, marginBottom: 6 }}>
               {L.planSummary(fmt(n0(pe.transitionLoss), 2), paybackText(pe.paybackDays), steps.length, swapSteps.length, moveSteps.length)}
@@ -1113,6 +1262,8 @@ export default function WorkforceTab({
           )}
           {timeBudgetHit && <div style={{ ...mutedText, color: ORANGE, marginTop: 6 }}>{L.planTimeBudget}</div>}
         </GlassCard>
+
+        {!planOptimal && renderRingGraph()}
 
         {planOptimal ? (
           <GlassCard>
@@ -1206,6 +1357,9 @@ export default function WorkforceTab({
                           </td>
                           <td style={{ ...TD(false), fontSize: 13, whiteSpace: "nowrap" }}>
                             {fmt(n0(pf.beforeDay), 2)} &rarr; <span style={{ color: delta > 0.005 ? C.green : delta < -0.005 ? C.red : C.text, fontWeight: 700 }}>{fmt(n0(pf.afterDay), 2)} G</span>
+                            {Math.abs(n0(pf.engineAfterDay) - n0(pf.engineBeforeDay)) > 0.005 && (
+                              <div style={{ fontSize: 10, color: C.textMuted }}>{L.planFirmAE(fmt(n0(pf.engineBeforeDay), 2), fmt(n0(pf.engineAfterDay), 2))}</div>
+                            )}
                           </td>
                         </tr>
                       );

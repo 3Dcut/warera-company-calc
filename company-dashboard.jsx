@@ -1382,31 +1382,38 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                       <th style={TH}>{L.colPayback}</th>
                     </tr></thead>
                     <tbody>
-                      {coreSuggestions.map((s, i) => (
-                        <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
-                          <td style={TD(false)}>
-                            <div>{s.company.name || s.company.itemCode}</div>
-                            <div style={{ fontSize: 10, color: C.textMuted }}>{s.company.itemCode}</div>
-                          </td>
-                          <td style={TD(false)}>
-                            <div>{s.currentRegion?.name || "?"}</div>
-                            <div style={{ fontSize: 10, color: C.textMuted }}>{getCountryName(s.company.region)} &middot; {L.taxShort(fmt(s.fromTax, 0))}</div>
-                          </td>
-                          <td style={{ ...TD(false), color: C.accent, fontSize: 18 }}>&rarr;</td>
-                          <td style={TD(false)}>
-                            <div style={{ color: C.green }}>{s.homeRegion?.name || ownerCountry?.name || "?"}</div>
-                            <div style={{ fontSize: 10, color: C.green }}>{L.coreYes} &middot; {L.taxShort(fmt(s.toTax, 0))}</div>
-                          </td>
-                          <td style={{ ...TD(false), color: s.dailyGain >= 0 ? C.green : C.red, fontWeight: 700 }}>{s.dailyGain >= 0 ? "+" : ""}{fmt(s.dailyGain, 2)} G</td>
-                          <td style={{ ...TD(false), color: C.textDim }}>
-                            <div>{fmt(s.relocCost, 2)} G{s.concreteNeeded === 0 && <span style={{ color: C.green, fontSize: 10, marginLeft: 6 }}>{L.freeMove}</span>}</div>
-                            <div style={{ fontSize: 10, color: C.textMuted }}>{L.moveCostBreakdown(fmt(s.concreteCost, 2), fmt(s.happinessLoss, 2))}</div>
-                          </td>
-                          <td style={{ ...TD(false), fontWeight: 700, color: s.paybackDays <= 7 ? C.green : s.paybackDays <= 30 ? C.accent : C.red }}>
-                            {s.paybackDays === Infinity ? L.never : L.days(fmt(s.paybackDays, 1))}
-                          </td>
-                        </tr>
-                      ))}
+                      {coreSuggestions.map((s, i) => {
+                        // A row with a negative steady gain is information, not a recommendation
+                        // (e.g. an expat bonus outweighs the tax advantage): dim it and say so.
+                        const recommended = s.dailyGain > 0.005;
+                        return (
+                          <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent", opacity: recommended ? 1 : 0.6 }}>
+                            <td style={TD(false)}>
+                              <div>{s.company.name || s.company.itemCode}</div>
+                              <div style={{ fontSize: 10, color: C.textMuted }}>{s.company.itemCode}</div>
+                            </td>
+                            <td style={TD(false)}>
+                              <div>{s.currentRegion?.name || "?"}</div>
+                              <div style={{ fontSize: 10, color: C.textMuted }}>{getCountryName(s.company.region)} &middot; {L.taxShort(fmt(s.fromTax, 0))}</div>
+                            </td>
+                            <td style={{ ...TD(false), color: recommended ? C.accent : C.textMuted, fontSize: 18 }}>{recommended ? "→" : "✕"}</td>
+                            <td style={TD(false)}>
+                              <div style={{ color: recommended ? C.green : C.textDim }}>{s.homeRegion?.name || ownerCountry?.name || "?"}</div>
+                              <div style={{ fontSize: 10, color: recommended ? C.green : C.textMuted }}>{L.coreYes} &middot; {L.taxShort(fmt(s.toTax, 0))}</div>
+                            </td>
+                            <td style={{ ...TD(false), color: s.dailyGain >= 0 ? C.green : C.red, fontWeight: 700 }}>{s.dailyGain >= 0 ? "+" : ""}{fmt(s.dailyGain, 2)} G</td>
+                            <td style={{ ...TD(false), color: C.textDim }}>
+                              <div>{fmt(s.relocCost, 2)} G{s.concreteNeeded === 0 && <span style={{ color: C.green, fontSize: 10, marginLeft: 6 }}>{L.freeMove}</span>}</div>
+                              <div style={{ fontSize: 10, color: C.textMuted }}>{L.moveCostBreakdown(fmt(s.concreteCost, 2), fmt(s.happinessLoss, 2))}</div>
+                            </td>
+                            <td style={{ ...TD(false), fontWeight: 700, color: s.paybackDays <= 7 ? C.green : s.paybackDays <= 30 ? C.accent : C.red }}>
+                              {recommended
+                                ? (s.paybackDays === Infinity ? L.never : L.days(fmt(s.paybackDays, 1)))
+                                : <Tip text={L.coreStayTip} wrap><span><Bdg color={C.textDim}>{L.coreStayBadge}</Bdg></span></Tip>}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 )}

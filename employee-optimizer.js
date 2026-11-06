@@ -618,18 +618,32 @@ export function evaluatePlan(model, assignment, optsIn = {}) {
   const horizon = num(opts.horizonDays, 30);
   const core = evaluatePlanInternal(model, tables, current, assignment, horizon, opts);
 
-  // Before/after on the SAME steady basis, so Vorher + dailyGain = Nachher holds.
+  // Before/after on the SAME steady basis, so Vorher + dailyGain = Nachher holds. The AE part
+  // is the talksToMachines doubling bonus (the only engine value that depends on the plan).
+  const engineExtra = (assign, firm) => {
+    const group = rosterOf(model, assign, firm.id);
+    if (group.length !== 1 || !hasTrait(group[0].raw, "talksToMachines")) return 0;
+    return 24 * firm.g * firm.engineLevel * (group[0].survival.s[0] || 1);
+  };
   const perFirm = [];
-  let beforeNetDay = 0, afterNetDay = 0;
+  let beforeNetDay = 0, afterNetDay = 0, engineBeforeDay = 0, engineAfterDay = 0;
   for (const f of model.firms.values()) {
     const before = dayValueFirm(model, current, f.id, 0, true);
     const after = dayValueFirm(model, assignment, f.id, 0, true);
     const wagesBefore = rosterOf(model, current, f.id).reduce((s, e) => s + 24 * e.wageH, 0);
     const wagesAfter = rosterOf(model, assignment, f.id).reduce((s, e) => s + 24 * e.wageH, 0);
-    perFirm.push({ id: f.id, name: f.name, beforeDay: before - wagesBefore, afterDay: after - wagesAfter });
+    const engB = engineExtra(current, f), engA = engineExtra(assignment, f);
+    perFirm.push({
+      id: f.id, name: f.name,
+      beforeDay: before - wagesBefore, afterDay: after - wagesAfter,
+      engineBeforeDay: engB, engineAfterDay: engA,
+    });
     beforeNetDay += before - wagesBefore;
     afterNetDay += after - wagesAfter;
+    engineBeforeDay += engB;
+    engineAfterDay += engA;
   }
+  const engineDailyGain = engineAfterDay - engineBeforeDay;
 
   const perEmp = [];
   for (const [empId, firmId] of Object.entries(assignment)) {
@@ -649,6 +663,8 @@ export function evaluatePlan(model, assignment, optsIn = {}) {
   return {
     beforeNetDay, afterNetDay,
     dailyGain: core.dailyGain,
+    employeesDailyGain: core.dailyGain - engineDailyGain,
+    engineDailyGain, engineBeforeDay, engineAfterDay,
     horizonGain: core.horizonGain,
     transitionLoss: core.transitionLoss,
     paybackDays: core.paybackDays,
