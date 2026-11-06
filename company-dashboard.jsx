@@ -1,7 +1,19 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { THEMES, C, F, setThemeVars, glass, fmt, fmtT, fmtN, GlassCard, Sec, Bdg, Tip, Btn, getTH, getTD, apiCall, setActiveApiKey } from "./shared.jsx";
 import FactoryOptimizer from "./factory-optimizer.jsx";
+import WorkforceTab from "./workforce-tab.jsx";
 import { getLang } from "./translations.jsx";
+// The whole employee mechanic lives in employee-model.js (pure, tested against live data);
+// the workforce tools build on employee-optimizer.js.
+import {
+  RULES, num, clamp, idString, hasLeft, traitList, hasTrait,
+  rawStatValue, statValue, empHappiness, empQuitChance,
+  empToolInfo, toolFitsGood, toolBonusNow, isAway, empWagePerHour, empHasEstimate,
+  specializationPercent, specializationAfter, empBonusPercent, calcEmployeePPH,
+  empOutputKnown, managerPercent, projectEmployeePPH, neutralize, compareOverTime,
+  formatCodeName, TRANSITION_DAYS,
+} from "./employee-model.js";
+import { buildWorkforceModel, adviseAll } from "./employee-optimizer.js";
 
 // ── URL params ──
 function getUrlParam(...names) {
@@ -27,64 +39,6 @@ function getInitialApiKey() {
   try { return localStorage.getItem("warera_api_key") || ""; } catch { return ""; }
 }
 
-// ── Employee rules (WarEra v0.27) ──
-// These constants live in the game client, not in gameConfig.getGameConfig. They are used when
-// the API delivers no estimate for an employee and for the what-ifs (moves, product changes).
-const RULES = {
-  outputDivisor: 4,              // PP per hour = production stat / 4, before bonuses
-  minStat: 1,                    // no stat goes below 1
-  happinessNeutral: 50,
-  happinessMin: 0,
-  happinessMax: 100,
-  happinessPercentPerPoint: 1,   // each point above/below 50 = ±1 % output
-  happinessGood: 60,             // game colours: green from 60, red below 30 ...
-  happinessQuitThreshold: 30,    // ... where employees start to quit
-  managementPercentPerPoint: 2,  // owner management, +2 % per point
-  coreRegionBonusPercent: 5,     // company in a core region of the owner's country
-  specializationPercentPerDay: 1, // +1 % per day worked in a good, kept per good ...
-  specializationMaxPercent: 20,  // ... up to +20 %
-  responsibilityHappinessPerPoint: 3, // v0.27.3: +3 base happiness per Responsibility point
-  loyalLossMultiplier: 0.5,      // trait "loyal" halves happiness losses
-  taxShyPercentPerTaxPercent: 1, // trait "taxShy": -1 % output per 1 % income tax ...
-  taxShyMaxPercent: 30,          // ... down to -30 %
-  moveHappinessPenalty: 0,       // v0.27.3: transfers between own companies are free (was -5 for 7 days)
-  companyMoveHappinessPenalty: 10, // company moved to another region (7 days, not on a free move)
-  movePenaltyDays: 7,
-  taxHappinessPerPercent: 1,     // each 1 % income tax = -1 happiness
-};
-
-// Goods each tool family boosts (from the game client). A tool in a company making another
-// good sits idle.
-const TOOL_FAMILY_GOODS = {
-  sickle: ["grain", "livestock", "coca", "wood", "fish"],
-  pickaxe: ["limestone", "iron", "lead", "petroleum"],
-  skillet: ["bread", "steak", "cookedFish"],
-  hammer: ["steel", "concrete"],
-  flask: ["oil", "paper", "cocain"],
-  caliper: ["lightAmmo", "ammo", "heavyAmmo"],
-};
-
-// Revealed traits whose effect changes with the good, the tool, the happiness or the time in a
-// company (from the game client). Traits that depend on coworkers or on nationality are not
-// modelled.
-const TRAITS = {
-  laborer: { rawStat: 3, manufacturedStat: -1 },      // Production on raw / manufactured goods
-  craftsman: { rawStat: -1, manufacturedStat: 3 },
-  specialist: { ownGoodStat: 3, ownGoodHappiness: 5 }, // while producing their own good (arg)
-  handy: { withToolPercent: 40 },
-  improviser: { withoutToolPercent: 25 },
-  anchor: { lowHappinessPercent: -50 },                // below the quit threshold
-  creatureOfHabit: { afterTransferPercent: -30, days: 3 },
-  sprinter: { percent: 50, days: 1 },                  // first 24 h in a company
-  veteran: { percent: 20, afterDays: 30 },             // in the same company
-  diamondInTheRough: { statPerPeriod: 1, periodDays: 10, maxStat: 4 },  // +1 to its stat (arg)
-  burnout: { statPerPeriod: -1, periodDays: 20, maxStat: -3 },          // -1 to all stats
-};
-
-// What-ifs are compared day by day for this long; after it every temporary effect is over
-// (move penalty 7 days, specialization at most 20 days to its cap, burnout 60 days).
-const TRANSITION_DAYS = 61;
-
 // WarEra v0.27.2 opened the employee procedures to personal API keys
 // (https://app.warera.io/article/6ae2608f707baf45eebf26c5). The official Swagger
 // (api2.warera.io/docs, spec version 0.17.4-beta) lags behind the live API; the community
@@ -100,15 +54,6 @@ const OFFICIAL_EMPLOYEE_ENDPOINTS = {
 };
 
 // ── Helpers ──
-function num(v, d = 0) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : d;
-}
-
-function clamp(v, min, max) {
-  return Math.min(max, Math.max(min, v));
-}
-
 async function resolveUser(input) {
   try {
     const u = await apiCall("user.getUserLite", { userId: input });
@@ -146,11 +91,6 @@ async function loadOwnData(endpoint, hasKey) {
   }
 }
 
-function idString(v) {
-  if (v == null) return null;
-  return String(typeof v === "object" ? v._id : v);
-}
-
 // Employees of all own companies. Also accepts a roster object { employees: [...] };
 // null for any other shape.
 function parseEmployeeList(r) {
@@ -167,309 +107,8 @@ function eventCompanyId(ev) {
   return idString(ev?.cast?.[0]?.company);
 }
 
-// Employees who left stay listed (with leftAt) until the owner acknowledges it in the game.
-function hasLeft(emp) {
-  return !!emp?.leftAt;
-}
 
-// Stat before the floor of 1: base + training + flat (non-percent) contributions. The live API
-// (v0.27.2+, verified 2026-11-06) delivers a full breakdown for every employee and has no
-// `revealed` gate any more; percent:true contributions (e.g. specialization) are production-bonus
-// percents, not stat points. null only for shapes that still hide the stat.
-function rawStatValue(emp, stat) {
-  const b = emp?.breakdown?.[stat];
-  if (b && typeof b === "object") {
-    const flat = (Array.isArray(b.contributions) ? b.contributions : []).reduce(
-      (s, c) => (c && !c.percent && c.revealed !== false ? s + num(c.delta) : s), 0);
-    if (typeof b.base === "number" || typeof b.trained === "number") return num(b.base) + num(b.trained) + flat;
-    if (typeof b.total === "number") return b.total;
-  }
-  if (emp?.revealed && !emp.revealed[stat]) return null; // old gated shape
-  const base = emp?.base?.[stat];
-  return typeof base === "number" ? base : null;
-}
 
-// Stat as the game shows it (at least 1); null while hidden.
-function statValue(emp, stat) {
-  const raw = rawStatValue(emp, stat);
-  return raw == null ? null : Math.max(RULES.minStat, raw);
-}
-
-function empHappiness(emp) {
-  const v = emp?.happinessBreakdown?.value;
-  return typeof v === "number" ? v : RULES.happinessNeutral;
-}
-
-// Chance per hour that the employee quits (0 while happy enough).
-function empQuitChance(emp) {
-  const q = emp?.happinessBreakdown?.quitChance;
-  return typeof q === "number" && q > 0 ? q : 0;
-}
-
-// Trait codes. The live API (v0.27.3+) sends every trait with its code in the open; an entry
-// counts as hidden only without a code or with an explicit revealed:false (old shape).
-function empTraits(emp) {
-  const list = (Array.isArray(emp?.traits) ? emp.traits : []).filter(t => t && typeof t === "object");
-  const visible = list.filter(t => typeof t.code === "string" && t.revealed !== false);
-  return {
-    revealed: visible.map(t => t.code),
-    hiddenCount: list.length - visible.length,
-  };
-}
-
-function revealedTraits(emp) {
-  return (Array.isArray(emp?.traits) ? emp.traits : [])
-    .filter(t => t && typeof t.code === "string" && t.revealed !== false);
-}
-
-function hasRevealedTrait(emp, code) {
-  return revealedTraits(emp).some(t => t.code === code);
-}
-
-// Equipped tool: toolItem is the item, toolStatus its effect right now.
-function empToolInfo(emp) {
-  const item = emp?.toolItem;
-  if (!item || typeof item !== "object") return null;
-  const status = emp?.toolStatus;
-  const rolled = [status?.rolledPercent, item.skills?.production].find(v => typeof v === "number");
-  return {
-    code: item.code || "tool",
-    bonus: typeof status?.bonusPercent === "number" ? status.bonusPercent : null, // applied now
-    rolled: typeof rolled === "number" ? rolled : null,
-    broken: !!status?.isBroken || (typeof item.state === "number" && item.state <= 0),
-    durability: typeof item.state === "number" ? item.state : null,
-    maxDurability: typeof item.maxState === "number" ? item.maxState : 100,
-  };
-}
-
-function toolFitsGood(tool, itemCode) {
-  const goods = TOOL_FAMILY_GOODS[String(tool.code).replace(/\d+$/, "")];
-  return !goods || goods.includes(itemCode);
-}
-
-// Bonus the tool would give in a company making itemCode: its rolled percent, unless it is
-// broken or belongs to another tool family.
-function toolBonusFor(tool, itemCode) {
-  if (!tool || tool.broken || !toolFitsGood(tool, itemCode)) return 0;
-  return tool.rolled ?? tool.bonus ?? 0;
-}
-
-function toolBonusNow(tool, itemCode) {
-  if (!tool) return 0;
-  return tool.bonus ?? toolBonusFor(tool, itemCode);
-}
-
-// An "away" event modifier means no work and no wage until it runs out.
-function isAway(emp) {
-  const now = Date.now();
-  return (Array.isArray(emp?.eventModifiers) ? emp.eventModifiers : [])
-    .some(m => m?.kind === "away" && Date.parse(m.until) > now);
-}
-
-// Wage cost per hour: the game's estimate, otherwise the contract wage.
-function empWagePerHour(emp) {
-  if (hasLeft(emp)) return 0;
-  if (typeof emp?.estimate?.wage === "number") return Math.max(0, emp.estimate.wage);
-  if (isAway(emp)) return 0;
-  return Math.max(0, num(emp?.wage, 0));
-}
-
-function empHasEstimate(emp) {
-  return typeof emp?.estimate?.production === "number";
-}
-
-function specializationPercent(emp, itemCode) {
-  const days = Math.max(0, num(emp?.specializations?.[itemCode], 0));
-  return Math.min(RULES.specializationMaxPercent, days * RULES.specializationPercentPerDay);
-}
-
-// Sum of all production bonuses in percent. The game adds them all up (productionBonus.total);
-// without it, the known parts are added up here.
-function empBonusPercent(emp, ctx) {
-  if (typeof emp?.productionBonus?.total === "number") return emp.productionBonus.total;
-  return (empHappiness(emp) - RULES.happinessNeutral) * RULES.happinessPercentPerPoint
-    + (ctx?.managementPoints || 0) * RULES.managementPercentPerPoint
-    + (ctx?.isCore ? RULES.coreRegionBonusPercent : 0)
-    + toolBonusNow(empToolInfo(emp), ctx?.itemCode)
-    + specializationPercent(emp, ctx?.itemCode);
-}
-
-// PP per hour of one employee. Uses the game's own estimate when present,
-// otherwise Production/4 × (1 + sum of bonuses / 100).
-function calcEmployeePPH(emp, ctx) {
-  if (hasLeft(emp)) return 0;
-  if (empHasEstimate(emp)) return Math.max(0, emp.estimate.production);
-  if (isAway(emp)) return 0;
-  const base = num(statValue(emp, "production"), 0) / RULES.outputDivisor;
-  return Math.max(0, base * (1 + empBonusPercent(emp, ctx) / 100));
-}
-
-// Without the game's estimate a hidden Production stat leaves the output unknown.
-function empOutputKnown(emp) {
-  return hasLeft(emp) || empHasEstimate(emp) || isAway(emp) || statValue(emp, "production") != null;
-}
-
-// PP per hour before any bonus.
-function baseEmployeePPH(emp, ctx) {
-  const factor = 1 + empBonusPercent(emp, ctx) / 100;
-  if (factor > 0.01) return calcEmployeePPH(emp, ctx) / factor;
-  return num(statValue(emp, "production"), 0) / RULES.outputDivisor;
-}
-
-// Share of a happiness loss that reaches the employee. Since v0.27.3 Responsibility no longer
-// dampens losses (it adds +3 base happiness per point instead, which the API already includes in
-// happinessBreakdown.value); only the loyal trait halves losses (shown as `mitigated`).
-function happinessLossFactor(emp) {
-  return hasRevealedTrait(emp, "loyal") ? RULES.loyalLossMultiplier : 1;
-}
-
-function taxShyPercent(emp, taxPct) {
-  if (!hasRevealedTrait(emp, "taxShy")) return 0;
-  return -Math.min(RULES.taxShyMaxPercent, Math.max(0, taxPct) * RULES.taxShyPercentPerTaxPercent);
-}
-
-// Production points from revealed traits that depend on the good.
-function goodTraitStat(emp, itemCode, itemType) {
-  let stat = 0;
-  for (const t of revealedTraits(emp)) {
-    if ((t.code === "laborer" || t.code === "craftsman") && itemType) {
-      stat += itemType === "raw" ? TRAITS[t.code].rawStat : TRAITS[t.code].manufacturedStat;
-    } else if (t.code === "specialist" && t.arg === itemCode) {
-      stat += TRAITS.specialist.ownGoodStat;
-    }
-  }
-  return stat;
-}
-
-function goodTraitHappiness(emp, itemCode) {
-  return revealedTraits(emp).some(t => t.code === "specialist" && t.arg === itemCode) ? TRAITS.specialist.ownGoodHappiness : 0;
-}
-
-// Specialization in a good after working it `days` more days: +1 % a day (twice as fast for a
-// revealed quickStudy) up to the cap. Each good keeps its own days.
-function specializationAfter(emp, itemCode, days) {
-  const rate = RULES.specializationPercentPerDay * (hasRevealedTrait(emp, "quickStudy") ? 2 : 1);
-  return Math.min(RULES.specializationMaxPercent, specializationPercent(emp, itemCode) + rate * days);
-}
-
-function daysSince(date) {
-  const since = Date.parse(date);
-  return Number.isFinite(since) ? Math.max(0, (Date.now() - since) / 86400000) : null;
-}
-
-// Output percent and Production points from revealed traits that depend on the time in a company:
-// sprinter (first day), creatureOfHabit (3 days after a transfer), veteran (from day 30),
-// diamondInTheRough on Production (+1 every 10 days) and burnout (-1 every 20 days).
-function careerEffects(emp, daysInCompany, daysSinceTransfer) {
-  let percent = 0, stat = 0;
-  for (const t of revealedTraits(emp)) {
-    if (t.code === "sprinter" && daysInCompany < TRAITS.sprinter.days) percent += TRAITS.sprinter.percent;
-    else if (t.code === "creatureOfHabit" && daysSinceTransfer != null && daysSinceTransfer < TRAITS.creatureOfHabit.days) {
-      percent += TRAITS.creatureOfHabit.afterTransferPercent;
-    } else if (t.code === "veteran" && daysInCompany >= TRAITS.veteran.afterDays) percent += TRAITS.veteran.percent;
-    else if ((t.code === "diamondInTheRough" && t.arg === "production") || t.code === "burnout") {
-      const e = TRAITS[t.code];
-      const sum = Math.floor(daysInCompany / e.periodDays) * e.statPerPeriod;
-      stat += e.maxStat > 0 ? Math.min(e.maxStat, sum) : Math.max(e.maxStat, sum);
-    }
-  }
-  return { percent, stat };
-}
-
-// How the time-dependent trait effects change, compared with today, on day d if the employee
-// stays (moved: they change company today). Their current effects are already in the estimate.
-function careerChange(emp, d, moved) {
-  const tenure = daysSince(emp?.lastMovedAt || emp?.createdAt) ?? 0;
-  const sinceMove = daysSince(emp?.lastMovedAt);
-  const now = careerEffects(emp, tenure, sinceMove);
-  const then = moved ? careerEffects(emp, d, d) : careerEffects(emp, tenure + d, sinceMove == null ? null : sinceMove + d);
-  return { percent: then.percent - now.percent, stat: then.stat - now.stat };
-}
-
-// Bonus of the company's hired manager in the employee's own bonus breakdown (0 if none).
-function managerPercent(emp) {
-  const contributions = Array.isArray(emp?.productionBonus?.contributions) ? emp.productionBonus.contributions : [];
-  return num(contributions.find(c => c?.source === "manager")?.percent, 0);
-}
-
-// PP per hour if the employee worked under other conditions. The game adds all bonuses into one
-// percentage, so a change of d points turns base × (1 + total/100) into base × (1 + (total + d)/100);
-// a change of the Production stat moves the base itself (Production / 4).
-//   change.itemCode, itemType  good of the target company (tool family, good-dependent traits)
-//   change.toolReturned        the tool goes back to the inventory if it does not fit the good
-//   change.isCore              target region is a core region of the owner's country
-//   change.taxPct              income tax at the target, in percent
-//   change.happinessDelta      extra happiness before Responsibility, e.g. -5 right after a move
-//   change.specialization      specialization (percent) in the good worked; default: as now
-//   change.bonusDelta          further percentage points, e.g. a different manager
-//   change.statDelta           further Production points, e.g. from careerChange
-function projectEmployeePPH(emp, ctx, change = {}) {
-  if (hasLeft(emp)) return 0;
-  const total = empBonusPercent(emp, ctx);
-  const loss = happinessLossFactor(emp);
-  const curTax = num(ctx?.taxPct, 0);
-  const newTax = change.taxPct ?? curTax;
-  const itemCode = change.itemCode ?? ctx?.itemCode;
-  const newGood = itemCode !== ctx?.itemCode;
-  const extra = num(change.happinessDelta, 0);
-  const goodHappiness = newGood ? goodTraitHappiness(emp, itemCode) - goodTraitHappiness(emp, ctx?.itemCode) : 0;
-  const h = empHappiness(emp);
-  const newH = clamp(h - (newTax - curTax) * RULES.taxHappinessPerPercent * loss + (extra < 0 ? extra * loss : extra) + goodHappiness,
-    RULES.happinessMin, RULES.happinessMax);
-  // A revealed anchor loses 50 % while below the quit threshold.
-  const anchorPercent = v => (hasRevealedTrait(emp, "anchor") && v < RULES.happinessQuitThreshold ? TRAITS.anchor.lowHappinessPercent : 0);
-  let delta = (newH - h) * RULES.happinessPercentPerPoint + anchorPercent(newH) - anchorPercent(h) + num(change.bonusDelta, 0);
-  if (change.isCore != null) delta += ((change.isCore ? 1 : 0) - (ctx?.isCore ? 1 : 0)) * RULES.coreRegionBonusPercent;
-  if (change.specialization != null) delta += change.specialization - specializationPercent(emp, ctx?.itemCode);
-  delta += taxShyPercent(emp, newTax) - taxShyPercent(emp, curTax);
-  let statDelta = num(change.statDelta, 0);
-  if (newGood) {
-    const tool = empToolInfo(emp);
-    delta += toolBonusFor(tool, itemCode) - toolBonusNow(tool, ctx?.itemCode);
-    // Without the tool, handy loses its bonus and improviser gains one.
-    if (tool && change.toolReturned && !toolFitsGood(tool, itemCode)) {
-      if (hasRevealedTrait(emp, "handy")) delta -= TRAITS.handy.withToolPercent;
-      if (hasRevealedTrait(emp, "improviser")) delta += TRAITS.improviser.withoutToolPercent;
-    }
-    statDelta += goodTraitStat(emp, itemCode, change.itemType) - goodTraitStat(emp, ctx?.itemCode, ctx?.itemType);
-  }
-  let base = baseEmployeePPH(emp, ctx);
-  if (base > 0 && statDelta) {
-    // The game floors the stat at 1 after adding everything up, so a stat sitting at the floor
-    // starts from its unfloored (revealed) value.
-    const cur = base * RULES.outputDivisor;
-    const raw = cur < RULES.minStat + 0.01 ? Math.min(cur, rawStatValue(emp, "production") ?? cur) : cur;
-    base = Math.max(RULES.minStat, raw + statDelta) / RULES.outputDivisor;
-  }
-  return Math.max(0, base * (1 + (total + delta) / 100));
-}
-
-// Compares a change with carrying on as before, day by day. gainOnDay(d) is the extra gold on
-// day d (0 = the first day after the change); gainOnDay(d, true) is the same without the
-// temporary effects of the change (move penalty, specialization still to rebuild, ...). From
-// TRANSITION_DAYS on both are at their steady value. Returns that steady daily gain, what the
-// temporary effects cost, and the day the summed gain has paid back the upfront cost
-// (Infinity if it never does).
-function compareOverTime(gainOnDay, upfront = 0) {
-  const dailyGain = gainOnDay(TRANSITION_DAYS);
-  let sum = -upfront, transitionLoss = 0;
-  let paybackDays = sum >= 0 ? 0 : null;
-  for (let d = 0; d < TRANSITION_DAYS; d++) {
-    const gain = gainOnDay(d);
-    transitionLoss += gainOnDay(d, true) - gain;
-    const next = sum + gain;
-    if (next < 0) paybackDays = null;
-    else if (paybackDays === null) paybackDays = d - sum / gain;
-    sum = next;
-  }
-  if (paybackDays === null) paybackDays = dailyGain > 0 ? TRANSITION_DAYS - sum / dailyGain : Infinity;
-  return { dailyGain, transitionLoss: Math.max(0, transitionLoss), paybackDays };
-}
-
-// "primaDonna" -> "prima donna"
-function formatCodeName(code) {
-  return String(code).replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/_/g, " ").toLowerCase();
-}
 
 export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   setThemeVars(theme);
@@ -494,6 +133,10 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   const [prices, setPrices] = useState({});           // itemCode -> number
   const [ownerCountry, setOwnerCountry] = useState(null);
   const [gameConfig, setGameConfig] = useState(null);
+
+  const [ppm, setPpm] = useState(null);           // gameStat.getPpMoneyValue (GET, game-wide)
+  const [summary, setSummary] = useState(null);   // employee.getMyWorkforceSummary (key owner)
+  const [reloading, setReloading] = useState(false);
 
   const [subTab, setSubTab] = useState("overview");
   const [expandedCompany, setExpandedCompany] = useState(null);
@@ -572,22 +215,26 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
     setLoading(true); setError(""); setLoadingMsg(L.loadingSearchPlayer);
     // Employee data belongs to the key owner and must not stay on screen while another player loads.
     setEmployees({}); setEmployeeStatus({ state: "off", error: null }); setEmployeeEvents([]); setEventStatus({ state: "off", error: null });
+    setSummary(null);
     const key = apiKey.trim();
     setActiveApiKey(key);
     try {
-      // Phase 1: Resolve user + load global data in parallel
-      const [user, pricesData, regionsData, countriesData, configData] = await Promise.all([
+      // Phase 1: Resolve user + load global data in parallel. getPpMoneyValue is a void-input
+      // procedure: only a bare GET works (POST with {} returns 400 "Expected void").
+      const [user, pricesData, regionsData, countriesData, configData, ppmData] = await Promise.all([
         resolveUser(userInput.trim()),
         apiCall("itemTrading.getPrices", {}).catch(() => ({})),
         apiCall("region.getRegionsObject", {}).catch(() => ({})),
         apiCall("country.getAllCountries", {}).catch(() => []),
         apiCall("gameConfig.getGameConfig", {}).catch(() => null),
+        apiCall("gameStat.getPpMoneyValue", undefined, 3, { method: "GET" }).catch(() => null),
       ]);
       if (stale()) return;
 
       setUserData(user);
       setPrices(pricesData || {});
       setGameConfig(configData);
+      setPpm(typeof ppmData === "number" && ppmData > 0 ? ppmData : null);
 
       // Build region lookup (object keyed by _id)
       const regMap = {};
@@ -656,6 +303,13 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       setEmployeeEvents((events || []).filter(ev => compIds.has(eventCompanyId(ev))));
       setEventStatus(evStatus);
 
+      // Workforce key figures of the key owner (1 extra call, fire-and-forget).
+      if (empStatus.state === "ok") {
+        apiCall("employee.getMyWorkforceSummary")
+          .then(s => { if (!stale()) setSummary(s || null); })
+          .catch(() => {});
+      }
+
       // Phase 3b: Calculate Liquid Assets (Geld + Items + Waffen)
       setLoadingMsg(L.loadingLiquid);
       const wealthRanking = await apiCall("ranking.getRanking", { rankingType: "userWealth", limit: 100, skip: 0 }).catch(() => null);
@@ -694,6 +348,39 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       setError(e.message);
     }
     setLoading(false);
+  }
+
+  // Reloads only the key owner's employee data (3 calls), e.g. after executing plan steps in
+  // the game. Throws on failure so the workforce tab can show the error.
+  async function reloadEmployees() {
+    const key = apiKey.trim();
+    if (!key || !companies.length) return;
+    setReloading(true);
+    try {
+      const [empsRes, evsRes, sumRes] = await Promise.all([
+        apiCall(OFFICIAL_EMPLOYEE_ENDPOINTS.employees),
+        apiCall(OFFICIAL_EMPLOYEE_ENDPOINTS.events).catch(() => null),
+        apiCall("employee.getMyWorkforceSummary").catch(() => null),
+      ]);
+      const list = parseEmployeeList(empsRes);
+      if (!list) throw new Error("UNEXPECTED_RESPONSE");
+      const compIds = new Set(companies.map(c => String(c._id)));
+      const empMap = {};
+      for (const id of compIds) empMap[id] = [];
+      let matched = 0;
+      for (const emp of list) {
+        const cid = idString(emp.company);
+        if (compIds.has(cid)) { empMap[cid].push(emp); matched++; }
+      }
+      setEmployees(empMap);
+      setEmployeeStatus({ state: matched > 0 ? "ok" : list.length > 0 ? "mismatch" : "empty", error: null });
+      const events = parseEmployeeEvents(evsRes);
+      setEmployeeEvents((events || []).filter(ev => compIds.has(eventCompanyId(ev))));
+      setEventStatus({ state: events ? "ok" : "error", error: null });
+      setSummary(sumRes || null);
+    } finally {
+      setReloading(false);
+    }
   }
 
   // ── Lookups ──
@@ -788,15 +475,24 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
     return 0;
   }
 
-  // The game's estimate and productionBonus.total already contain a hired manager's bonus. Only
-  // the local fallback leaves it out, because manager contracts are not part of the official API.
+  // The company context doubles as the full Place for projectEmployeePPH (geography traits,
+  // storage, battle, manager). The game's estimate and productionBonus.total already contain a
+  // hired manager's bonus; managementPoints only feeds the no-estimate fallback.
   function empCtx(comp) {
+    const region = regions[comp.region];
     return {
       isCore: isCoreRegion(comp),
       managementPoints: getOwnerManagementPoints(),
       itemCode: comp.itemCode,
       itemType: getItemType(comp.itemCode),
       taxPct: getIncomeTaxPct(comp.region),
+      regionCountry: region?.country ?? null,
+      regionInitialCountry: region?.initialCountry ?? region?.country ?? null,
+      storageLevel: comp.activeUpgradeLevels?.storage ?? null,
+      regionAttacked: hasActiveBattle(comp),
+      managerPct: getCompanyManagerPercent(comp),
+      engineLevel: comp.activeUpgradeLevels?.automatedEngine || 1,
+      disabled: getEmployees(comp).some(e => e.companyDisabled),
     };
   }
 
@@ -812,10 +508,16 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   }
 
   // ── Calculations ──
-  // Deposits are disabled since v0.27 and region bonuses are gone: the engine makes level × 24 PP a day.
+  // Deposits are disabled since v0.27 and region bonuses are gone: the engine makes level × 24
+  // PP a day — doubled while a talksToMachines holder is the only employee (v0.27.4).
+  function engineMult(comp) {
+    const emps = getEmployees(comp);
+    return emps.length === 1 && hasTrait(emps[0], "talksToMachines") ? 2 : 1;
+  }
+
   function calcEnginePPDay(comp) {
     const engineLevel = comp.activeUpgradeLevels?.automatedEngine || 1;
-    return engineLevel * 24;
+    return engineLevel * 24 * engineMult(comp);
   }
 
   function calcEmployeePPDay(emp, comp) {
@@ -889,48 +591,44 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
   }
 
   // ── Optimization Analysis ──
-  function getWageLossWarnings() {
-    const warnings = [];
-    for (const comp of companies) {
-      const goldPerPP = calcGoldPerPP(comp.itemCode);
-      for (const emp of getEmployees(comp)) {
-        if (!empOutputKnown(emp)) continue;
-        const dailyContribution = calcEmployeePPDay(emp, comp) * goldPerPP;
-        const dailyWage = calcEmployeeCostDay(emp);
-        if (dailyWage > dailyContribution && dailyWage > 0) {
-          warnings.push({
-            company: comp,
-            employee: emp,
-            dailyWage,
-            dailyContribution,
-            loss: dailyWage - dailyContribution,
-            breakEvenWagePerH: dailyContribution / 24,
-          });
-        }
-      }
-    }
-    return warnings.sort((a, b) => b.loss - a.loss);
-  }
+  // (The per-employee wage-loss list and the greedy employee moves were replaced by the
+  // workforce tab: the advisor and the distribution plan compute both correctly, including
+  // coworker traits and slot limits. The warning banner links there.)
 
-  // Companies with employees outside the owner's core regions: moving home gives +5 % and
-  // changes the income tax the employees feel (1 % tax = -1 happiness).
+  // Companies with employees outside the owner's core regions: moving the COMPANY home gives
+  // +5 % and changes the tax and the geography traits (patriot/homesick/expat follow the
+  // employee's nationality). Without a free move: -10 happiness for the first 7 days.
   function getCoreRegionSuggestions() {
     const suggestions = [];
     const betonPrice = getItemPrice("concrete") || 1;
     const homeRegion = getSuggestedHomeRegion();
     if (!homeRegion) return suggestions;
     const toTax = getIncomeTaxPct(homeRegion._id);
+    const nowMs = Date.now();
 
     for (const comp of companies) {
       if (isCoreRegion(comp) || !hasEmployees(comp)) continue;
       const goldPerPP = calcGoldPerPP(comp.itemCode);
       const ctx = empCtx(comp);
       const emps = getEmployees(comp);
+      const neutralOf = new Map(emps.map(e => [e, neutralize(e, ctx, [], nowMs)]));
+      const targetPlace = {
+        isCore: true,
+        taxPct: toTax,
+        regionCountry: homeRegion.country ?? userData?.country ?? null,
+        regionInitialCountry: homeRegion.initialCountry ?? homeRegion.country ?? null,
+      };
       // Without a free move the employees also get -10 happiness for the first 7 days.
       const penalty = hasFreeMove(comp) ? 0 : -RULES.companyMoveHappinessPenalty;
-      const gainOnDay = (d, steady) => emps.reduce((s, emp) => s + (projectEmployeePPH(emp, ctx, {
-        isCore: true, taxPct: toTax, happinessDelta: !steady && d < RULES.movePenaltyDays ? penalty : 0,
-      }) - calcEmployeePPH(emp, ctx)) * 24 * goldPerPP, 0);
+      const gainOnDay = (d, steady) => emps.reduce((s, emp) => {
+        const neutral = neutralOf.get(emp);
+        const stay = projectEmployeePPH(emp, ctx, { day: d, neutral, steady: !!steady }, nowMs);
+        const moved = projectEmployeePPH(emp, ctx, {
+          place: targetPlace, day: d, neutral, steady: !!steady,
+          happinessDelta: !steady && d < RULES.movePenaltyDays ? penalty : 0,
+        }, nowMs);
+        return s + (moved - stay) * 24 * goldPerPP;
+      }, 0);
       const concreteNeeded = getMoveConcreteCost(comp);
       const concreteCost = concreteNeeded * betonPrice;
       const { dailyGain, transitionLoss, paybackDays } = compareOverTime(gainOnDay, concreteCost);
@@ -1024,29 +722,36 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       if (!currentCore && homeRegion && emps.length > 0) regionOptions.push({ region: homeRegion, isCore: true, move: true });
 
       // The best option by its steady daily gain; the transition is only simulated for it.
+      // The employees stay in the company (no transfer: tenure and coworkers unchanged), so
+      // only specialization, tool fit, geography and tax effects move. For an unfitting tool
+      // the better of keeping it idle (bonus 0) or returning it (handy off / improviser on)
+      // counts; the row hints to re-equip in the game.
+      const nowMs = Date.now();
+      const neutralOf = new Map(emps.map(e => [e, neutralize(e, ctx, [], nowMs)]));
       let best = null;
       for (const prod of allProducts) {
         for (const opt of regionOptions) {
           if (prod.itemCode === currentItem && !opt.move) continue;
-          // Tools of another family go back to the inventory on a product change.
-          const change = { itemCode: prod.itemCode, itemType: prod.type, toolReturned: true, isCore: opt.isCore };
-          if (opt.move) change.taxPct = getIncomeTaxPct(opt.region._id);
+          const place = {
+            itemCode: prod.itemCode, itemType: prod.type, isCore: opt.isCore,
+            ...(opt.move ? {
+              taxPct: getIncomeTaxPct(opt.region._id),
+              regionCountry: opt.region.country ?? null,
+              regionInitialCountry: opt.region.initialCountry ?? opt.region.country ?? null,
+            } : {}),
+          };
           const penalty = opt.move && !hasFreeMove(comp) ? -RULES.companyMoveHappinessPenalty : 0;
-          // Extra gold on day d: specialization grows in whichever good is worked, and a move
-          // without a free move costs -10 happiness for the first 7 days. Without those temporary
-          // effects (steady) the new good would start at the old good's specialization. The
-          // employees stay in the company, so time-dependent traits run on in both cases.
           const gainOnDay = (d, steady) => enginePP * (prod.goldPerPP - currentGoldPerPP) + emps.reduce((s, emp) => {
-            const career = careerChange(emp, d, false);
-            const stay = projectEmployeePPH(emp, ctx, {
-              specialization: specializationAfter(emp, currentItem, d), bonusDelta: career.percent, statDelta: career.stat,
-            });
-            const after = projectEmployeePPH(emp, ctx, {
-              ...change,
-              specialization: specializationAfter(emp, steady ? currentItem : prod.itemCode, d),
+            const neutral = neutralOf.get(emp);
+            // steady on BOTH sides, so natural specialization growth cancels out.
+            const stay = projectEmployeePPH(emp, ctx, { day: d, neutral, steady: !!steady }, nowMs);
+            const common = {
+              place, day: d, neutral, steady: !!steady, transferred: false,
               happinessDelta: !steady && d < RULES.movePenaltyDays ? penalty : 0,
-              bonusDelta: career.percent, statDelta: career.stat,
-            });
+            };
+            const kept = projectEmployeePPH(emp, ctx, { ...common, toolReturned: false }, nowMs);
+            const returned = projectEmployeePPH(emp, ctx, { ...common, toolReturned: true }, nowMs);
+            const after = Math.max(kept, returned);
             return s + (after * prod.goldPerPP - stay * currentGoldPerPP) * 24;
           }, 0);
           const dailyGain = gainOnDay(TRANSITION_DAYS);
@@ -1054,6 +759,24 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
         }
       }
       if (!best) continue;
+
+      // Does the recommendation assume taking an unfitting tool off in the game? (M28: the
+      // better of keeping it idle vs returning it counts; returning needs a manual step.)
+      const bestPlace = {
+        itemCode: best.prod.itemCode, itemType: best.prod.type, isCore: best.opt.isCore,
+        ...(best.opt.move ? {
+          taxPct: getIncomeTaxPct(best.opt.region._id),
+          regionCountry: best.opt.region.country ?? null,
+          regionInitialCountry: best.opt.region.initialCountry ?? best.opt.region.country ?? null,
+        } : {}),
+      };
+      const toolRemove = best.prod.itemCode !== currentItem && emps.some(emp => {
+        const tool = empToolInfo(emp);
+        if (!tool || toolFitsGood(tool, best.prod.itemCode)) return false;
+        const common = { place: bestPlace, day: TRANSITION_DAYS, neutral: neutralOf.get(emp), steady: true, transferred: false };
+        return projectEmployeePPH(emp, ctx, { ...common, toolReturned: true }, nowMs)
+          > projectEmployeePPH(emp, ctx, { ...common, toolReturned: false }, nowMs);
+      });
 
       let concreteNeeded = 0;
       if (best.opt.move) concreteNeeded += getMoveConcreteCost(comp);
@@ -1070,6 +793,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
         newRegion: best.opt.region,
         newCore: best.opt.isCore,
         moveFree: best.opt.move && hasFreeMove(comp),
+        toolRemove,
         newProfit: currentProfit + dailyGain,
         dailyGain,
         totalCost: concreteCost + transitionLoss,
@@ -1080,75 +804,6 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
       });
     }
     return suggestions.sort((a, b) => a.paybackDays - b.paybackDays);
-  }
-
-  // For each employee: the own company where they would earn the most net gold.
-  function getEmployeeOptimization() {
-    if (!gameConfig) return [];
-    const suggestions = [];
-
-    for (const fromComp of companies) {
-      const fromCtx = empCtx(fromComp);
-      const fromGoldPerPP = calcGoldPerPP(fromComp.itemCode);
-      for (const emp of getEmployees(fromComp)) {
-        const ppDay = calcEmployeePPDay(emp, fromComp);
-        const costDay = calcEmployeeCostDay(emp); // wage is set by the employee, same everywhere
-        const currentNetPerDay = ppDay * fromGoldPerPP - costDay;
-
-        const ownManager = managerPercent(emp);
-        let best = null;
-        for (const toComp of companies) {
-          if (toComp._id === fromComp._id) continue;
-          if (getUsedSlots(toComp) >= getEmployeeCap(toComp)) continue; // break room full
-          // The tool moves with the employee (it just sits idle if it does not fit the good).
-          const change = {
-            itemCode: toComp.itemCode, itemType: getItemType(toComp.itemCode),
-            isCore: isCoreRegion(toComp), taxPct: getIncomeTaxPct(toComp.region),
-          };
-          const managerDelta = getCompanyManagerPercent(toComp) - ownManager;
-          const goldPerPP = calcGoldPerPP(toComp.itemCode);
-          // Extra gold on day d (the wage stays the same): specialization grows in whichever good
-          // is worked; after the move come 7 days of -5 happiness, and the time-dependent traits
-          // (creatureOfHabit, sprinter, veteran, diamondInTheRough, burnout) start over. Without
-          // those temporary effects (steady) the employee would carry on as if they had stayed.
-          const gainOnDay = (d, steady) => {
-            const stayCareer = careerChange(emp, d, false);
-            const movedCareer = steady ? stayCareer : careerChange(emp, d, true);
-            const stay = projectEmployeePPH(emp, fromCtx, {
-              specialization: specializationAfter(emp, fromComp.itemCode, d),
-              bonusDelta: stayCareer.percent, statDelta: stayCareer.stat,
-            });
-            const moved = projectEmployeePPH(emp, fromCtx, {
-              ...change,
-              specialization: specializationAfter(emp, steady ? fromComp.itemCode : toComp.itemCode, d),
-              happinessDelta: !steady && d < RULES.movePenaltyDays ? -RULES.moveHappinessPenalty : 0,
-              bonusDelta: managerDelta + movedCareer.percent, statDelta: movedCareer.stat,
-            });
-            return (moved * goldPerPP - stay * fromGoldPerPP) * 24;
-          };
-          const dailyGain = gainOnDay(TRANSITION_DAYS);
-          if (dailyGain > (best ? best.dailyGain : 0)) best = { toComp, change, gainOnDay, dailyGain };
-        }
-
-        if (best) {
-          const { dailyGain, transitionLoss, paybackDays } = compareOverTime(best.gainOnDay);
-          suggestions.push({
-            employee: emp,
-            fromCompany: fromComp,
-            toCompany: best.toComp,
-            currentNetPerDay,
-            newNetPerDay: currentNetPerDay + dailyGain,
-            dailyGain,
-            moveLoss: transitionLoss,
-            paybackDays,
-            fromTax: fromCtx.taxPct,
-            toTax: best.change.taxPct,
-            happinessDelta: (fromCtx.taxPct - best.change.taxPct) * RULES.taxHappinessPerPercent * happinessLossFactor(emp),
-          });
-        }
-      }
-    }
-    return suggestions.sort((a, b) => b.dailyGain - a.dailyGain);
   }
 
   // Why no employee data is shown.
@@ -1186,18 +841,83 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
     return { pending, autoDecided };
   }
 
+  // ── Derived data for the workforce tools ──
+  const hasData = companies.length > 0;
+  const ppmValue = typeof ppm === "number" && ppm > 0 ? ppm : (num(gameConfig?.ppMoneyValueFallback, 0) || 0.1);
+  const ppmEstimated = !(typeof ppm === "number" && ppm > 0);
+  // Self-work (M32) scales with the PRODUCTION SKILL level, not the account level.
+  const prodSkillLevel = (() => {
+    const p = userData?.skills?.production;
+    if (!p) return 0;
+    for (const v of [p.level, p.total, p.value]) if (typeof v === "number" && v <= 10) return v;
+    return 0;
+  })();
+
+  const firmsInput = useMemo(() => {
+    if (!hasData) return [];
+    return companies.map(comp => {
+      const ctx = empCtx(comp);
+      return {
+        id: String(comp._id),
+        name: comp.name || comp.itemCode,
+        itemCode: comp.itemCode,
+        itemType: ctx.itemType,
+        g: calcGoldPerPP(comp.itemCode),
+        cap: getEmployeeCap(comp),
+        leavers: getLeavers(comp).length,
+        isCore: ctx.isCore,
+        taxPct: ctx.taxPct,
+        regionCountry: ctx.regionCountry,
+        regionInitialCountry: ctx.regionInitialCountry,
+        storageLevel: ctx.storageLevel,
+        regionAttacked: ctx.regionAttacked,
+        managerPct: ctx.managerPct,
+        engineLevel: ctx.engineLevel,
+        disabled: ctx.disabled,
+      };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companies, employees, regions, countries, prices, gameConfig, userData]);
+
+  // The advisor verdicts feed the warning banner and the per-company badges; the heavy
+  // distribution plan only runs inside the workforce tab.
+  const workforceAdvice = useMemo(() => {
+    if (employeeStatus.state !== "ok" || !firmsInput.length) return null;
+    try {
+      const model = buildWorkforceModel({
+        firmsInput, employeesByCompany: employees, ppm: ppmValue,
+        prodSkillLevel, events: employeeEvents, settings: {},
+      });
+      return adviseAll(model, model.current);
+    } catch (e) {
+      console.error("workforce advice failed", e);
+      return null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [employeeStatus.state, firmsInput, employees, ppmValue, prodSkillLevel, employeeEvents]);
+  // Only true loss-makers: "critical" (quit risk / open retirement event) is a different story
+  // and has its own badges; mixing it in here would break the check's "fire" filter link.
+  const fireAdvice = (workforceAdvice || []).filter(a => a.verdict === "fire");
+  const fireEmpIds = new Set(fireAdvice.map(a => String(a.empId)));
+
+  // Switches to the workforce tab with the check view and the fire filter preselected.
+  function openWorkforceCheck() {
+    try {
+      localStorage.setItem("warera_workforce_view", JSON.stringify("check"));
+      localStorage.setItem("warera_workforce_check_filter", JSON.stringify("fire"));
+    } catch {}
+    setSubTab("workforce");
+  }
+
   // ── Render ──
   const TH = getTH();
   const TD = getTD;
-  const hasData = companies.length > 0;
 
   const enemyWarnings = hasData ? getEnemyWarnings() : [];
-  const wageWarnings = hasData ? getWageLossWarnings() : [];
   const coreSuggestions = hasData ? getCoreRegionSuggestions() : [];
   const allProducts = hasData ? getAllProductsRanked() : [];
   const globalOptimization = hasData ? getGlobalOptimization() : [];
-  const employeeOptimization = hasData ? getEmployeeOptimization() : [];
-  const totalWarnings = enemyWarnings.length + wageWarnings.length;
+  const totalWarnings = enemyWarnings.length + fireAdvice.length;
 
   const empState = employeeStatus.state;
   const employeesKnown = hasData && empState === "ok";
@@ -1290,7 +1010,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
               </div>
               <div style={{ fontSize: 12, color: C.textDim }}>
                 {enemyWarnings.length > 0 && <span>{L.warningEnemy(enemyWarnings.length)} &middot; </span>}
-                {wageWarnings.length > 0 && <span>{L.warningWage(wageWarnings.length)}</span>}
+                {fireAdvice.length > 0 && <span>{L.warningWage(fireAdvice.length)}</span>}
               </div>
             </div>
           </div>
@@ -1311,6 +1031,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
           <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
             {[
               { key: "overview", label: L.tabOverview, icon: "&#127981;" },
+              { key: "workforce", label: L.tabWorkforce, icon: "&#128101;" },
               { key: "optimize", label: L.tabOptimize, icon: "&#128161;" },
               { key: "market", label: L.tabMarket, icon: "&#128176;" },
               { key: "optimizer_build", label: L.tabOptimizerBuild, icon: "&#127976;" },
@@ -1362,7 +1083,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                       const profit = calcDailyProfit(comp);
                       const isEnemy = enemyWarnings.some(w => w.company._id === compId);
                       const inBattle = hasActiveBattle(comp);
-                      const hasWageLoss = wageWarnings.some(w => w.company._id === compId);
+                      const hasWageLoss = emps.some(e => fireEmpIds.has(String(e._id)));
                       const leavers = getLeavers(comp);
                       const quitRisk = emps.some(e => empQuitChance(e) > 0);
                       const pendingHere = eventSummary.pending.filter(p => p.company._id === compId).length;
@@ -1448,12 +1169,12 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                                       const outputKnown = empOutputKnown(emp);
                                       const happiness = empHappiness(emp);
                                       const quitChance = empQuitChance(emp);
-                                      const traits = empTraits(emp);
+                                      const traits = traitList(emp);
                                       const tool = empToolInfo(emp);
                                       const toolPct = toolBonusNow(tool, comp.itemCode);
                                       const potential = typeof emp.potential === "number" ? emp.potential : null;
                                       const potentialMax = typeof emp.potentialMax === "number" ? emp.potentialMax : null;
-                                      const happinessColor = happiness >= RULES.happinessGood ? C.green : happiness >= RULES.happinessQuitThreshold ? C.textDim : C.red;
+                                      const happinessColor = happiness >= RULES.happinessGood ? C.green : happiness >= RULES.quitThreshold ? C.textDim : C.red;
                                       const stat = s => { const v = statValue(emp, s); return v == null ? "?" : fmt(v, 0); };
                                       return (
                                         <tr key={emp._id || ei} style={{ background: ei % 2 ? "rgba(255,255,255,0.02)" : "transparent" }}>
@@ -1474,9 +1195,9 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                                             {quitChance > 0 && <div style={{ fontSize: 9, color: C.red }}>{L.quitChance(fmt(quitChance * 100, 1))}</div>}
                                           </td>
                                           <td style={{ ...TD(false), fontSize: 11, color: C.textDim }}>
-                                            {traits.revealed.length > 0 && traits.revealed.map(formatCodeName).join(", ")}
-                                            {traits.hiddenCount > 0 && <span style={{ color: C.textMuted }}>{traits.revealed.length > 0 ? " · " : ""}{L.hiddenTraits(traits.hiddenCount)}</span>}
-                                            {!traits.revealed.length && !traits.hiddenCount && <span style={{ color: C.textMuted }}>-</span>}
+                                            {traits.length > 0
+                                              ? traits.map(t => formatCodeName(t.code)).join(", ")
+                                              : <span style={{ color: C.textMuted }}>-</span>}
                                           </td>
                                           <td style={{ ...TD(false), fontSize: 11, color: C.textDim }}>
                                             {tool ? (
@@ -1562,6 +1283,28 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
             </GlassCard>
           )}
 
+          {/* ── WORKFORCE TAB ── */}
+          {subTab === "workforce" && (
+            <WorkforceTab
+              L={L}
+              theme={theme}
+              firmsInput={firmsInput}
+              employeesByCompany={employees}
+              employeeStatus={employeeStatus}
+              events={employeeEvents}
+              eventStatus={eventStatus}
+              summary={summary}
+              ppm={ppmValue}
+              ppmEstimated={ppmEstimated}
+              userSkills={userData?.skills}
+              prodSkillLevel={prodSkillLevel}
+              apiKeySet={!!apiKey.trim()}
+              onReload={reloadEmployees}
+              reloading={reloading}
+              getEmployeeStateText={getEmployeeStateText}
+            />
+          )}
+
           {/* ── OPTIMIZATION TAB ── */}
           {subTab === "optimize" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -1573,46 +1316,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                 </GlassCard>
               )}
 
-              {/* Employee events waiting for a decision */}
-              {employeesKnown && eventStatus.state !== "off" && (
-                <GlassCard glow={eventSummary.pending.length > 0 ? C.blueGlow : undefined}>
-                  <Sec icon="&#128276;">{L.sectionEvents(eventStatus.state === "ok" ? eventSummary.pending.length : "?")}</Sec>
-                  <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>{L.eventsDesc}</div>
-                  {eventStatus.state !== "ok" ? (
-                    <div style={{ fontSize: 12, color: C.accent }}>{L.eventsFailed}</div>
-                  ) : eventSummary.pending.length === 0 ? (
-                    <div style={{ padding: "16px", textAlign: "center", color: C.green, background: "rgba(0,255,0,0.05)", borderRadius: 8, border: "1px solid " + C.green + "44" }}>
-                      {L.eventsNone}
-                    </div>
-                  ) : (
-                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                      <thead><tr>
-                        <th style={TH}>{L.colName}</th>
-                        <th style={TH}>{L.colEvent}</th>
-                        <th style={TH}>{L.colEmployee}</th>
-                        <th style={TH}>{L.colTimeLeft}</th>
-                      </tr></thead>
-                      <tbody>
-                        {eventSummary.pending.map((p, i) => (
-                          <tr key={p.event._id || i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
-                            <td style={TD(false)}>{p.company.name || p.company.itemCode}</td>
-                            <td style={TD(false)}>{formatCodeName(p.event.code || "?")}</td>
-                            <td style={TD(false)}>
-                              {(Array.isArray(p.event.cast) ? p.event.cast : []).map((c, ci) => c?.name || L.employeeFallback(ci)).join(", ") || "-"}
-                            </td>
-                            <td style={{ ...TD(false), fontWeight: 700, color: p.hoursLeft != null && p.hoursLeft < 6 ? C.red : C.accent }}>
-                              {p.hoursLeft == null ? "?" : p.hoursLeft <= 0 ? L.eventExpiring : fmtT(p.hoursLeft)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                  {eventSummary.autoDecided > 0 && (
-                    <div style={{ marginTop: 10, fontSize: 12, color: C.accent }}>{L.eventsAutoDecided(eventSummary.autoDecided)}</div>
-                  )}
-                </GlassCard>
-              )}
+              {/* Employee events moved to the workforce tab ("Heute"). */}
 
               {/* Enemy Warnings */}
               {enemyWarnings.length > 0 && (
@@ -1638,42 +1342,15 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                 </GlassCard>
               )}
 
-              {/* Wage Loss Warnings */}
-              {wageWarnings.length > 0 && (
+              {/* Loss-making employees → workforce check (the advisor computes this correctly,
+                  including coworker effects) */}
+              {fireAdvice.length > 0 && (
                 <GlassCard glow="rgba(255,153,0,0.15)" style={{ borderColor: "#ff990033" }}>
-                  <Sec icon="&#128184;">{L.sectionWageWarnings(wageWarnings.length)}</Sec>
-                  <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
-                    {L.wageWarningDesc}
+                  <div onClick={openWorkforceCheck} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                    <span style={{ fontSize: 20 }}>&#128184;</span>
+                    <span style={{ fontFamily: F.m, fontSize: 13, color: C.text }}>{L.warningWageLink(fireAdvice.length)}</span>
+                    <span style={{ color: C.accent, fontSize: 16 }}>&rarr;</span>
                   </div>
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead><tr>
-                      <th style={TH}>{L.colName}</th>
-                      <th style={TH}>{L.colEmployee}</th>
-                      <th style={TH}>{L.colWageH}</th>
-                      <th style={TH}>{L.colMaxWage}</th>
-                      <th style={TH}>{L.colCost}</th>
-                      <th style={TH}>{L.colRevenue}</th>
-                      <th style={TH}>{L.colProfit}</th>
-                    </tr></thead>
-                    <tbody>
-                      {wageWarnings.map((w, i) => (
-                        <tr key={i} style={{ background: i % 2 ? C.rowAlt : "transparent" }}>
-                          <td style={TD(false)}>{w.company.name || w.company.itemCode}</td>
-                          <td style={TD(false)}>
-                            <div>{w.employee.name || L.employeeFallback(i)}</div>
-                            <div style={{ fontSize: 10, color: C.textMuted }}>
-                              P:{(p => p == null ? "?" : fmt(p, 0))(statValue(w.employee, "production"))} · {L.colHappiness} {fmt(Math.round(empHappiness(w.employee)), 0)}
-                            </div>
-                          </td>
-                          <td style={{ ...TD(false), color: C.red }}>{fmt(empWagePerHour(w.employee), 3)} G</td>
-                          <td style={{ ...TD(false), color: C.green }}>{fmt(w.breakEvenWagePerH, 3)} G</td>
-                          <td style={{ ...TD(false), color: C.red }}>{fmt(w.dailyWage, 2)} G</td>
-                          <td style={{ ...TD(false), color: C.green }}>{fmt(w.dailyContribution, 2)} G</td>
-                          <td style={{ ...TD(false), color: C.red, fontWeight: 700 }}>-{fmt(w.loss, 2)} G</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
                 </GlassCard>
               )}
 
@@ -1735,45 +1412,8 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                 )}
               </GlassCard>
 
-              {/* Employee Optimization */}
-              {employeeOptimization.length > 0 && (
-                <GlassCard glow={C.blueGlow}>
-                  <Sec icon="&#128101;">{L.sectionEmployeeOpt(employeeOptimization.length)}</Sec>
-                  <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
-                    {L.employeeOptDesc}
-                  </div>
-                  {employeeOptimization.map((s, i) => (
-                    <div key={i} style={{ ...glass(0.08, 10), borderRadius: 8, padding: "12px 16px", marginBottom: 8 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-                        <div>
-                          <span style={{ color: C.accent, fontWeight: 700 }}>{s.employee.name || L.employeeFallback(i)}</span>
-                          <span style={{ color: C.textDim, margin: "0 8px" }}>{L.wordFrom}</span>
-                          <span style={{ color: C.text, fontWeight: 600 }}>{s.fromCompany.name || s.fromCompany.itemCode}</span>
-                          <span style={{ color: C.textDim, fontSize: 12 }}> ({s.fromCompany.itemCode}, {fmt(s.currentNetPerDay, 2)} G/d)</span>
-                          <span style={{ color: C.accent, margin: "0 10px", fontSize: 16 }}>&rarr;</span>
-                          <span style={{ color: C.green, fontWeight: 600 }}>{s.toCompany.name || s.toCompany.itemCode}</span>
-                          <span style={{ color: C.green, fontSize: 12 }}> ({s.toCompany.itemCode}, {fmt(s.newNetPerDay, 2)} G/d)</span>
-                        </div>
-                        <Bdg color={C.green}>+{fmt(s.dailyGain, 2)} G/d</Bdg>
-                      </div>
-                      <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(255,255,255,0.08)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 12 }}>
-                        <div style={{ color: C.textDim }}>
-                          {L.incomeTax}{" "}
-                          <span style={{ color: C.text }}>{fmt(s.fromTax, 1)}%</span>
-                          <span style={{ margin: "0 6px" }}>&rarr;</span>
-                          <span style={{ color: s.toTax <= s.fromTax ? C.green : C.red }}>{fmt(s.toTax, 1)}%</span>
-                          <span style={{ marginLeft: 8, color: C.textDim }}>
-                            {L.movePenaltyLine(fmt(s.moveLoss, 2), s.paybackDays === Infinity ? L.never : L.days(fmt(s.paybackDays, 1)))}
-                          </span>
-                        </div>
-                        <Bdg color={s.happinessDelta >= 0 ? C.green : C.red}>
-                          {L.happinessDeltaBadge((s.happinessDelta >= 0 ? "+" : "") + fmt(s.happinessDelta, 0))}
-                        </Bdg>
-                      </div>
-                    </div>
-                  ))}
-                </GlassCard>
-              )}
+              {/* The greedy per-employee move list was replaced by the distribution plan in the
+                  workforce tab (slot-aware, coworker traits, executable step list). */}
 
               {/* Global Optimization */}
               <GlassCard glow={globalOptimization.length > 0 ? C.accentGlow : undefined}>
@@ -1810,6 +1450,7 @@ export default function CompanyDashboard({ theme, setTheme, lang, setLang }) {
                           <td style={TD(false)}>
                             <div style={{ color: C.green, fontWeight: 700 }}>{s.newItem}</div>
                             <div style={{ fontSize: 10, color: C.green }}>{s.newRegion?.name} ({s.newCore ? L.coreYes : L.coreNo})</div>
+                            {s.toolRemove && <div style={{ fontSize: 10, color: "#ff9900" }}>{L.globalOptRemoveTool}</div>}
                           </td>
                           <td style={{ ...TD(false), color: C.textDim }}>{fmt(s.currentProfit, 2)} G</td>
                           <td style={{ ...TD(false), color: C.green }}>{fmt(s.newProfit, 2)} G</td>

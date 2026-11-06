@@ -157,18 +157,25 @@ function getActiveApiKey() {
   try { return localStorage.getItem("warera_api_key")?.trim() || ""; } catch { return ""; }
 }
 
-export async function apiCall(endpoint, body, maxRetries = 3) {
+// opts.method: "GET" for void-input procedures (e.g. gameStat.getPpMoneyValue rejects a POST
+// with an empty JSON body with 400 "Expected void" — only a bare GET works).
+export async function apiCall(endpoint, body, maxRetries = 3, opts = {}) {
+  const method = String(opts.method || "POST").toUpperCase();
   let attempt = 0;
   while (true) {
-    const headers = { "Content-Type": "application/json" };
+    const headers = method === "GET" ? {} : { "Content-Type": "application/json" };
     // The game's API token settings say to send the token in the X-API-Key header.
     const apiKey = getActiveApiKey();
     if (apiKey) headers["X-API-Key"] = apiKey;
 
-    const r = await fetch(API_BASE + endpoint, {
-      method: "POST", headers,
-      body: JSON.stringify(body),
-    });
+    let url = API_BASE + endpoint;
+    const init = { method, headers };
+    if (method === "GET") {
+      if (body !== undefined && body !== null) url += "?input=" + encodeURIComponent(JSON.stringify(body));
+    } else {
+      init.body = JSON.stringify(body);
+    }
+    const r = await fetch(url, init);
     if (!r.ok) {
       if (r.status === 429 && attempt < maxRetries) {
         attempt++;
