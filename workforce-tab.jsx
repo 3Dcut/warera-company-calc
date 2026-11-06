@@ -386,6 +386,13 @@ export default function WorkforceTab({
 
   const [view, setViewState] = useState(() => loadLSString(LS_VIEW, VIEWS, "today"));
   const [filter, setFilterState] = useState(() => loadLSString(LS_FILTER, FILTERS, "all"));
+  // Distribution view mode: the swap network is the default, the executable step list (swaps
+  // where firms are full, plain moves where a slot is free) is the alternative.
+  const [planMode, setPlanModeState] = useState(() => loadLSString("warera_workforce_plan_mode", ["graph", "steps"], "graph"));
+  const setPlanMode = m => {
+    setPlanModeState(m);
+    try { localStorage.setItem("warera_workforce_plan_mode", JSON.stringify(m)); } catch {}
+  };
   const [settings, setSettings] = useState(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
   const [showTraining, setShowTraining] = useState(false);
@@ -1263,7 +1270,17 @@ export default function WorkforceTab({
           {timeBudgetHit && <div style={{ ...mutedText, color: ORANGE, marginTop: 6 }}>{L.planTimeBudget}</div>}
         </GlassCard>
 
-        {!planOptimal && renderRingGraph()}
+        {!planOptimal && (
+          <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+            <Btn on={planMode === "graph"} onClick={() => setPlanMode("graph")} color={C.accent}>
+              <span dangerouslySetInnerHTML={{ __html: "&#128279;" }} /> {L.planViewGraph}
+            </Btn>
+            <Btn on={planMode === "steps"} onClick={() => setPlanMode("steps")} color={C.accent}>
+              <span dangerouslySetInnerHTML={{ __html: "&#128203;" }} /> {L.planViewSteps(steps.length)}
+            </Btn>
+          </div>
+        )}
+        {!planOptimal && planMode === "graph" && renderRingGraph()}
 
         {planOptimal ? (
           <GlassCard>
@@ -1274,7 +1291,7 @@ export default function WorkforceTab({
               </div>
             )}
           </GlassCard>
-        ) : (
+        ) : planMode !== "steps" ? null : (
           steps.map((s, i) => {
             const meta = stepMeta.get(i) || {};
             const done = doneSet.has(s.n);

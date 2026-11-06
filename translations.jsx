@@ -489,6 +489,8 @@ export const TRANSLATIONS = {
     planGraphRing: (i, g) => `Ring ${i}: ${g} G/Tag`,
     planGraphSingles: n => n === 1 ? "1 Einzelzug" : `${n} Einzelzüge`,
     planGraphAE: g => `AE ${g} G`,
+    planViewGraph: "Netz",
+    planViewSteps: n => `Schrittliste (${n})`,
     coreStayBadge: "BLEIBEN",
     coreStayTip: "Kein Umzugsvorschlag: Der Heimzug würde dauerhaft Gewinn kosten (z. B. entfällt ein Auslands-Trait wie expat). Die Zeile steht nur zur Info hier.",
 
@@ -979,6 +981,8 @@ export const TRANSLATIONS = {
     planGraphRing: (i, g) => `Ring ${i}: ${g} G/day`,
     planGraphSingles: n => n === 1 ? "1 single move" : `${n} single moves`,
     planGraphAE: g => `AE ${g} G`,
+    planViewGraph: "Network",
+    planViewSteps: n => `Step list (${n})`,
     coreStayBadge: "STAY",
     coreStayTip: "Not a recommendation: moving home would cost profit for good (e.g. an abroad trait like expat would be lost). The row is here for information only.",
 
@@ -1469,6 +1473,8 @@ export const TRANSLATIONS = {
     planGraphRing: (i, g) => `Ring ${i}: ${g} G/dag`,
     planGraphSingles: n => n === 1 ? "1 enskild flytt" : `${n} enskilda flyttar`,
     planGraphAE: g => `AE ${g} G`,
+    planViewGraph: "Nätverk",
+    planViewSteps: n => `Steglista (${n})`,
     coreStayBadge: "STANNA",
     coreStayTip: "Ingen rekommendation: en flytt hem skulle varaktigt kosta vinst (t.ex. försvinner en utlandsegenskap som expat). Raden visas bara som information.",
 
